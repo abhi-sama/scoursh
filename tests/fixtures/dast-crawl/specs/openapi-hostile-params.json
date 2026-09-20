@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "IMPORT-05 hostile-parameter fixture", "version": "1.0"},
+  "paths": {
+    "/import05": {
+      "get": {
+        "summary": "a header parameter whose name is not an RFC 7230 token, beside a well-formed sibling",
+        "parameters": [
+          {"name": "X Bad Name", "in": "header"},
+          {"name": "X-Good-Name", "in": "header"}
+        ]
+      }
+    }
+  }
+}

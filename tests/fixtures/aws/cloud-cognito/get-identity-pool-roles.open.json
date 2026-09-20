@@ -1,0 +1,13 @@
+{
+    "IdentityPoolId": "eu-west-2:11111111-1111-1111-1111-111111111111",
+    "Roles": {
+        "authenticated": "arn:aws:iam::123456789012:role/service-role/Cognito_openpoolAuth_Role",
+        "unauthenticated": "arn:aws:iam::123456789012:role/service-role/Cognito_openpoolUnauth_Role"
+    },
+    "RoleMappings": {
+        "cognito-idp.eu-west-2.amazonaws.com/eu-west-2_weakpool01:weakclient000000000000000": {
+            "Type": "Token",
+            "AmbiguousRoleResolution": "AuthenticatedRole"
+        }
+    }
+}

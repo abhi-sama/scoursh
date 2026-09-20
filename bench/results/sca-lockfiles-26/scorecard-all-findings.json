@@ -1,0 +1,77 @@
+{
+  "cases": 26,
+  "real_cases": 13,
+  "trap_cases": 13,
+  "min_severity": "any",
+  "categories": ["sca-go", "sca-npm", "sca-pypi"],
+  "tools": {
+    "grype": {
+      "version": "0.118.0",
+      "corpus_commit": "n/a - see bench/sca-advisories.lock (not a git-cloned corpus)",
+      "claims": "sca-npm sca-pypi sca-go",
+      "findings_kept": 372,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 3, "tn": 0, "recall": 1.000, "fpr": 1.000, "precision": 0.500, "youden_j": 0.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 3, "tn": 3, "recall": 1.000, "fpr": 0.500, "precision": 0.667, "youden_j": 0.500},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 3, "tn": 1, "recall": 1.000, "fpr": 0.750, "precision": 0.571, "youden_j": 0.250}
+      },
+      "strict": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 0, "tn": 3, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 0, "tn": 6, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 0, "tn": 4, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000}
+      }
+    },
+    "osv-scanner": {
+      "version": "2.5.1",
+      "corpus_commit": "n/a - see bench/sca-advisories.lock (not a git-cloned corpus)",
+      "claims": "sca-npm sca-pypi sca-go",
+      "findings_kept": 587,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 3, "tn": 0, "recall": 1.000, "fpr": 1.000, "precision": 0.500, "youden_j": 0.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 3, "tn": 3, "recall": 1.000, "fpr": 0.500, "precision": 0.667, "youden_j": 0.500},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 3, "tn": 1, "recall": 1.000, "fpr": 0.750, "precision": 0.571, "youden_j": 0.250}
+      },
+      "strict": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 0, "tn": 3, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 0, "tn": 6, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 0, "tn": 4, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000}
+      }
+    },
+    "scoursh-sca": {
+      "version": "0.1.0-dev+1710274dbf30",
+      "corpus_commit": "n/a - see bench/sca-advisories.lock (not a git-cloned corpus)",
+      "claims": "sca-npm sca-pypi sca-go",
+      "findings_kept": 174,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "sca-go": {"coverage": "scored", "tp": 0, "fn": 3, "fp": 0, "tn": 3, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 3, "tn": 3, "recall": 1.000, "fpr": 0.500, "precision": 0.667, "youden_j": 0.500},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 3, "tn": 1, "recall": 1.000, "fpr": 0.750, "precision": 0.571, "youden_j": 0.250}
+      },
+      "strict": {
+        "sca-go": {"coverage": "scored", "tp": 0, "fn": 3, "fp": 0, "tn": 3, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 0, "tn": 6, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 0, "tn": 4, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000}
+      }
+    },
+    "trivy-fs": {
+      "version": "0.74.0",
+      "corpus_commit": "n/a - see bench/sca-advisories.lock (not a git-cloned corpus)",
+      "claims": "sca-npm sca-pypi sca-go",
+      "findings_kept": 376,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 3, "tn": 0, "recall": 1.000, "fpr": 1.000, "precision": 0.500, "youden_j": 0.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 3, "tn": 3, "recall": 1.000, "fpr": 0.500, "precision": 0.667, "youden_j": 0.500},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 3, "tn": 1, "recall": 1.000, "fpr": 0.750, "precision": 0.571, "youden_j": 0.250}
+      },
+      "strict": {
+        "sca-go": {"coverage": "scored", "tp": 3, "fn": 0, "fp": 0, "tn": 3, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-npm": {"coverage": "scored", "tp": 6, "fn": 0, "fp": 0, "tn": 6, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "sca-pypi": {"coverage": "scored", "tp": 4, "fn": 0, "fp": 0, "tn": 4, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000}
+      }
+    }
+  }
+}

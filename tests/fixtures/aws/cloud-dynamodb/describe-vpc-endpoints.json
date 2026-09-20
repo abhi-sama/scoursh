@@ -1,0 +1,32 @@
+{
+    "VpcEndpoints": [
+        {
+            "VpcEndpointId": "vpce-scoursh-fixture-default",
+            "VpcEndpointType": "Gateway",
+            "ServiceName": "com.amazonaws.eu-west-2.dynamodb",
+            "State": "available",
+            "PolicyDocument": "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+        },
+        {
+            "VpcEndpointId": "vpce-scoursh-fixture-narrowed",
+            "VpcEndpointType": "Gateway",
+            "ServiceName": "com.amazonaws.eu-west-2.dynamodb",
+            "State": "available",
+            "PolicyDocument": "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"dynamodb:*\",\"Resource\":\"*\",\"Condition\":{\"StringEquals\":{\"aws:PrincipalOrgID\":\"o-scourshfixture\"}}}]}"
+        },
+        {
+            "VpcEndpointId": "vpce-scoursh-fixture-unrelated",
+            "VpcEndpointType": "Interface",
+            "ServiceName": "com.amazonaws.eu-west-2.dynamodb-streams",
+            "State": "available",
+            "PolicyDocument": "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+        },
+        {
+            "VpcEndpointId": "vpce-scoursh-fixture-wrong-type",
+            "VpcEndpointType": "Interface",
+            "ServiceName": "com.amazonaws.eu-west-2.dynamodb",
+            "State": "available",
+            "PolicyDocument": "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+        }
+    ]
+}

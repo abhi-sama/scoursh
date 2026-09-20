@@ -1,0 +1,2 @@
+2026-09-10T11:10:33Z info  iac: scanning 17 files under <SCAN_ROOT>
+2026-09-10T11:11:06Z info  scan complete in 45s - report: <BENCH>/results/b6-iac-terragoat-aws/scoursh-iac/raw/run

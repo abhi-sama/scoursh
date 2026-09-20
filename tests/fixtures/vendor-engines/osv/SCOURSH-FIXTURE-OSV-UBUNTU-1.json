@@ -1,0 +1,22 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-UBUNTU-1",
+  "summary": "fixture: openssl heap overflow (ubuntu)",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Ubuntu:20.04", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.1.1f-1ubuntu2.20"}]}],
+      "versions": ["1.1.1f-1ubuntu2.19"]
+    },
+    {
+      "package": {"ecosystem": "Ubuntu:22.04", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.2-0ubuntu1.15"}]}],
+      "versions": ["3.0.2-0ubuntu1.14"]
+    },
+    {
+      "package": {"ecosystem": "Debian:12", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.11-1~deb12u3"}]}],
+      "versions": ["3.0.11-1~deb12u2"]
+    }
+  ]
+}

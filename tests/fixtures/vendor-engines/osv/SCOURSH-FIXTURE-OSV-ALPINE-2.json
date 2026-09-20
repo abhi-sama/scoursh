@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-ALPINE-2",
+  "summary": "fixture: busybox path traversal",
+  "database_specific": {"severity": "MEDIUM"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Alpine:v3.18", "name": "busybox"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.36.1-r6"}]}],
+      "versions": ["1.36.1-r5"]
+    }
+  ]
+}

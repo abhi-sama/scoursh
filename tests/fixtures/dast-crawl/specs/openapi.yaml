@@ -12,6 +12,15 @@ paths:
           in: header
     post:
       summary: create a user
+      parameters:
+        - name: body
+          in: body
+          schema:
+            type: object
+            properties:
+              username:
+                type: string
+                example: alice
   /users/{userId}:
     get:
       summary: read one

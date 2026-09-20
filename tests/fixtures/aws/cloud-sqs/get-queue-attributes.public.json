@@ -1,0 +1,8 @@
+{
+    "Attributes": {
+        "QueueArn": "arn:aws:sqs:eu-west-2:123456789012:scoursh-fixture-public-queue",
+        "Policy": "{\"Version\":\"2012-10-17\",\"Id\":\"__default_policy_ID\",\"Statement\":[{\"Sid\":\"__owner_statement\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"SQS:*\",\"Resource\":\"arn:aws:sqs:eu-west-2:123456789012:scoursh-fixture-public-queue\"}]}",
+        "ApproximateNumberOfMessages": "0",
+        "VisibilityTimeout": "30"
+    }
+}

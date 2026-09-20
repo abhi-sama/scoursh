@@ -7,27 +7,113 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
+
+# The suite takes 1.5h+ (the ubuntu-only PR leg) to 2.5h+ (push, both legs),
+# and with no concurrency control a second push to the same ref started a
+# SECOND full run rather than replacing the first - two multi-hour jobs
+# competing for the same runner pool, every time a fixup landed on an
+# already-pushed branch. Measured directly: this PR's own second push left
+# its first run still in flight nearly 5 hours later, both visibly slower
+# for sharing the pool. `github.ref` differs by trigger in exactly the way
+# that keeps this scoped correctly with no extra logic - a `pull_request`
+# event's ref is the PR's own merge ref (so only pushes to THAT PR cancel
+# each other), while a `push` event's ref is the branch itself (so only a
+# second rapid push to the same branch, e.g. dev, cancels the first's run
+# rather than ever canceling a sibling PR's).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   suite:
     strategy:
       fail-fast: false
+      # The `matrix` context is not available in a job-level `if:` (only
+      # `github`, `inputs`, `needs` and `vars` are - actionlint catches this,
+      # a real schema violation the first version of this change shipped and
+      # that silently zeroed out every job on every trigger), so narrowing by
+      # trigger has to happen in the matrix itself.
       matrix:
-        include:
-          - os: ubuntu-latest
-            userland: GNU coreutils
-          - os: macos-latest
-            userland: BSD
-    # Skip (not fail) while this repository is private: hosted Actions cannot
-    # currently start a run here at all (a billing condition, docs/CI-RUNBOOK.md),
-    # so every attempt fails with zero steps and a red X that has nothing to do
-    # with the code. This condition flips to true automatically the moment the
-    # repository goes public - no follow-up edit needed.
+        # SHARDING (tests/run-tests.sh --shard I/N).  The suite array is dealt
+        # WEIGHT-AWARE (LPT - see tests/run-tests.sh's own `--shard` header)
+        # across ten legs, so the ten together run exactly the work one
+        # unsharded leg did - tests/suites/run-tests-stage.sh reconstructs the
+        # full work list from every shard's own `--list` and fails if a single
+        # item is dropped or claimed twice.
+        #
+        # THIS IS A WALL-CLOCK SPLIT AND NOT A COST REDUCTION.  The number of
+        # `scan.sh` subprocesses CI spawns is UNCHANGED; they are spread over
+        # ten runners instead of one, so this buys roughly 1/10 the wall clock
+        # for ~10x the runner-minutes.  The pole is whichever shard owns
+        # tests/suites/scan.sh, because no split makes one suite faster than
+        # itself - that suite's own remaining cost is stated in this change's
+        # PR description rather than papered over here.
+        #
+        # WAS SIX LEGS, ROUND-ROBIN BY POSITION.  CI run 35064153768 (dev, six
+        # shards, both userlands) had two shards - the same two, on both
+        # userlands - cancelled at the then-120-minute ceiling while the
+        # lightest shard finished in 50 minutes: a fixed positional deal put
+        # `tests/suites/scan.sh` (91 documented minutes on its own) in with a
+        # full share of everything else, every run, on every platform. Ten
+        # legs plus the weighted split below is this change's fix; see
+        # tests/run-tests.sh's `--shard` header for the full rationale and
+        # tests/shard-weights.tsv for the checked-in per-item cost table.
+        #
+        # THE CROSS PRODUCT IS WRITTEN OUT, NOT EXPRESSED AS `shard:` PLUS
+        # `include:`.  A bare `shard: [1..10]` key alongside this `include:`
+        # would be a base matrix of ten combinations that GitHub then tries to
+        # merge each `include` object into, and the two objects here both carry
+        # `os` - which is the ambiguous case, not a documented cross product.
+        # This file has already shipped one matrix-schema mistake that silently
+        # zeroed out every job on every trigger (see the `if:` note below), so
+        # the legs are enumerated explicitly and are exactly what runs.
+        #
+        # A `pull_request` run gets the `ubuntu-latest` legs alone: that is
+        # what a PR waits on, by maintainer-directed change, and the macOS legs
+        # are not even generated as jobs on that trigger. Every other trigger
+        # (a `push` to `main` or `dev`) gets both userlands, so a macOS-only
+        # regression is caught there before `dev` is promoted to `main`.
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":7},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":8},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":9},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":10}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":7},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":8},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":9},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":10},{"os":"macos-latest","userland":"BSD","shard":1},{"os":"macos-latest","userland":"BSD","shard":2},{"os":"macos-latest","userland":"BSD","shard":3},{"os":"macos-latest","userland":"BSD","shard":4},{"os":"macos-latest","userland":"BSD","shard":5},{"os":"macos-latest","userland":"BSD","shard":6},{"os":"macos-latest","userland":"BSD","shard":7},{"os":"macos-latest","userland":"BSD","shard":8},{"os":"macos-latest","userland":"BSD","shard":9},{"os":"macos-latest","userland":"BSD","shard":10}]') }}
+    # The repository is PUBLIC, so this evaluates true and the job runs for
+    # real. The guard is kept rather than deleted: on a private repository
+    # hosted Actions cannot start a run here at all (a billing condition,
+    # docs/CI-RUNBOOK.md), and without this the job would fail with zero steps
+    # and a red X that has nothing to do with the code. It keeps the workflow
+    # safe to carry in a fork, or if this repository is ever made private
+    # again.
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.userland }})
+    name: ${{ matrix.os }} (${{ matrix.userland }}) shard ${{ matrix.shard }}/10
+    # PER SHARD.
+    #
+    # #308 measured why a ceiling is needed at all: with no timeout the
+    # platform default (360 minutes) was the only bound, and a run that should
+    # have taken ~1.5h instead spent 336 of 361 minutes - 93% - sitting in 180
+    # separate gaps between what should be near-instant fixture-driven
+    # assertions, ending in a silent "cancelled" rather than a verdict. That
+    # slowdown is not fully resolved; two measured causes of it inside
+    # tests/suites/scan.sh are fixed in the commit before this one, and what
+    # remains is bounded rather than cured.
+    #
+    # RAISED FROM 120 TO 150, as a safety margin over the weighted split
+    # below rather than as the fix for it - see tests/run-tests.sh's `--shard`
+    # header and this change's PR description for why balance is the real
+    # fix. Derivation: `tests/shard-weights.tsv` only has real, sourced costs
+    # for two of the matrix's 149 work items (`scan`, `color`); every other
+    # item still carries an estimated default, so the ~91-minute
+    # `tests/suites/scan.sh` shard the weighted split now isolates is the one
+    # number in this projection with real evidence behind it, and the other
+    # nine shards' true costs are not yet individually measured (see
+    # SCOURSH_SHARD_RECORD in tests/run-tests.sh for how that data gets
+    # collected going forward). 150 gives that isolated shard ~1.6x headroom
+    # over its own documented 91 minutes, and gives every other shard - whose
+    # real composition is still uncertain - more room than the 120-minute
+    # ceiling that CI run 35064153768 just proved insufficient, without
+    # returning to the 150-minute figure #308 sized for a single leg running
+    # the WHOLE array (a shard is a tenth of that work now, not a sixth).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -37,9 +123,60 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bash
 
-      - name: Install shellcheck
+      # PIN THE EXACT shellcheck VERSION, AND PIN IT ON BOTH LEGS.
+      #
+      # This used to be `apt-get install shellcheck` on Linux and `brew install
+      # shellcheck` on macOS, which is two different versions on the two legs
+      # and a third one on whatever a contributor has locally. The whole-tree
+      # stage's verdict is not version-stable, so that made a red CI check
+      # unactionable: the first run that got far enough to reach a verdict
+      # reported 56 findings across 18 files on `ubuntu-latest`
+      # (SC2317 x23, SC2119 x21, SC2002 x6, SC2120 x4, SC2015 x2) while
+      # `macos-latest` and every local run over the identical tree reported
+      # none. Measured directly rather than inferred: shellcheck 0.9.0 (what
+      # Ubuntu's apt ships) reports SC2120 on lib/state.sh and SC2119/SC2120
+      # on modules/dast/run.sh, and 0.11.0 reports nothing on either. SC2317
+      # ("command appears unreachable") is the bulk of it and is exactly the
+      # check this codebase provokes by design, since traps and the
+      # SCOURSH_HTTP_TRANSPORT / SCOURSH_PARANOID_* seams invoke functions
+      # indirectly; later releases narrowed it.
+      #
+      # The official release tarball is used rather than a package manager
+      # because it is the only source that gives the SAME binary on both
+      # runners. Nothing here is scan-time network access - docs/DESIGN.md
+      # §9's rule is about a scan, and this is CI provisioning.
+      #
+      # The version is printed, and the stage prints it too, so a future skew
+      # is visible in the log instead of being inferred from the findings.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.11.0
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then brew install shellcheck; else sudo apt-get update -qq && sudo apt-get install -y shellcheck; fi
+          set -euo pipefail
+          case "$RUNNER_OS-$(uname -m)" in
+            Linux-x86_64)  plat=linux.x86_64 ;;
+            Linux-aarch64) plat=linux.aarch64 ;;
+            macOS-arm64)   plat=darwin.aarch64 ;;
+            macOS-x86_64)  plat=darwin.x86_64 ;;
+            *) echo "no pinned shellcheck build mapped for $RUNNER_OS-$(uname -m)" >&2; exit 1 ;;
+          esac
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.${plat}.tar.xz"
+          curl -fsSL --retry 3 "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/sc-bin"
+          install -m 0755 "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$RUNNER_TEMP/sc-bin/shellcheck"
+          # Prepended via GITHUB_PATH rather than installed into /usr/local/bin,
+          # so this wins over any shellcheck the runner image already ships
+          # whatever order the image happens to put directories in.
+          echo "$RUNNER_TEMP/sc-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/sc-bin/shellcheck" --version
+
+      - name: Confirm the pinned shellcheck is the one on PATH
+        run: |
+          set -euo pipefail
+          command -v shellcheck
+          shellcheck --version
+          shellcheck --version | grep -qx 'version: 0.11.0'
 
       - name: Report the userland
         run: |
@@ -50,14 +187,84 @@ jobs:
           command -v shred || echo 'no shred (expected on macOS)'
           command -v rg || echo 'no ripgrep'
 
-      - name: Run the suite
+      # The whole-tree `shellcheck` stage now runs ONE invocation per file, so
+      # its peak is the MAX over the tree rather than the SUM over a batch.
+      # That max is the number that decides whether the stage fits a runner at
+      # all, so publish it per runner rather than inferring it from a
+      # contributor's laptop.  `tests/suites/dast-methods.sh` is the tree's
+      # heaviest entry point (hub sum 17, the cap in
+      # tests/lint-source-graph.sh).  This step can never fail the job: it is
+      # a measurement, not an assertion, and a runner image without
+      # `/usr/bin/time` must not turn that into a red X.
+      #
+      # `ulimit -v` below is NOT part of that "can never fail the job" design and
+      # is load-bearing on its own: shellcheck's GHC runtime sizes its heap off
+      # *available* memory at measurement time, not off a fixed multiple of the
+      # file's own size (AGENTS.md, "the memory model" - measured directly:
+      # peak RSS for this identical file/commit was 6.43 GB on this runner six
+      # days ago and was reproduced locally at >14 GB and still climbing on a
+      # 64 GB host with nothing else running). This step runs first, right
+      # after checkout, with the whole runner's RAM still free, which is
+      # exactly the condition that lets the heap balloon past the runner's own
+      # physical ceiling - at which point the runner's *host* OOMs and GitHub
+      # reports "the runner has received a shutdown signal", which
+      # `continue-on-error: true` cannot catch because there is no process exit
+      # code to catch; the whole job dies. Capping virtual memory here turns
+      # that failure mode back into an ordinary process exit `continue-on-error`
+      # already handles, without touching the actual (bounded, headroom-aware)
+      # shellcheck stage in `tests/run-tests.sh` that runs later.
+      - name: Measure peak shellcheck -x RSS for the tree's heaviest file
+        # ONE SHARD ONLY.  It is a measurement of the tree, not of the shard,
+        # so running it on all ten legs would pay for it ten times over and
+        # publish ten copies of one number.
+        if: matrix.shard == 1
+        continue-on-error: true
+        run: |
+          f=tests/suites/dast-methods.sh
+          if ! command -v /usr/bin/time >/dev/null 2>&1; then
+            echo "no /usr/bin/time on this image - skipping the measurement"; exit 0
+          fi
+          # 10 GiB, well under this runner's own ~14 GB available: best-effort,
+          # since RLIMIT_AS enforcement is unreliable on macOS - a no-op there
+          # is no worse than the status quo, and Linux is where the crash was
+          # observed.
+          ulimit -v 10485760 2>/dev/null || true
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # BSD `time -l` reports maximum RSS in BYTES, in field 1.
+            /usr/bin/time -l shellcheck -x -s bash "$f" 2>&1 \
+              | awk '/maximum resident set size/ {printf "%s: peak RSS %.2f GB\n", "'"$f"'", $1/1024/1024/1024}'
+          else
+            # GNU `time -v` reports it in KILOBYTES, in field 6.
+            /usr/bin/time -v shellcheck -x -s bash "$f" 2>&1 \
+              | awk '/Maximum resident set size/ {printf "%s: peak RSS %.2f GB\n", "'"$f"'", $6/1024/1024}'
+          fi
+          echo "--- runner memory for comparison:"
+          if [ -r /proc/meminfo ]; then grep -E 'MemTotal|MemAvailable' /proc/meminfo; else
+            sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
+          fi
+
+      - name: Run the suite (shard ${{ matrix.shard }} of 10)
+        env:
+          # Real per-item wall-clock, appended as the shard runs - see
+          # tests/run-tests.sh's `--shard` header. Uploaded below so a
+          # maintainer can fold real numbers into tests/shard-weights.tsv;
+          # nothing reads this file automatically.
+          SCOURSH_SHARD_RECORD: ${{ github.workspace }}/shard-timing.tsv
         run: |
           BASH=bash
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
             [ -x "$candidate" ] && BASH=$candidate && break
           done
           set -o pipefail
-          "$BASH" tests/run-tests.sh 2>&1 | tee suite.log
+          "$BASH" tests/run-tests.sh --shard "${{ matrix.shard }}/10" 2>&1 | tee suite.log
+
+      - name: Keep the per-item shard timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-timing-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: shard-timing.tsv
+          if-no-files-found: ignore
 
       # The job log is only readable through an API that truncates, and a
       # failure summary lives at the END of the run, so the log is kept as an
@@ -66,11 +273,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: suite-log-${{ matrix.os }}
+          name: suite-log-${{ matrix.os }}-shard${{ matrix.shard }}
           path: suite.log
           if-no-files-found: warn
 
       - name: Emit the fixture scan for cross-userland comparison
+        # ONE SHARD ONLY, for the same reason as the measurement above: this
+        # scans a fixture tree and has nothing to do with which suites this leg
+        # ran, so ten legs would produce ten identical artifacts - and ten
+        # uploads competing for one artifact name, which is an upload error
+        # rather than a harmless duplicate. The `compare` job downloads
+        # `findings-<os>`, which shard 1 alone now publishes.
+        if: matrix.shard == 1
         run: |
           BASH=bash
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -85,6 +299,7 @@ jobs:
           wc -l findings.normalised.jsonl
 
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: findings-${{ matrix.os }}
           path: findings.normalised.jsonl
@@ -92,7 +307,12 @@ jobs:
   compare:
     # tension 24's actual requirement: the suite fails if a finding, a
     # fingerprint, or a findings.jsonl byte differs between the two userlands.
+    # It has nothing to compare on a `pull_request` run, since the macOS leg
+    # above is not generated there - so this job is skipped too, rather than
+    # failing on a missing macOS artifact. It still runs on every `push` to
+    # `dev` or `main`, where both legs did.
     needs: suite
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

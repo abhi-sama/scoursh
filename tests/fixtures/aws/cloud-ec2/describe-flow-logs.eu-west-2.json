@@ -1,0 +1,5 @@
+{
+    "FlowLogs": [
+        {"FlowLogId": "fl-hard1", "ResourceId": "vpc-hard1", "FlowLogStatus": "ACTIVE"}
+    ]
+}

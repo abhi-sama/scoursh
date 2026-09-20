@@ -1,0 +1,108 @@
+{
+  "cases": 2740,
+  "real_cases": 1415,
+  "trap_cases": 1325,
+  "min_severity": "any",
+  "categories": ["cmdi", "crypto", "hash", "ldapi", "pathtraver", "securecookie", "sqli", "trustbound", "weakrand", "xpathi", "xss"],
+  "tools": {
+    "scoursh": {
+      "version": "0.1.0-dev+8b637cae9ce6",
+      "corpus_commit": "20cbf3d11123347e47ed89541e6942836def53f7",
+      "claims": "sqli cmdi ldapi pathtraver crypto hash weakrand xss terraform-aws",
+      "findings_kept": 114,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "cmdi": {"coverage": "scored", "tp": 0, "fn": 126, "fp": 0, "tn": 125, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "crypto": {"coverage": "scored", "tp": 0, "fn": 130, "fp": 27, "tn": 89, "recall": 0.000, "fpr": 0.233, "precision": 0.000, "youden_j": -0.233},
+        "hash": {"coverage": "scored", "tp": 28, "fn": 101, "fp": 0, "tn": 107, "recall": 0.217, "fpr": 0.000, "precision": 1.000, "youden_j": 0.217},
+        "ldapi": {"coverage": "scored", "tp": 27, "fn": 0, "fp": 32, "tn": 0, "recall": 1.000, "fpr": 1.000, "precision": 0.458, "youden_j": 0.000},
+        "pathtraver": {"coverage": "scored", "tp": 0, "fn": 133, "fp": 0, "tn": 135, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 272, "fp": 0, "tn": 232, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 0, "fn": 218, "fp": 0, "tn": 275, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 0, "fn": 246, "fp": 0, "tn": 209, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      },
+      "strict": {
+        "cmdi": {"coverage": "scored", "tp": 0, "fn": 126, "fp": 0, "tn": 125, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "crypto": {"coverage": "scored", "tp": 0, "fn": 130, "fp": 27, "tn": 89, "recall": 0.000, "fpr": 0.233, "precision": 0.000, "youden_j": -0.233},
+        "hash": {"coverage": "scored", "tp": 28, "fn": 101, "fp": 0, "tn": 107, "recall": 0.217, "fpr": 0.000, "precision": 1.000, "youden_j": 0.217},
+        "ldapi": {"coverage": "scored", "tp": 27, "fn": 0, "fp": 32, "tn": 0, "recall": 1.000, "fpr": 1.000, "precision": 0.458, "youden_j": 0.000},
+        "pathtraver": {"coverage": "scored", "tp": 0, "fn": 133, "fp": 0, "tn": 135, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 272, "fp": 0, "tn": 232, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 0, "fn": 218, "fp": 0, "tn": 275, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 0, "fn": 246, "fp": 0, "tn": 209, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      }
+    },
+    "semgrep": {
+      "version": "1.176.0",
+      "corpus_commit": "20cbf3d11123347e47ed89541e6942836def53f7",
+      "claims": "sqli cmdi ldapi pathtraver crypto hash weakrand xss",
+      "findings_kept": 2163,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "cmdi": {"coverage": "scored", "tp": 112, "fn": 14, "fp": 96, "tn": 29, "recall": 0.889, "fpr": 0.768, "precision": 0.538, "youden_j": 0.121},
+        "crypto": {"coverage": "scored", "tp": 130, "fn": 0, "fp": 0, "tn": 116, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "hash": {"coverage": "scored", "tp": 89, "fn": 40, "fp": 0, "tn": 107, "recall": 0.690, "fpr": 0.000, "precision": 1.000, "youden_j": 0.690},
+        "ldapi": {"coverage": "scored", "tp": 26, "fn": 1, "fp": 28, "tn": 4, "recall": 0.963, "fpr": 0.875, "precision": 0.481, "youden_j": 0.088},
+        "pathtraver": {"coverage": "scored", "tp": 120, "fn": 13, "fp": 106, "tn": 29, "recall": 0.902, "fpr": 0.785, "precision": 0.531, "youden_j": 0.117},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 234, "fn": 38, "fp": 143, "tn": 89, "recall": 0.860, "fpr": 0.616, "precision": 0.621, "youden_j": 0.244},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 218, "fn": 0, "fp": 0, "tn": 275, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 202, "fn": 44, "fp": 108, "tn": 101, "recall": 0.821, "fpr": 0.517, "precision": 0.652, "youden_j": 0.304}
+      },
+      "strict": {
+        "cmdi": {"coverage": "scored", "tp": 112, "fn": 14, "fp": 96, "tn": 29, "recall": 0.889, "fpr": 0.768, "precision": 0.538, "youden_j": 0.121},
+        "crypto": {"coverage": "scored", "tp": 130, "fn": 0, "fp": 0, "tn": 116, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "hash": {"coverage": "scored", "tp": 89, "fn": 40, "fp": 0, "tn": 107, "recall": 0.690, "fpr": 0.000, "precision": 1.000, "youden_j": 0.690},
+        "ldapi": {"coverage": "scored", "tp": 26, "fn": 1, "fp": 28, "tn": 4, "recall": 0.963, "fpr": 0.875, "precision": 0.481, "youden_j": 0.088},
+        "pathtraver": {"coverage": "scored", "tp": 120, "fn": 13, "fp": 106, "tn": 29, "recall": 0.902, "fpr": 0.785, "precision": 0.531, "youden_j": 0.117},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 234, "fn": 38, "fp": 143, "tn": 89, "recall": 0.860, "fpr": 0.616, "precision": 0.621, "youden_j": 0.244},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 218, "fn": 0, "fp": 0, "tn": 275, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 202, "fn": 44, "fp": 108, "tn": 101, "recall": 0.821, "fpr": 0.517, "precision": 0.652, "youden_j": 0.304}
+      }
+    },
+    "semgrep-default": {
+      "version": "1.176.0",
+      "corpus_commit": "20cbf3d11123347e47ed89541e6942836def53f7",
+      "claims": "sqli cmdi ldapi pathtraver crypto hash weakrand xss",
+      "findings_kept": 2404,
+      "findings_dropped_by_severity": 0,
+      "loose": {
+        "cmdi": {"coverage": "scored", "tp": 117, "fn": 9, "fp": 109, "tn": 16, "recall": 0.929, "fpr": 0.872, "precision": 0.518, "youden_j": 0.057},
+        "crypto": {"coverage": "scored", "tp": 130, "fn": 0, "fp": 0, "tn": 116, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "hash": {"coverage": "scored", "tp": 89, "fn": 40, "fp": 0, "tn": 107, "recall": 0.690, "fpr": 0.000, "precision": 1.000, "youden_j": 0.690},
+        "ldapi": {"coverage": "scored", "tp": 26, "fn": 1, "fp": 28, "tn": 4, "recall": 0.963, "fpr": 0.875, "precision": 0.481, "youden_j": 0.088},
+        "pathtraver": {"coverage": "scored", "tp": 120, "fn": 13, "fp": 106, "tn": 29, "recall": 0.902, "fpr": 0.785, "precision": 0.531, "youden_j": 0.117},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 253, "fn": 19, "fp": 170, "tn": 62, "recall": 0.930, "fpr": 0.733, "precision": 0.598, "youden_j": 0.197},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 218, "fn": 0, "fp": 0, "tn": 275, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 202, "fn": 44, "fp": 108, "tn": 101, "recall": 0.821, "fpr": 0.517, "precision": 0.652, "youden_j": 0.304}
+      },
+      "strict": {
+        "cmdi": {"coverage": "scored", "tp": 117, "fn": 9, "fp": 109, "tn": 16, "recall": 0.929, "fpr": 0.872, "precision": 0.518, "youden_j": 0.057},
+        "crypto": {"coverage": "scored", "tp": 130, "fn": 0, "fp": 0, "tn": 116, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "hash": {"coverage": "scored", "tp": 89, "fn": 40, "fp": 0, "tn": 107, "recall": 0.690, "fpr": 0.000, "precision": 1.000, "youden_j": 0.690},
+        "ldapi": {"coverage": "scored", "tp": 26, "fn": 1, "fp": 28, "tn": 4, "recall": 0.963, "fpr": 0.875, "precision": 0.481, "youden_j": 0.088},
+        "pathtraver": {"coverage": "scored", "tp": 120, "fn": 13, "fp": 106, "tn": 29, "recall": 0.902, "fpr": 0.785, "precision": 0.531, "youden_j": 0.117},
+        "securecookie": {"coverage": "none"},
+        "sqli": {"coverage": "scored", "tp": 253, "fn": 19, "fp": 170, "tn": 62, "recall": 0.930, "fpr": 0.733, "precision": 0.598, "youden_j": 0.197},
+        "trustbound": {"coverage": "none"},
+        "weakrand": {"coverage": "scored", "tp": 218, "fn": 0, "fp": 0, "tn": 275, "recall": 1.000, "fpr": 0.000, "precision": 1.000, "youden_j": 1.000},
+        "xpathi": {"coverage": "none"},
+        "xss": {"coverage": "scored", "tp": 202, "fn": 44, "fp": 108, "tn": 101, "recall": 0.821, "fpr": 0.517, "precision": 0.652, "youden_j": 0.304}
+      }
+    }
+  }
+}

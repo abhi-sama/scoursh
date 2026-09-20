@@ -1,0 +1,16 @@
+{
+    "Owner": {
+        "DisplayName": "scoursh-fixture-owner",
+        "ID": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "Grants": [
+        {
+            "Grantee": {
+                "DisplayName": "scoursh-fixture-owner",
+                "ID": "1111111111111111111111111111111111111111111111111111111111111111",
+                "Type": "CanonicalUser"
+            },
+            "Permission": "FULL_CONTROL"
+        }
+    ]
+}

@@ -1,0 +1,7 @@
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"resources/Dockerfile","line":1,"cwe":"250","severity":"high","rule_id":"IAC-DOCKER-ROOT_USER-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"resources/Dockerfile","line":1,"cwe":"829","severity":"low","rule_id":"IAC-DOCKER-UNPINNED_DIGEST-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"kms.tf","line":1,"cwe":"320","severity":"medium","rule_id":"IAC-TF-KEY_ROTATION_DISABLED-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"db-app.tf","line":150,"cwe":"284","severity":"high","rule_id":"IAC-TF-OPEN_CIDR-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"neptune.tf","line":28,"cwe":"284","severity":"critical","rule_id":"IAC-TF-RDS_PUBLIC-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"db-app.tf","line":22,"cwe":"284","severity":"critical","rule_id":"IAC-TF-RDS_PUBLIC-01"}
+{"tool":"scoursh-iac","version":"0.1.0-dev+0be15e965f28","corpus":"terragoat","file":"ec2.tf","line":37,"cwe":"311","severity":"high","rule_id":"IAC-TF-UNENCRYPTED-01"}

@@ -1,0 +1,40 @@
+Starting filesystem walk for root: /
+Scanned <SCAN_ROOT>/go-gorilla-websocket-patched/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/go-gorilla-websocket-vuln/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/go-hashicorp-vault-patched/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/go-hashicorp-vault-vuln/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/go-x-text-patched/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/go-x-text-vuln/go.mod file and found 2 packages
+Scanned <SCAN_ROOT>/npm-axios-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-axios-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-follow-redirects-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-follow-redirects-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-lodash-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-lodash-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-minimist-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-minimist-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-node-fetch-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-node-fetch-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-y18n-patched/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/npm-y18n-vuln/package-lock.json file and found 1 package
+Scanned <SCAN_ROOT>/pypi-django-patched/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-django-vuln/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-jinja2-patched/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-jinja2-vuln/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-pyyaml-patched/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-pyyaml-vuln/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-urllib3-patched/requirements.txt file and found 1 package
+Scanned <SCAN_ROOT>/pypi-urllib3-vuln/requirements.txt file and found 1 package
+End status: 0 dirs visited, 26 inodes visited, 26 Extract calls, 1.002792ms elapsed, 1.003ms wall time
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-gorilla-websocket-patched/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-hashicorp-vault-vuln/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-hashicorp-vault-patched/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-x-text-vuln/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-gorilla-websocket-vuln/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)
+Failed to run code analysis (govulncheck) on '<SCAN_ROOT>/go-x-text-patched/go.mod' because govulncheck: no packages matched the provided patterns
+(the Go toolchain is required)

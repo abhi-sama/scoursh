@@ -8,11 +8,27 @@
 # literal bytes (docs/FOUNDATION.md tension 26).
 #
 # THE NETWORK KEYS BELOW ARE CLAMPED FOR A RUNNING-ENDPOINT (DAST) SCAN.
-# `requests-per-second`, `jobs`, `request-budget`, `circuit-breaker-failures`
-# and `circuit-breaker-window` are resolved as usual and then held to a
-# conservative module limit inside lib/http.sh, at the same chokepoint the
-# scope gate lives at, because the host this tool is pointed at is one it
-# cannot vet (docs/STEP5-DAST-PLAN.md, "Safety defaults and authorisation").
+# `requests-per-second`, `jobs`, `request-budget`, `circuit-breaker-failures`,
+# `circuit-breaker-5xx-failures` and `circuit-breaker-window` are resolved as
+# usual and then held to a conservative module limit inside lib/http.sh, at
+# the same chokepoint the scope gate lives at, because the host this tool is
+# pointed at is one it cannot vet (docs/STEP5-DAST-PLAN.md, "Safety defaults
+# and authorisation").
+#
+# `circuit-breaker-failures` and `circuit-breaker-5xx-failures` are TWO
+# SEPARATE counters over the same rolling window, not one: a transport-level
+# failure (no usable response at all - connection refused, timeout, reset)
+# counts toward the first, at a conservative default of 10, because that is
+# the strongest evidence a target has genuinely stopped answering. A
+# well-formed 5xx response counts toward the second, at a much higher default
+# of 200 (measured, not guessed - see lib/http.sh's own reasoning), because
+# the target IS answering - an application that returns a 5xx
+# for an unmatched path, a wrong method, or an unauthenticated route is a
+# routine quirk, not outage evidence, and scoursh's own content-discovery and
+# method-enumeration checks probe exactly those shapes. Either counter
+# reaching its own threshold still opens the same breaker and stops the run -
+# a target that is comprehensively broken (5xx on everything) still trips the
+# second one, just with more evidence required than a genuine outage needs.
 # The effective DAST values are 4 requests/second, at most 4 requests in flight
 # at once, and a per-run budget of 5000, so the `request-budget: 20000` below
 # is the schema default for the run as a whole and is NOT what a DAST scan will
@@ -61,6 +77,17 @@
 # raises nothing by itself - it is a key that makes the higher settings
 # available, not a switch that selects one.
 #
+# `--guided` (the interactive questionnaire) and `--print-command` (print the
+# resolved command and exit) are CLI-only flags with no config/scanner.conf key
+# of their own, deliberately: guided mode only ever fills in flags that were
+# not already given, and every question it asks maps to one of the flags this
+# file's own keys already back (`requests-per-second`, `request-budget`,
+# `contact`, ...) or to a flag with no persisted equivalent at all
+# (`--i-own-target`, above).  There is nothing to set here that turns guided
+# mode on or off by default - see docs/USAGE.md, "Guided mode", for the full
+# flag-equivalence table, the five conditions that gate prompting, and the
+# exit code for every refusal path.
+#
 # `contact` is what a target owner who notices your traffic uses to reach you.
 # Every request carries `scoursh/<version> (+<contact>)`; with no contact set,
 # the request still identifies the tool but cannot identify you.  One printable
@@ -90,6 +117,7 @@ http-timeout: 20
 max-redirects: 5
 request-budget: 20000
 circuit-breaker-failures: 10
+circuit-breaker-5xx-failures: 200
 circuit-breaker-window: 60
 fail-on: none
 min-confidence: low
@@ -98,6 +126,12 @@ formats: json
 formats: sarif
 formats: html
 formats: md
+formats: agent
+# formats: audit is a sixth, opt-in value (never in the default list this
+# example ships): it writes report-audit.html alongside report.html, an
+# audit-grade per-category coverage report (ran / clean / not-covered, with
+# full not-covered detail). Uncomment the line below to always emit it.
+#formats: audit
 max-matches-per-file: 200
 evidence-max-bytes: 512
 state-retain-runs: 30

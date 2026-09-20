@@ -67,7 +67,11 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in modules/dast/passive/headers_engine.sh ->
 # lib/http.sh -> lib/config.sh + lib/findings.sh -> lib/records.sh ->
 # lib/core.sh, which bootstraps the scratch dir and the traps.
-# shellcheck source=modules/dast/ratelimit_engine.sh
+# -x back-edge cut (modules/dast/ratelimit_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/ratelimit_engine.sh"
 # This file's own scope pre-check now lives in modules/dast/engine.sh section
 # 3b (`dast_endpoint_keep` and friends) rather than a local copy of
@@ -143,6 +147,7 @@ id: scanner
 requests-per-second: $1
 request-budget: $2
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
   config_scanner_load "$W/scanner.conf"
 }
@@ -386,7 +391,7 @@ _cap_probe() {
     cd -- "$1"
     # shellcheck source=/dev/null
     source modules/dast/ratelimit_engine.sh
-    printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\n" "$2" >"$3"
+    printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\ncircuit-breaker-5xx-failures: 100000\n" "$2" >"$3"
     config_scanner_load "$3"
     rate_burst_size || true
     printf "%s\n" "$_RATE_BURST_N"

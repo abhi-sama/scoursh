@@ -1211,8 +1211,8 @@ A finding produced by a check whose whole purpose is finding a credential now ne
 credential as evidence, whatever `redaction.rules` contains: `finding_set_secret_match`
 (`lib/findings.sh`) is the setter such an emitter calls, and `_finding_secret_backstop`, called from
 `finding_emit` - the one point every finding passes through on its way to a shard - re-checks it, so
-the guarantee covers every format downstream of the merge including a SARIF emitter that does not
-exist yet.
+the guarantee covers every format downstream of the merge including the SARIF emitter (`report_sarif`,
+`lib/report.sh`).
 This is *provenance*, and it needs no list of shapes: a secrets check landing tomorrow is covered on
 the day it lands.
 
@@ -2224,6 +2224,41 @@ it honoured it".
 `incomplete_reason` (the unplanned ones), and `incomplete_reason` being non-empty is exactly the exit-5
 predicate.
 
+**A later amendment: `abort_reason` records WHY a `2`/`3`/`4` termination happened, in its own field.**
+Before it existed, a run that died mid-pipeline (`die()` in `lib/core.sh`, on any of codes `2`/`3`/`4`)
+left the terminal message as the only record of the reason - the run directory a combined `scan.sh all`
+had already written (by whichever module finished last before the abort) rendered every not-yet-run
+module's OWASP/CIS category as "did not run this scan - no reason recorded", even though the tool knew
+exactly why. `abort_reason` is deliberately **not** folded into `incomplete_reason`: this precedence
+table's whole point is that `incomplete_reason`'s emptiness is the exit-5 predicate, so writing a scope
+refusal into it would silently reclassify every exit-3 run as exit-5. `abort_reason` carries no exit-code
+meaning of its own - it is read-only for the report (the Limitations section and the OWASP/CIS `not_run`
+bucket), which renders it in place of "no reason recorded" when one was captured, and keeps that same
+honest fallback text when nothing was. `die()` writes it for exactly its 2/3/4 codes and never for 5 (nor
+does `core_on_signal`'s SIGTERM path, which is a different unplanned-incompleteness route entirely), so
+the exit-code precedence table above is completely unchanged by this addition.
+
+**A further amendment: the OWASP/CIS `not_run` bucket described above is no longer how a full
+pre-dispatch abort renders at all.** The per-category walk that bucket depends on
+(`_report_owasp_state`/`_report_cis_state`, `lib/report.sh`) parses the tool's whole on-disk check
+catalog, which cost ~24s to render three times over on a run that dispatched zero checks - `#286`/`#287`
+fixed the redundant re-parsing, and `#287` additionally observed that the walk itself is pointless work
+whenever `meta/checks_run` is empty: every category's answer to "did any of its checks run" is trivially
+no without walking a single `*.rules` file to find out. So the `not_run`-bucket rendering this paragraph
+describes ("did not run this scan: `<abort_reason>`", per category) still applies exactly as written,
+but only when **some** module ran before the abort (`meta/checks_run` non-empty) - a `scan.sh all`
+where sast/sca/iac complete and dast then aborts still gets the full per-category table, correctly
+showing the completed categories assessed and the rest not-run with the recorded reason. A run that
+never dispatched a single check (`meta/checks_run` empty - the ordinary shape of an exit-`2`/`3`/`4`
+scope/usage/input refusal, since those fire before any module starts) skips the walk entirely and
+renders one honest, run-wide statement instead - "This scan aborted before any category could be
+assessed: `<abort_reason>`", or "No checks ran this scan, so no category could be assessed; no reason
+was recorded" when `abort_reason` itself is empty (a filter chain that selected nothing) - never a
+per-category table computed from arrays that were never populated. `agent-fix.json` gained the same
+distinction for the identical reason once `#288` made `report_agent` reachable from `die()`: a consumer
+tells the three cases apart from `run.checks_run`/`run.abort_reason`/`run.incomplete_reason` alone (see
+`docs/AGENT-FORMAT.md` §4a).
+
 Without this split, exit 5 swallows the product.
 Tension 12 emits `unknown` for every prior finding of any uncovered check, so on any repository with
 prior state and a non-empty backlog, `scan.sh sast` and `--profile-scan quick` would *always* exit 5 and
@@ -2279,7 +2314,7 @@ Three edge cases are decided rather than left open, all three **fail closed**:
 | `sca` | the same readable `--path`, **and a readable `data/advisories.db`** - see the paragraph below |
 | `dast` | `config/scope.conf` with a matching `--target`; `config/auth.conf` additionally when `--authed` |
 | `cloud --live` | resolvable AWS credentials; `config/scope.conf` is not required, since AWS endpoints are allowed by §2 independently |
-| `posture` | `config/posture.conf` |
+| `cloud` (posture phase) | `config/posture.conf`, else the posture phase is a declared skip |
 | `all` | whatever each selected module requires; a module whose inputs are absent is **skipped with a `run.json` reason**, not an error, which is what §5's "run every module for which inputs are configured" already says |
 
 A missing `scope.conf` is exit `4` only for `dast`.
@@ -2662,6 +2697,68 @@ Two tests matter: a concurrency test runs 16 workers against a local mock and as
 request rate does not exceed `requests_per_second`, and a breaker test asserts all workers stop within
 one request of the breaker opening.
 
+**Second amendment: the breaker's single failure counter is now TWO (the breaker-5xx-semantics fix).**
+This section's own "Why it bites" paragraph gives the breaker's founding scenario as "each worker sees
+only its own share of the 5xx responses ... a target that is comprehensively down", and
+`docs/STEP5-DAST-PLAN.md`'s "What may be relaxed" table restates the same argument for why disabling it
+is never offered: "a target returning sustained 5xx produces no useful findings, so continuing to
+hammer it buys nothing".
+Both are still true, and neither is what a real run measured.
+Instrumenting `lib/http.sh`'s two failure paths on a run against an ordinary, healthy application (an
+OWASP Juice Shop instance) showed 11 of 11 counted failures were HTTP 500 STATUS RESPONSES and ZERO
+were transport-level - the run aborted during content-discovery, before any injection phase ever ran,
+because a handful of backup-suffix and malformed-method probes against real `/rest/*` routes provoke a
+500 on that application (an ordinary Express routing quirk, not an outage), and the single counter this
+section specified counted every one of them the same way it would count a target that had genuinely
+stopped answering.
+The breaker-open message itself, added by a prior fix, already said the quiet part: "an application
+that returns a 5xx ... is a routine target quirk, not evidence of an outage" - which was true of the
+message and false of what the counter it was attached to actually did.
+
+Three options were weighed, and the middle one was chosen.
+**Exclude every 5xx from the breaker entirely** was rejected: it is the exact regression this section's
+"Why it bites" scenario warns against, since a target that genuinely 5xxs on EVERYTHING - not a handful
+of edge-case routes, but comprehensively - would then never trip the breaker at all, and the register
+would have lost a real detector to fix a false positive.
+**Exempt only the content-discovery/method-enumeration phases** was rejected too: it would require
+threading which PHASE is calling into this general-purpose chokepoint, which every other caller
+(`crawl.sh`, `auth.sh`, every future module) would then have to remember NOT to do - the identical
+"a control each caller must remember is not a control" argument tension 19 already makes for this same
+file - and it would let a target that is completely 5xx-dead specifically DURING discovery grind
+through its entire (up to 600-request) candidate set for nothing, defeating the breaker's efficiency
+purpose in precisely the phase with the largest request volume.
+**Count a 5xx toward a SEPARATE, much higher threshold** is what shipped: `circuit-breaker-failures`
+(default 10/60s, unchanged) now counts only transport-level failures (no usable response at all -
+connection refused, timeout, reset, or a malformed status line, the strongest and fastest evidence of an
+outage); a new §9.6.1 key, `circuit-breaker-5xx-failures` (default 200/60s), counts a well-formed 5xx
+response, individually weaker evidence since the target IS answering.  Either counter reaching its own
+threshold still opens the same breaker and stops the run, so "a target returning sustained 5xx produces
+no useful findings" is still caught - it now takes two hundred data points instead of ten, which is the
+point: enough to distinguish "this target 5xxs on a handful of backup-suffix and malformed-method
+probes" from "this target has stopped answering", without an operator having to guess a number "in the
+thousands" by hand, which is what the pre-fix single counter's own escape hatch amounted to in practice.
+**200 is a measured number, bounded on both sides, not a guess and not "raise it until it works."**
+Re-deriving discovery's own backup-suffix candidate set (an endpoint path plus one of nine suffixes)
+against a real, ordinary local target and requesting each one directly found 180 of 369 - 49% - answer
+500, because a suffix appended to a nested REST path trips an unrelated framework routing quirk; the
+pre-fix default of 10, and the 50 this project's own operator tried by hand, both undershoot that by an
+order of magnitude, and 100 was measured insufficient end to end too (it still aborted the operator's
+exact command during discovery). The upper bound is structural: at the default 4 requests/second and the
+frozen 60-second window floor (`_HTTP_BREAKER_WINDOW_MAX`/the ceiling table above), at most ~240
+requests of any kind can ever land inside one rolling window on an unaffirmed run, so a default at or
+above that ceiling would make the 5xx counter unable to open AT ALL under default settings - the
+identical "reaches never-trips by a different route" failure mode the window's own floor already exists
+to refuse, just approached from the threshold side instead of the window side. 200 leaves real margin
+under ~240 and real margin over the 180 measured, and it is verified end to end: the operator's own
+original command (`scan.sh dast --target NAME --intensity active --allow-intrusive --i-own-target NAME`,
+no manual override of either breaker flag) now completes against that same real target, discovery
+through every injection family, at the shipped default.
+See `lib/http.sh`'s `_http_breaker_record_failure` for the mechanism (one rolling-window state file per
+class per bucket, sharing the mutex and the window) and `docs/USAGE.md`'s "Conservative DAST limits and
+`--i-own-target`" for the operator-facing account.
+The new key is additive and optional (`rules/RULE-FORMAT.md` §14 item 2 only, no `format_version`
+bump), the same shape as `contact`/`tls-expiry-warn-days`/`recommended-header` before it.
+
 ## Tension 17 - concurrent writes to `findings.jsonl`
 
 **The tension.**
@@ -2728,6 +2825,57 @@ byte-reproducible.
 
 "Incrementally" is preserved in the sense §10 actually needs: findings are durable on disk as they are
 produced, so an interrupted run loses nothing and a resumed run (tension 18) reads the prior shards.
+
+> **AMENDMENT, from the ticket that made `--jobs N` real for `sast`/`sca`/`iac` (`lib/parallel.sh`).**
+> Two things were learned by actually fanning out, and both are recorded here rather than left to
+> diverge quietly in code.
+>
+> **The fan-out is forked subshells (`( ) &`), not `xargs -P`.**  Nothing in this RESOLUTION depends on
+> which of the two it is - the shard is owned exclusively either way, and the worker id is still
+> `$BASHPID` plus the work-unit index - and the choice is made on cost: a subshell inherits the already
+> loaded rule registry, check index and parsed config, so a worker costs one `fork`, where an
+> `xargs -P` worker is a fresh process that must re-bootstrap `scan.sh` before it can scan a single
+> file.  For a walk whose whole purpose is to be faster, most of the speed-up would have gone on
+> start-up.  Two consequences are worth stating because each is easy to get backwards: bash does not run
+> a trapped `EXIT` action in a subshell (measured, and re-measured for this change), which is what stops
+> a worker firing `core_cleanup` and erasing the shared scratch directory - and note that the guard
+> which protects an `xargs -P` worker is a DIFFERENT one, since `$$` stays the parent's pid inside a
+> subshell and `SCOURSH_SCRATCH_OWNER` is inherited, so `scratch_is_owned_here` would answer *true*
+> there; and the `ERR` trap and `set -Eeuo pipefail` ARE inherited, which is what makes a failed worker
+> visible to the parent's `wait` at all.  Concurrency is bounded by forking exactly the resolved worker
+> count and waiting for all of them, because `wait -n` is bash 4.3 and tension 24 freezes the minimum at
+> 4.2.
+>
+> **`meta/` needed the same treatment as `shards/`, and this RESOLUTION did not anticipate it.**  The
+> argument above is about `findings.jsonl`, and `run_record` looked safe by the same reasoning that
+> makes it safe: each fact is its own file and each append is a single short line, well below
+> `PIPE_BUF`.  That makes an append ATOMIC - no line is ever torn - and says nothing about the ORDER
+> lines arrive in, which is the *second, quieter problem* named above rather than the first.
+> `lib/report.sh` renders `coverage_reduction`, `coverage_gap`, `notes` and `incomplete_reason` in FILE
+> order (`_meta_array`, as against the sorted `_meta_array_unique`), so N workers appending concurrently
+> is enough on its own to make `run.json` stop being byte-reproducible across two identical scans.
+> `run_record` therefore honours a `SCOURSH_META_DIR` override, each worker is pointed at a private
+> directory, and the parent folds them back in worker order once every worker has exited.  That fold
+> reproduces the single-worker sequence only because the partition is CONTIGUOUS BLOCKS of the
+> already-sorted unit list rather than round-robin - block partitioning makes the property true by
+> construction, for every key, with no per-line ordinal to sort on afterwards, at the accepted cost of
+> load imbalance when unit sizes are skewed.
+>
+> **A worker that dies is tension 14's exit 5, not a silent partial scan.**  The module records an
+> `incomplete_reason` naming `parallel_worker_failed`, sets `scan_main`'s `incomplete` local, and
+> records NO coverage for the cell, because a cell a worker abandoned would let the next run infer
+> everything this one never reached as `fixed` (tension 12).  The report is still written.
+>
+> **That failure is signalled through a GLOBAL and not through an exit status, and the obvious
+> alternative is a measured bug.**  `parallel_map`, `_sast_walk_parallel` and the tree walks all return
+> 0 unconditionally and set `PARALLEL_FAILED` / `SCOURSH_WALK_FAILED` instead.  Returning non-zero would
+> force every caller to write `walk ... || rc=1`, and bash SUSPENDS `set -e` for the entire call tree of
+> a command whose status is being tested - so on the single-worker path, where the whole walk runs in
+> the caller's own shell, the shape that reads as careful error handling switches `set -Eeuo pipefail`
+> off for every per-file scan under it.  Measured on this codebase: under `outer || rc=1`, a bare
+> `false` inside a function `outer` calls does not abort and execution continues past it.  Keeping the
+> `--jobs 1` path exactly as strict as it was before any of this landed is the point, and this is what
+> buys it.
 What is deferred to the merge is only the *ordering*, not the *persistence*.
 That claim is now true rather than contradicted two paragraphs earlier, which is what finding F12 was.
 
@@ -2934,8 +3082,22 @@ open-redirect check.
 
 **No bypass.**
 There is no raw-URL flag.
-`--target` names a `scope.conf` id and nothing else, and every request in every module goes through
-`http_request`.
+`--target` names a `scope.conf` id, or a value `scan.sh` resolves against a declared target's own
+`base-url`/`extra-host` when it is shaped like a URL or `host:port` (`config_scope_resolve_target`,
+landed after this tension was first written) - on exactly one match it substitutes that target's id and
+prints which one it chose, and it refuses rather than guesses when a value matches none or more than
+one. Either way the value still has to resolve to something the operator already declared; there is no
+value that reaches `http_request` without having matched a `config/scope.conf` entry first. Every
+request in every module goes through `http_request`.
+At an interactive terminal, an unresolvable URL/host:port-shaped `--target` is additionally *offered* an
+authorisation screen that writes an ordinary `config/scope.conf` record for that exact host
+(`scan.sh` section 6b, `_scan_pf_offer_authorize_target`, over `lib/guide_scope.sh`'s existing
+validate-then-rename writer) - this is not a bypass either: the offer requires `guide_may_prompt true`
+(so it never fires in a pipeline, CI, or with `SCOURSH_NO_PROMPT` set), there is no `--yes`/`--authorize`/
+`--force` flag that reaches it, and a write is only accepted once re-resolving the run's own `--target`
+value against the new file succeeds - so only the host the operator actually named can authorise the
+run that is asking. Declining, or running non-interactively, leaves the refusal byte-identical to before:
+exit `3`, no file written.
 A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outside `lib/http.sh` and
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
@@ -3295,13 +3457,154 @@ unprivileged user):
   `p<pid>` line followed by that process's own `n<local>-><peer>` lines, so a command name containing a
   space cannot shift a column.
 
-**What macOS still does NOT get, stated plainly so no reader infers parity.**
-`tools/run-in-netns.sh` - the guarantee this tension names, and the only mechanism here that makes an
-out-of-scope connection impossible rather than merely observable - is built on Linux network
-namespaces and **has no macOS equivalent**.
-Nothing in this extension provides one.
-So on Linux the two tiers are "detector, plus a guarantee available separately"; on macOS there is the
-detector and nothing behind it.
+**What macOS still does NOT get, AS OF THIS EXTENSION - amended below, deliberately, the same way
+`lsof` was added to the backend roster rather than left to drift.**
+The paragraph used to end here: *"`tools/run-in-netns.sh` ... is built on Linux network namespaces and
+has no macOS equivalent. Nothing in this extension provides one. So on Linux the two tiers are
+'detector, plus a guarantee available separately'; on macOS there is the detector and nothing behind
+it."*
+That is no longer accurate, and is corrected in place rather than left to contradict
+`tools/run-sandboxed.sh`'s own header comment.
+
+**Tier A: `tools/run-sandboxed.sh` - a kernel-enforced macOS guarantee, narrower than the netns one on
+purpose.**
+Apple's Seatbelt sandbox (`sandbox-exec`, `man 7 sandbox`) refuses a network syscall at the kernel
+boundary, inherited by every descendant process - proven by measurement (`man sandbox-exec`'s own
+DEPRECATED notice is nine years old and the facility is still fully functional; Apple's own system
+daemons depend on it).
+Its address filter accepts only `*` or `localhost` as the host part of a `(remote ip "...")` clause, so
+unlike the netns route table it **cannot** express "only the authorised scope target is reachable" -
+it can restrict ports, never which remote host.
+What it can express, and what Tier A ships, is a strictly narrower but still genuine guarantee: **no
+network access of any kind**, which is exactly the claim §1 already makes for `sast`/`sca`/`iac` (those
+three modules make zero network calls by design) - Tier A makes that claim kernel-enforced rather than
+merely asserted, for exactly those three modules, and is not proposed as a scope-restricted substitute
+for `dast`/`cloud`/`network`, which need real, target-specific network access to function at all.
+The captain's decision this tier is built on: `sandbox-exec`'s deprecation is **accepted** as
+load-bearing, WITH fail-loud-on-absence - `tools/run-sandboxed.sh` refuses (exit `4`) and never runs
+`<command>` unsandboxed, on a non-Darwin host, on `sandbox-exec` being absent, or on the profile being
+rejected; there is no degraded mode, and the profile is pre-validated against a known-good probe command
+before `<command>` is ever touched, so a `sandbox-exec` failure never leaks its own out-of-contract exit
+code (65/71, `man sandbox-exec`'s sysexits range) past this tool's own 0-5 contract.
+It needs no root and no capability, unlike the netns tool - that is its whole advantage - and it has no
+teardown surface at all (no namespace, no veth, no host state of any kind survives the process).
+See `tools/run-sandboxed.sh`'s own header and `docs/USAGE.md` for the full contract.
+
+**Tier C: full netns parity on macOS today, at zero code - a Linux container.**
+`tools/run-in-netns.sh` runs **unmodified** inside a Linux container on a macOS host, given an image
+carrying `iproute2`/`iptables`/`ip6tables`: Docker Desktop grants `CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and
+network-namespace creation to an unprivileged container, measured working directly (§3.6 of the
+macOS-paranoid research that drove this extension).
+This is the SAME guarantee the Linux tier already provides - the container's kernel enforces the route
+table, not this project's own code - not a weaker approximation of it.
+This project's own GNU userland test image (`tools/daily-suite/gnu.dockerfile`, tagged
+`scoursh-daily-gnu:<dockerfile-digest>` by `tools/daily-suite.sh`) does not currently install those three
+packages, so it cannot run `tools/run-in-netns.sh` as shipped today - that is an IMAGE-BUILD detail
+particular to that one Dockerfile's own package list (built for the GNU-vs-BSD userland comparison
+tension 24 checks, which needs none of the three), not a platform limitation of Tier C itself, and is
+tracked as its own follow-up rather than conflated with this tension's own scope.
+
+**Tier B: `tools/run-sandboxed.sh --scope-conf` - a THIRD, DISTINCT LABEL, and neither of this
+tension's two existing words.**
+This paragraph used to say a native macOS mechanism for "only the authorised target, nothing else"
+remained unbuilt and was tracked as its own ticket.
+It is now built, and the register records what it is rather than rounding it to the nearer of
+"guarantee" and "detector" - the same deliberate-extension discipline `lsof` was added to the backend
+roster under.
+The mechanism: `--scope-conf PATH` resolves that scope through `lib/http.sh`'s own
+`http_scope_load`/`http_resolve_host` (the SAME two functions `tools/run-in-netns.sh`'s
+`_netns_collect_target_ips` calls, never a second resolver), starts one loopback forwarder per
+authorised `(address, port)` OUTSIDE the sandbox with its destination fixed at process start, and
+emits a Seatbelt profile admitting exactly those relay ports; `lib/http.sh` section 7a then redirects
+each request into them by swapping its `--resolve` pin for `--connect-to`, which keeps SNI, the `Host`
+header and certificate validation intact (measured against a local TLS fixture through a real relay
+inside a real profile: `ssl_verify=0`, and the fixture saw its own hostname).
+
+**The label is "containment guarantee, target restriction by relay", and the split is who enforces
+which half:**
+
+- **The KERNEL guarantees that off-host egress is categorically impossible.**
+  Every process in the tree - every `xargs -P` worker included, since `man 7 sandbox` makes the sandbox
+  inherited - can open only the relay ports, and only to an address of this host.
+  That is not sampled, and it is not this project's code.
+- **scoursh's OWN RELAY, not the kernel, guarantees that the bytes on those ports go to the authorised
+  target.**
+  The relay is a few lines with a hardcoded-at-start destination and no path that reads a destination
+  from the wire, so it is auditable - but it is this project's code.
+  Under `tools/run-in-netns.sh` the kernel route table enforces BOTH halves; that difference is real,
+  and calling this a "guarantee" outright would be exactly the quiet inflation the `lsof` extension
+  above refuses.
+  It is equally not a "detector": nothing here samples, and nothing here can miss a connection that
+  opens and closes between two polls.
+
+**What `localhost:PORT` actually admits, MEASURED - and why the obvious test does not discriminate.**
+Seatbelt's filter is neither port-only nor 127.0.0.1-only: it admits any address belonging to THIS
+HOST on the named port.
+Measured on macOS 26.6.2 against a listener bound to `0.0.0.0`, with a profile allowing one port P:
+a sandboxed connect to `127.0.0.1:P` connects, to this host's own LAN address on `P` connects, to
+`192.0.2.1:P` (RFC 5737 TEST-NET-1, genuinely off-host) is `Operation not permitted`, and to any other
+port on any address is `Operation not permitted`.
+The research that drove this extension reported the LAN-address row as a denial; it was not one - that
+probe used an address of the measuring host, and the `Connection refused` it saw came from nothing
+listening there rather than from Seatbelt.
+The only probe that separates "restricts the host" from "restricts only the port" is one against a
+genuinely off-host address, where a denial is instant and a permit is a timeout, and
+`tests/suites/run-sandboxed.sh` section G4 uses that one with a positive control beside it.
+The consequence to state rather than discover: a different service already listening on the same port
+number on another of this host's own interfaces would also be reachable from inside.
+Relay ports are ephemeral and the relay binds `127.0.0.1` only, so nothing else holds them - but the
+claim is "cannot leave this host", not "cannot reach any other socket on this host", and those are
+different sentences.
+
+**A third property, stated because an adversarial reading finds it: the relay is unauthenticated on
+loopback.**
+Any process on the host that can reach `127.0.0.1` can connect to a live relay and so reach the
+authorised target through it, for as long as the run lasts.
+Its destination is fixed, so it is a path to a target the operator already authorised and to nothing
+else; its port is ephemeral and unpublished; and it exists only between the first precondition passing
+and the `EXIT` trap firing.
+What it is not suitable for is a multi-user host where reaching the target at all is meant to be a
+privilege.
+The netns tier has no equivalent exposure - its enforcement is a route table, not a listener - and that
+is a second real difference behind Tier B's label, alongside who enforces the target restriction.
+
+**Two stated gaps, neither of them silent.**
+An `allow-subdomains: true` scope row and an IPv6 scope host cannot be enumerated into relays ahead of
+time (the relay is IPv4-only, and a subdomain is by definition not known until the gate sees it), so
+the wrapper WARNS at build time and `lib/http.sh` refuses such a request with exit `3` naming the
+reason.
+That refusal is fail-CLOSED in both readings - a direct connection would be kernel-refused anyway - so
+the choice is purely about honesty: returned as a transport failure it would be recorded against the
+circuit breaker and read to an operator as "the target did not answer", which is a control that did not
+run wearing the appearance of a clean result.
+Separately, the raw TLS handshake `modules/dast/passive/tls.sh` opens under tension 19's transport
+exception is NOT redirected: that socket is opened by the module itself, goes off-host, and is
+therefore kernel-refused inside the sandbox.
+It fails closed, which is the safe direction, and closing it properly means teaching that module the
+same redirection - a change to a second file, tracked rather than made silently.
+
+**Guarantee mode is OFF by default and the default egress path is byte-for-byte unchanged.**
+Nothing in section 7a runs unless `SCOURSH_HTTP_RELAY_MAP` is non-empty, which only
+`tools/run-sandboxed.sh --scope-conf` sets; an ordinary scan reaches the same `--resolve` pin, as the
+same two argv words in the same position, and `tests/suites/http.sh` asserts that on curl's REAL argv
+rather than on a branch being unreached - a claim that a branch was skipped is equally satisfied by a
+branch that ran and did nothing.
+One implementation fact is worth recording because it is invisible and shipped once already: a `die`
+inside the transport CANNOT terminate the run.
+`http_request` invokes the transport as `out=$(...)`, so the transport is a SUBSHELL and `die`'s
+`exit 3` arrives as a non-zero transport status, is charged to the circuit breaker, and is returned as
+`1` - the exact failure shape the refusal exists to prevent.
+The fatal decision therefore lives in `http_request`, beside the address pin, in the parent process;
+the transport shares the same lookup function so the two cannot disagree.
+
+So the accurate statement, replacing the retired one above, is: **on macOS, `sast`/`sca`/`iac` get a
+genuine, kernel-enforced, zero-network guarantee natively (Tier A); `dast`/`cloud`/`network` get a
+native containment guarantee - off-host egress kernel-impossible - with target restriction supplied by
+scoursh's own relay rather than by the kernel (Tier B); and full parity with the Linux netns guarantee,
+kernel-enforced on both halves, remains available via a Linux container (Tier C).**
+`--paranoid`'s own detector-versus-guarantee framing is unchanged by any of this: it remains a sampler
+on every platform, and Tiers A, B and C are enforcement mechanisms that exist alongside it, exactly as
+`tools/run-in-netns.sh` already was on Linux before this extension.
 
 **Usability is MEASURED, with a positive control, not inferred from `command -v`.**
 `lsof` exits `1` both when it matched nothing and, on a restricted host, when it was not permitted to
@@ -3764,7 +4067,8 @@ table lookup with no logic to diverge.
 `data/advisories.db` is TSV, not the frozen record format, and this exemption is explicit: it is
 machine-generated, has millions of rows, and needs O(log n) lookup, none of which the block-record format
 is for (`rules/RULE-FORMAT.md` covers human-authored records only, tension 26).
-Its schema is frozen here:
+Its schema, as originally frozen here (**superseded for `summary` and for npm specifically - see the two
+AMENDMENTs below, which are the current, authoritative schema**):
 
 ```
 ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions \t summary
@@ -3829,6 +4133,101 @@ The expansion logic moves into `tools/vendor-engines.sh` at §13 step 9, and is 
 output is a build artifact with its own tests rather than a download.
 Tests cover normalisation per ecosystem, the exact-lookup path, and the unknown-version roll-up, all
 against a small committed fixture database.
+
+**AMENDMENT (npm semver-range matching).**
+A pre-implementation feasibility measurement checked the actual
+cost of this RESOLUTION rather than assuming it: the shipped importer's `versions[]`-only reading covers
+just **10%** of npm's OSV.dev export, so npm's real-CVE recall against `data/advisories.db` was measured
+at **3.6%** (263 of 7,317 representable GHSA advisories) - not because tension 25's underlying argument
+was wrong, but because the shipped importer never implemented the RESOLUTION's own "resolve every
+advisory's affected range against the ecosystem's actual published version list" clause for the 90% of
+npm advisories that arrive as a `ranges[]` interval rather than an enumerated `versions[]` list.
+That same measurement found that **95.2%** of that gap is npm malware advisories (`MAL-*`, `introduced: 0`,
+no fix - "every version of this package is malicious"), which need **no version algebra at all**, and
+that the remaining real-CVE-bearing slice needs exactly ONE version algebra: SemVer 2.0.0, which a 70-line
+bash comparator (`modules/sca/semver.sh`) reproduces with **0 mismatches over tens of thousands of real
+npm version pairs** against an independent reference (`tests/suites/sca-semver.sh`) - the same standard
+of evidence this tension's own §5a below requires before trusting a comparator at all.
+
+Captain-approved, and scoped deliberately narrower than "implement range matching": **npm gains a
+semver-interval lookup; pypi, maven, Go, RubyGems and composer keep the ORIGINAL exact-match RESOLUTION
+verbatim, unchanged.** This is not a partial rollout of a plan to widen later - it is the register's own
+finding, re-affirmed by measurement rather than merely re-stated: a second differential (§5a) found PyPI's
+own advisory data diverging from a semver reading at **1.66%**, and the disagreements are false
+NEGATIVES (semver says "not affected", PEP 440 says "affected") - precisely the permissive-direction
+failure this tension's own "Why it bites" paragraph calls disqualifying. Maven's qualifier ordering, Go's
+`+incompatible`/`/vN` handling and RubyGems'/Composer's own version grammars remain equally out of scope,
+for the identical reason. **"Implementing four correct version algebras in bash is a large amount of code
+whose bugs are invisible" is still the argument against a general `version_cmp` - it argues against
+exactly one of the five being wrong, and this amendment adds exactly one, having measured it correct.**
+
+`sca_lookup_range` (`modules/sca/engine.sh`), never `sca_lookup_exact`, is npm's only call site now.
+Its `data/advisories.db` row carries an INTERVAL instead of a single version:
+
+```
+npm \t package \t introduced \t bound \t bound_kind \t advisory_id \t severity \t fixed_versions
+```
+
+`bound_kind` is one of `exact | fixed | last | open`. `exact` is a byte-equality row - what every OTHER
+ecosystem's row already was, and what an OSV `versions[]` entry still becomes for npm, so no npm
+advisory that was representable before this amendment loses coverage. `fixed`/`last` come from an OSV
+`ranges[].events[]` interval (`[introduced, fixed)` half-open, `[introduced, last_affected]` closed -
+`last_affected` is inclusive because OSV defines it as itself affected, unlike `fixed`). `open` has no
+upper bound; an `open` row with `introduced` `0` or absent is the Tier A whole-package/malware case and
+matches unconditionally, with **no version algebra evaluated at all**. The prefix a lookup shares across
+every row for one package is `(ecosystem, package)`, not `(ecosystem, package, version)` - there is no
+longer one literal version to key on - so `sca_lookup_range` uses `lib/core.sh`'s new
+`db_lookup_prefix`, not `db_lookup_exact`: the latter's `grep -F -m 1` fallback is deliberately safe for
+an exact three-field prefix and would be a correctness bug here, silently returning one row of several
+that share a package. Every other ecosystem's row shape, `sca_lookup_exact`, and `db_lookup_exact`
+itself are BYTE-FOR-BYTE unchanged.
+
+A range MISS for npm is a genuine "not affected" verdict, not missing coverage - unlike the exact-match
+ecosystems, where an unmatched exact version means "the snapshot does not know that version" (the
+paragraph above). npm's own pinned-but-unmatched dependencies therefore no longer contribute to
+`SCA-COV-UNKNOWN_VERSION-01`'s roll-up; reporting a resolved range miss as "unknown" would be a false
+`coverage_reduction` on exactly the case this amendment exists to fix.
+
+**AMENDMENT (summary normalisation).**
+Also captain-approved, independent of the npm amendment and shippable alone: `summary` is no longer a
+field of any `data/advisories.db` (or `data/versions.db`) row. Measured before this change, on the real
+OSV.dev npm+PyPI corpus: `summary`, duplicated across every exact-version row for one advisory, was
+**73% of the file's bytes** (214 MB of 292 MB) - a cost with no bearing on matching, since the field is
+carried for display only and never compared. It now lives in an advisory-keyed side table,
+`data/advisory-summaries.db` (and its `data/versions.db`-namespace twin, `data/version-summaries.db`):
+
+```
+advisory_id \t summary
+```
+
+one row per advisory_id, `LC_ALL=C` sorted, looked up by the identical `db_lookup_exact` prefix
+primitive on `advisory_id\t`. `modules/sca/engine.sh`'s `sca_lookup_summary`/`_sca_summary_for` join it
+back onto a finding at emission time, for every emitter (`_sca_emit_finding`, its npm-range sibling
+`_sca_emit_finding_npm_range`, and the Python/Go engines' own mirrors) - a missing summary row degrades
+to a stated placeholder, never a fatal error, since prose is not load-bearing the way a match is. The
+main row shrinks to six fields for the five exact-match ecosystems (`ecosystem \t package \t version \t
+advisory_id \t severity \t fixed_versions`) and to the eight shown above for npm. Matching semantics -
+what row a lookup returns - are UNCHANGED for every ecosystem; only where the display-only summary text
+lives changed. Measured effect on the same corpus: **292 MB -> 59.5 MB** for the exact-match schema
+alone, and smaller still once the npm-range amendment above replaces npm's own expanded rows with
+intervals.
+
+**Both amendments together, consequence for the build.** Neither changes `rules/RULE-FORMAT.md`'s frozen
+record format (`data/advisories.db` was already, and remains, that format's stated TSV exemption,
+`§14`'s versioning contract governs human-authored `*.rules`/`config/*.conf` records, never this file)
+and neither needs a `format_version` bump or a `state/` migration: `data/advisories.db` is **absent by
+default and regenerated wholesale**, never incrementally migrated (the paragraph above, "Both databases
+are ABSENT by default"), so a schema change here is realised the same way any other `tools/vendor-engines.sh
+advisories` refresh already is - not a compatibility hazard between two on-disk versions of the same
+file. The SCA location profile (`ecosystem`, `package`, `advisory_id` - tension 5's own table) is
+untouched by either amendment, so no existing finding's fingerprint changes identity; a newly
+representable npm `(package, advisory)` pair mints a genuinely new fingerprint and correctly classifies
+`new` in the diff, exactly as tension 12's own table already specifies for a check that starts covering
+ground it previously could not reach.
+Tests: `tests/suites/sca-semver.sh` (the comparator, differential-tested against an independent Python
+SemVer 2.0.0 reference), and `tests/suites/sca.sh` / `tests/suites/vendor-engines-advisories.sh` (the
+npm-range lookup and importer end to end, the summary side table's round trip through the finding-decode
+path, and every non-npm ecosystem proven unaffected).
 
 ## Tension 26 - one record format for human-authored config
 
@@ -4582,11 +4981,13 @@ what the code disproves is the failure mode round 3 diagnosed:
   so an example takes the schema of the file it is an example of.  That is a loader rule rather than a
   format change, and the frozen document is untouched.
 
-**Still open, and inherited by §13 step 2 and beyond.**
-F5 and F20 are why `rules/derived.rules` is **not** seeded at step 1: `COMPOSITE-TOKEN-HIJACK`'s
-contributors do not exist until steps 5 and 6, so seeding it now is a guaranteed `E051` failure and a
-red CI on the first build task.  The derived MECHANISM is delivered and tested against a fixture
-composite under `tests/fixtures/rules/derived.rules`; only the shipped seed waits.
+**At step 1: deferred, and inherited by §13 step 2 and beyond.**
+F5 and F20 are why `rules/derived.rules` was **not** seeded at step 1: `COMPOSITE-TOKEN-HIJACK`'s
+contributors did not exist until steps 5 and 6, so seeding it then would have been a guaranteed `E051`
+failure and a red CI on the first build task. The derived MECHANISM was delivered and tested against a
+fixture composite under `tests/fixtures/rules/derived.rules`; only the shipped seed waited - see
+"Cheap corrections, safe to defer" below, where F5/F20 are now CLOSED, since both steps have since
+landed.
 
 
 ### Cheap corrections, safe to defer
@@ -4627,16 +5028,45 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   required, so "non-empty" selects the whole catalog), the closed vocabulary above already treats
   `compliance` as a legal tag, and `rules/RULE-FORMAT.md` §12's own worked examples (12.1, 12.5) already
   assume the tag reading.
-- **F5 and F20 [medium] - seeding the composite at §13 step 1 is a guaranteed lint failure**
-  (tension 6's "Consequence for the build" against `E051`, and `E060`).
-  Tension 6 instructs seeding `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist
-  until steps 5 and 6, and `E051` makes a dangling contributor id an error, so the first build task
-  ships a red CI.
-  `E060` is a second, independent failure for the same record, since a composite's fixture is a
-  synthetic findings set rather than a source fixture.
-  Direction: either defer the seed to step 6, or add a narrow, explicit forward-reference allowance that
-  downgrades `E051` and forces the check into `skipped_checks`, and state `E060`'s applicability to the
-  derived schema.
+- **F5 and F20 [medium] - CLOSED.**
+  Originally: "seeding the composite at §13 step 1 is a guaranteed lint failure" (tension 6's
+  "Consequence for the build" against `E051`, and `E060`) - tension 6 instructs seeding
+  `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist until steps 5 and 6, and
+  `E051` makes a dangling contributor id an error, so the first build task ships a red CI.
+  Closed by the direction this entry itself named first: the seed was deferred, not `E051` weakened.
+  `rules/derived.rules` now carries the real `COMPOSITE-TOKEN-HIJACK` record - `requires:
+  CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01`, `DAST-LEAK-JS_CONFIG-01`, `DAST-GQL-INTROSPECTION-01`,
+  `correlate-on: target` - now that all three landed (§13 steps 5 and 6); `tests/lint-rules.sh`'s
+  `E051`/`E052`/`E053` pass against it, and `E060`'s enforcement remains the tracked placeholder
+  `tests/lint-rules.sh` already states, unaffected by this record either way.
+  `tests/suites/state-diff.sh` proves the real chain against real contributor ids, not only the
+  fixture composite STATE-03/04/05 already exercised: it fires once all three requires contributors
+  correlate on the same `target` (the cloud contributor via §9.2.2's endpoint-host attribution, the
+  two DAST contributors via their own `loc_target`), does not fire across two different targets or
+  with one contributor missing, and classifies `fixed (chain broken)` only once every contributor's
+  own coverage cell - the cloud contributor's `account-region`, not a `target` cell, per
+  `_derived_contributor_scope` - was revisited this run.
+  See F21, immediately below, for a real gap this work surfaced in the cloud contributor's own script,
+  left open rather than fixed here.
+- **F21 [medium] - OPEN. `CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01` never sets `endpoint_hosts`, so its
+  finding can never attribute to a `target` in a real run, and `COMPOSITE-TOKEN-HIJACK`'s cloud
+  contributor can never correlate in practice.**
+  Discovered while seeding the composite (F5/F20, above): `rules/RULE-FORMAT.md` §9.2.2 names an
+  AppSync `uris` value as *the* worked example of the attribution mechanism a `target`-correlated
+  cloud contributor needs, and `docs/STEP6-CLOUD-PLAN.md`'s own CLOUD-23 row says explicitly to
+  "correlate with DAST's `passive/leakage.sh` and `graphql.sh` at the derived-finding layer" - but
+  `appsync_emit_finding` (`modules/cloud/aws/live/appsync_engine.sh`) never calls `finding_add
+  endpoint_hosts`, and no other cloud check does either (`grep -rn endpoint_hosts modules/` matches
+  only `lib/findings.sh` itself).
+  The consequence is narrow and specific: `COMPOSITE-TOKEN-HIJACK`'s three-way `requires` predicate is
+  correct and its DAST contributors correlate correctly today, but its cloud contributor can never
+  supply a `target` value against a REAL `list-api-keys` response, so the flagship composite is
+  reachable only in a test that hand-sets `endpoint_hosts` (as `tests/suites/state-diff.sh` now does)
+  and not in an actual `scan.sh cloud` + `scan.sh dast` run pair.
+  This is a gap in the already-landed CLOUD-23 ticket's script, not in the derived-finding mechanism
+  or in this seed, and fixing it means reading the `uris` field off the same `list-graphql-apis`
+  response `appsync.sh` already holds (`appsync_engine.sh`'s `appsync_doc_get`) and adding it to the
+  finding - left open here rather than folded into this change, which is data-only.
 - **F18 [medium] - CLOSED in §13 step 1**, as a consequence of F16's exit-code work rather than as a
   deferred edit.
   `die` validates its argument against the frozen 0-5 contract, so a `die 6` cannot exist; both
@@ -4688,9 +5118,9 @@ F18 closed with them by mechanism.
 dispatch) and `lib/checks.sh` (tension 15's filter chain and registry loader, plus the
 `_scan_apply_profile_filter` wiring into `scan.sh`) are both now built, closing out §13 step 2 except
 for real module execution, which waits on step 3+ as `scan.sh`'s own header says.
-F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20
-remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
-contributors do not exist until steps 5 and 6.
+F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20 have
+since closed too, once steps 5 and 6 supplied `COMPOSITE-TOKEN-HIJACK`'s three `requires` contributors -
+`rules/derived.rules` now seeds the real record (see the F5/F20 entry above).
 
 **§13 step 3 is complete: every rule pack `docs/DESIGN.md` §6.3's catalog names is now on disk and
 exercised.**
@@ -5066,13 +5496,14 @@ and every out-of-date finding carries the list's own generation stamp - because 
 false negatives, which is the failure mode that hides.
 Tier 4's DAST-14 (`active/sqli.sh`) and tier 5's DAST-26 (`jwt.sh`) also landed, out of tier order;
 `docs/STEP5-DAST-PLAN.md`'s per-ticket tables are the authority for what is in.
-`modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 (DAST) has since landed
-in full - see the generated status block below, and `ROADMAP.md`, for the current priority order among
-the steps still open.
-`lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
-6, so the chokepoint exists while `modules/cloud/aws/live/*.sh` and everything else step 6 names are
-still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
-The remaining follow-ups (F5 and F20) are inherited by steps 4 through 10 and are still open.
+**This paragraph is a snapshot from when only step 5 had landed; every step named below as unbuilt has
+since landed - see "Current position, headline" in `AGENTS.md` and `ROADMAP.md` for the current state.**
+`lib/awscli.sh` was a further out-of-sequence exception at that time: a credential-less pass had built it
+ahead of step 6, so the chokepoint existed while `modules/cloud/aws/live/*.sh` and everything else step 6
+names were still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md` for that history;
+`modules/cloud/` itself has since landed in full (30 of 30 AWS services).
+F5 and F20, named here as still open at the time, have also since closed, once step 6 supplied
+`COMPOSITE-TOKEN-HIJACK`'s third `requires` contributor (see that finding's own entry above).
 (F3, F4, F8, and F16 - including its `look` half - are closed above, and F17 closed out of order as
 part of that same credential-less pass.)
 
@@ -5289,6 +5720,41 @@ to offer; the 86400s maximum stays because it is arithmetic rather than safety -
 (step 6), persistent run state (step 7), and SARIF plus the compliance report (step 10).
 `docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for the per-ticket landing detail.
 
+**Step 10's first ticket, SARIF-01, has landed.** `lib/findings.sh` gained `_finding_default_logical`,
+called from `finding_emit` immediately before the fingerprint is computed: it populates
+`logical_kind`/`logical_fqn` from the profile's own `loc_*` fields wherever the emitter has not already
+set them - `path`/`history` get `kind=file`, `fqn=<loc_path>:<loc_line>`; `dast` gets `kind=endpoint`,
+`fqn=<loc_target>:<loc_method> <loc_path_template>#<loc_param_name>` (this tension's shape, verbatim);
+`cloud` gets `kind=resource`, `fqn=<loc_resource_key>`; `posture` gets `kind=control`,
+`fqn=<loc_control_id>`.  `sca` and `derived` are untouched, since `modules/sca/` and the composite path
+already set their own identity before `finding_emit` runs.  Neither field is a member of
+`_fp_components_for` for any profile, so no fingerprint moves; `tests/suites/findings.sh` proves it by
+recomputing `finding_fingerprint` after the default runs and asserting it against the value already
+written, for every profile, plus a single run emitting five profiles at once asserting none is left
+empty - the reading a per-module setter (rather than this one control point in `finding_emit`) fails
+under.  `docs/STEP10-SARIF-PLAN.md`'s own status section is the authority for the per-ticket landing
+detail; SARIF-02 (the generated location artifact writer) is now unblocked.
+
+**SARIF-02 through SARIF-06 have since landed too, completing Track A of step 10 in full, documentation
+included.**
+`report_locations` (SARIF-02) writes this tension's own generated location artifact,
+`reports/<run>/locations/<module>.txt`; `report_sarif` (SARIF-03) writes the full SARIF 2.1.0 document
+skeleton plus `tool.driver.rules[]` (a registry-backed or synthesised descriptor for every check id a
+finding can carry - SCA, adapter, and derived ids have no on-disk record, and are handled explicitly
+rather than left to collide); `runs[0].results[]` (SARIF-04) implements this tension's own
+logical-plus-physical-location requirement, `partialFingerprints`, and `suppressions[]` field-by-field;
+and SARIF-05 makes this tension's own strengthened validation requirement real - `report.sarif` is
+validated against the vendored OASIS SARIF 2.1.0 schema AND every result's `locations[0]`
+`.physicalLocation.artifactLocation.uri` is asserted, filesystem-backed, to resolve to a real path -
+closing the exact "a schema validator may accept [locations] real ingesters reject" gap this tension's
+own "Why it bites" section names, and fixing a pre-existing skip-as-pass defect in
+`tests/suites/report.sh`'s JSON well-formedness check along the way (`AGENTS.md`'s own SARIF-05 landing
+paragraph carries the full detail; `docs/STEP10-SARIF-PLAN.md`'s status table is the per-ticket
+authority).
+SARIF-06 then documented all of it for an operator - a new "SARIF output" section in `docs/USAGE.md` -
+and corrected every place in the tree that still said no SARIF writer exists, which turned out to be
+more than the three the plan named (`AGENTS.md`'s own SARIF-06 landing paragraph has the full list).
+
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is complete: both NETNS-01 and PARANOID-01 have
 shipped.**
 `docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
@@ -5308,17 +5774,28 @@ host, missing privilege, a plumbing step itself failing) goes through `lib/core.
 inside the 0-5 exit contract; the one exit path deliberately NOT forced through `die` is the wrapped
 command's own exit status, which is forwarded transparently rather than laundered. It is never invoked
 by `scan.sh` and carries no dependency on PARANOID-01 - confirming this RESOLUTION's own "guarantee vs
-detector" distinction holds in the shipped code, not just in this register's prose. IPv6 routing is
-out of scope for this tool per its own ticket; an in-scope host that only resolves to IPv6 is logged
-and skipped, never routed - a follow-up ticket for dual-stack support was filed separately rather than
-absorbed into NETNS-01.
+detector" distinction holds in the shipped code, not just in this register's prose.
+**IPv6/dual-stack routing support has since landed as its own follow-up ticket** (this paragraph used to
+name it as out of scope and separately filed, the same pointer ROADMAP.md's "Outside that ordering" list
+carried). The namespace's loopback and veth pair now get IPv6 addressing and routing unconditionally,
+alongside IPv4, on every run - not only when the currently-resolved scope happens to contain an IPv6
+address - because the guarantee is that nothing escapes the namespace in EITHER family. A new
+unconditional precondition, `_netns_require_ipv6` (mirroring the existing `ip`/`iptables` check), refuses
+loudly (exit 4, before any isolation action, `<command>` never runs) on a host lacking IPv6 kernel
+support or `ip6tables`, rather than silently building an IPv4-only namespace that looks like the full
+guarantee but is not. `AGENTS.md`'s "Step 8" section carries the full implementation and testing detail,
+including the pid-derived `fd00::/8` ULA point-to-point link, the family-tagged NAT-rule bookkeeping
+shared between `iptables`/`ip6tables`, and a latent test-harness bug (bash function shadowing making
+part of the real kernel-level gate/assertion vacuous on any host) found and fixed while landing it.
 `tests/suites/netns.sh` tests it, and states plainly what it can and cannot prove on a given host:
-argument parsing, the CapEff bitmask arithmetic, the collectors, and the build/teardown command
-sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the fail-closed
-non-Linux and no-privilege paths run as real subprocess invocations (whichever applies on the host the
-suite runs on); and the one claim that genuinely needs a privileged Linux kernel - an out-of-scope
-connection attempt actually failing - is a real end-to-end case gated behind a genuine capability probe,
-recorded as SKIPPED rather than a silent pass when that probe fails.
+argument parsing, the CapEff bitmask arithmetic, the collectors (each split into an IPv4 and an IPv6
+array), and the build/teardown command sequence are unit-tested against stubbed
+`ip`/`iptables`/`ip6tables`/`sysctl` on any host; the fail-closed non-Linux, no-privilege, and
+no-IPv6-support paths run as real subprocess invocations (whichever applies on the host the suite runs
+on); and the claims that genuinely need a privileged Linux kernel - an out-of-scope connection attempt
+actually failing, in both families, and an in-scope IPv6 target's route actually existing in the real
+namespace - are real end-to-end cases gated behind a genuine capability (now including `ip6tables` and
+real host IPv6 support) probe, recorded as SKIPPED rather than a silent pass when that probe fails.
 **PARANOID-01 has also landed** and is unaffected by NETNS-01 landing separately; the two were never
 interdependent. This planning ticket's own acceptance criteria named `lib/http.sh` (tension 19) as step
 8's blocker, and confirmed it present on `dev` before either sub-ticket started - it shipped early, out
@@ -5329,10 +5806,19 @@ works"), which NETNS-01 landing confirmed in practice as well as in plan.
 probe, the exit-3 abort and exit-4 missing-backend paths, and the deterministic `tests/suites/paranoid.sh`
 fixture all exist on `dev`, wired into `scan.sh`'s `scan_main` right after config loads and before any
 module dispatch. Tension 20's own "Implementation" paragraph above carries the full mechanism detail.
-Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
+Steps 6, 7, 9, and 10 were un-landed when this paragraph was written and are not touched by it; 7 and 9 have since landed in full and 6 and 10 in part - see their own sections below, which are the live answer.
+
+**Step 8 has since gained a macOS enforcement extension, `tools/run-sandboxed.sh`, the identical
+"land what's ready, out of strict sequence, recorded deliberately" shape the `lsof` paranoid backend
+used.** Tension 20's own "What macOS still does NOT get" paragraph above is the full account (Tier A -
+`tools/run-sandboxed.sh`, a kernel-enforced, unprivileged deny-all-network Seatbelt wrapper for
+`sast`/`sca`/`iac`, which need no network at all - and Tier C - full netns parity on macOS today via an
+unmodified `tools/run-in-netns.sh` inside a Linux container, zero code); this pointer exists only so a
+reader of this section is not left believing `tools/run-in-netns.sh` still "has no macOS equivalent",
+which is no longer true.
 
 **Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
-(`docs/STEP6-CLOUD-PLAN.md`), but no implementation ticket has started.**
+(`docs/STEP6-CLOUD-PLAN.md`), and implementation HAS started - `modules/cloud/` exists.**
 The plan breaks §13 step 6's scope (`regions.sh` iteration -> the §8.1 live read-only catalog -> the
 read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD-34 plus POSTURE-01
 through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
@@ -5343,8 +5829,214 @@ against the first real `aws_ro` call sites once the live scripts start landing -
 landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. Step 6 was gated on
 step 3, step 4 (SCA + IaC), and step 5 (DAST) all being complete on `dev`, per that plan's own status
 section and this ticket's description - **that gate is now fully discharged: steps 3, 4, and 5 are all
-complete**, so step 6 remains not-started only for want of anyone picking up CLOUD-01, not because it
-is still blocked.
+complete.**
+
+**Two of that plan's tier-0 PRs have since landed.**
+`lib/awscli.sh`'s remaining half (its P1) shipped the response cache tension 16 specifies, the
+`--profile`/`--region` plumbing, `aws_ro_account_id_set`, `aws_ro_paged`, and - the honesty-critical
+one - the frozen outcome vocabulary in its section 2, which is what stops an `AccessDenied` from
+rendering identically to an account with nothing wrong in it.  That failure shape is worse here than
+anywhere else in the tree, because a least-privilege read-only role legitimately lacks permissions and
+an opt-in region legitimately refuses, so the misleading run is the ORDINARY one rather than an edge
+case; `aws_ro_outcome_is_coverage_loss` is the single predicate that separates "we looked" from "we did
+not", and no call site re-derives that judgement.
+
+`modules/cloud/aws/{run.sh,engine.sh,regions.sh}` (its P3) shipped the `scan_dispatch cloud` entry
+point, so that dispatch is no longer the `reason=not_yet_built` no-op it had been since step 2.  It
+resolves the caller identity FIRST, records `cloud_account_id`/`cloud_caller_arn`/`cloud_profile`/
+`cloud_regions_planned` into `run.json`'s own `cloud` object, echoes the resolved account and region
+count to stderr before any service call, iterates every region the account has ENABLED by default
+(`ec2 describe-regions`, with `account list-regions` as a fallback), and writes this tension's
+`account-region` coverage cells - which `lib/state.sh`'s own header had been recording as the one
+coverage-scope kind with no real emitter.  The authorization model is the plan's D1 as accepted:
+credentials ARE the authorization, plus an OPTIONAL `--i-own-account <id>` checked against the
+resolved account (exit 2 on a mismatch, naming both ids).  It is deliberately weaker than DAST's
+required `--i-own-target`, because cloud sends no payload and changes no state - the read-only property
+is enforced at `aws_ro` and tested - so the residual risks (CloudTrail noise, quota consumption, a
+GuardDuty anomaly alert) warrant an audit record and an echo-back rather than a gate.  Per the plan's
+D3 this version is SINGLE-ACCOUNT: `--assume-role` is REFUSED with exit 2 rather than accepted and
+ignored, because ignoring it would report a one-account scan as if it had covered every account named.
+The tension-14 required-inputs table's `cloud --live` row is enforced for the first time here -
+unresolvable credentials are exit 4 on `scan.sh cloud` and a declared skip under `scan.sh all`, both
+pinned, because the naive fix for each direction is the other's bug.
+
+**The plan's P5 (CLOUD-05, `modules/cloud/aws/live/s3.sh`) has now landed - the first `aws/live/*.sh`
+service script, and the first check anywhere in this repository to emit a real `account-region`
+coverage cell.**  `lib/state.sh`'s own header recorded that this coverage-scope kind had no producer
+and that its fixtures were hand-authored, schema-only proof; a `scan.sh cloud --live` run now writes
+`<account_id>/global` cells for seven `CLOUD-S3-*` checks, and `tests/suites/cloud-s3.sh` asserts them
+out of the state snapshot the run itself persisted.  Two consequences of this tension are worth
+recording where they were first exercised for real.  **The cell is the PASS's and the finding's
+`loc_region` is the RESOURCE's, and for a `global` service they differ**: coverage is credited once per
+pass, so an S3 finding sits in `<account>/global` while citing the bucket's own region - filing it
+under the bucket's region instead would put it in a cell no pass ever covers, so it could never be
+classified `fixed` and would stay `unknown` however thoroughly the bucket was remediated.  **And a
+check is credited to a cell only where its own API call ANSWERED**: a cloud check is one call per
+resource and those calls fail independently, so `modules/cloud/aws/live/s3.sh` counts answered and
+unanswered resources per check id, records a check that answered for none of them nowhere in
+`checks_run`, and records one that answered for some of them in `checks_run` AND in a reduction naming
+what it missed.  Crediting the intended set instead is what would let this tension's `fixed` inference
+run on the strength of a call that was denied.
+
+**A second `aws/live/*.sh` service has since landed: the plan's P12 (CLOUD-21, `aws/live/lambda.sh`,
+§8.6), out of the plan's own recommended dispatch order.**  The dispatch graph names P12 as depending on
+P6 (CLOUD-06, `aws/live/iam.sh`) for a shared role-policy reader ("Reuses P6's role-policy reader"), and
+P6 had not landed - had not even been opened - when P12 was dispatched.  Rather than block, P12 ships its
+own, self-contained IAM policy-document reader in `lambda_engine.sh` (its own header names this
+explicitly and points at the correct follow-up: LIFT the shared logic into a common reader once
+`aws/live/iam.sh` lands, the same "land what's ready, note the gap" precedent this project's own build
+order already set for `lib/http.sh`, `modules/iac/` and `modules/sca/` landing ahead of their nominal
+step).  `lambda.sh` is `_CLOUD_SERVICES`' first REGIONAL row to land (`s3` is `global`), which is what
+proves the cell-equals-loc_region shape a regional service takes: unlike S3, where the pass's cell and
+the resource's own region are two different facts credited and cited separately, `lambda list-functions`
+only ever answers for the region it is addressed to, so the cell and `loc_region` are the identical
+value.  Six `CLOUD-LAMBDA-*` checks ship, splitting `docs/DESIGN.md` §8.6's three bullets in two apiece
+for the identical fingerprint-collision and per-record-severity reasons S3's own PUBLIC_ACL_READ/WRITE
+split states; none carries a `cis:` value, because CIS AWS Foundations Benchmark v3.0.0 has no dedicated
+Lambda section for one to honestly cite.  `tests/suites/cloud-lambda.sh` is the proof, including both
+shapes an IAM/Lambda policy-document field can arrive in (a JSON string that must be reloaded, and a
+native object read in place) in the same run.
+**CLOUD-07/08/09 (`aws/live/{kms,secretsmanager,ssm}.sh`) have since landed together, the first
+REGIONAL services in the catalog.**  A regional service's own `list-*`/`describe-*` call already names
+only the resources IN the pass's region, so - unlike S3's `global` row above - the resource's real
+region genuinely IS the pass's region: the cell and `loc_region` are the SAME value
+(`<account_id>/<region>`), with no separate per-resource region-resolution call and no global/regional
+cell split to get wrong.  `tests/suites/cloud-kms.sh`'s own C5 asserts that equality directly, because an
+implementation that copied S3's `<account>/global` cell literally would otherwise pass every other
+assertion in the suite.  All three checks new to this landing reuse a SHARED classifier
+(`cloud_policy_load`/`cloud_policy_is_public`, `modules/cloud/aws/engine.sh` §4b) for "does this
+resource policy grant to an unqualified wildcard principal with no Condition", because three services in
+one ticket needing it is the shape a shared classifier is for rather than a per-service copy - a KMS key
+policy, a Secrets Manager resource policy, and an SSM parameter resource policy are each JSON embedded AS
+A STRING inside their own response, unescaped EXACTLY ONCE by the loading `*_doc_load` before the shared
+classifier ever sees it.  `AGENTS.md`'s own "Step 6" section carries the fuller account, including a
+`$'\x1f'`-quoting trap this ticket found and fixed before landing (nested inside a second pair of double
+quotes, ANSI-C quoting silently stops being interpreted as such) and the "out of scope, neither evaluated
+nor lost" third state an AWS-managed KMS key, a rotation-ineligible key type, an other-service-owned
+secret, or a deletion-scheduled secret all need.
+
+**The plan's P18 (CLOUD-20, `modules/cloud/aws/live/cognito.sh`) exercises the "credited only where
+the call ANSWERED" half at a finer grain than any earlier service could**, because its resources are
+reached through THREE independent list calls in TWO API namespaces: a denied `cognito-idp
+list-user-pools` loses the user-pool and app-client checks and leaves the identity-pool checks -
+reached through `cognito-identity` - credited, and the mirror case holds.  Marking every check lost on
+either failure would overstate the damage and hide that half the pass ran fine; both directions are
+asserted in `tests/suites/cloud-cognito.sh`.  One further case is worth recording because it is this
+tension's inference working correctly rather than a limitation: an identity pool whose unauthenticated
+role has NO policy attached CREDITS the two over-permissiveness checks and reports neither, because
+"there is nothing granted" is a real answer - treating an empty policy list as an unexamined role would
+leave a prior finding at `unknown` forever after an operator emptied the role, which is the correct
+remediation.
+
+**Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
+`--live` run records each one as unexamined rather than counting it clean - a real dispatch that found
+nothing to run for those services, stated as such in `run.json`, `report.md` and the audit report
+rather than left to read as a clean account.  The plan's remaining service PRs (P6 onward, minus P12
+above) and its `posture/` half remain not-started.
+
+**Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
+6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*
+(STATE-03 through STATE-05) on step 6's `account-region` producer existing, and STATE-01 makes no
+classification decision at all, so the gate does not reach it.
+It ships the frozen `state/<run-id>.json` shape this tension's own RESOLUTION specifies (`fp_schema`,
+`tool_version`, `run_id`, `completed_at`, `scan_root_id`, `covered_checks`, `findings`), a write-then-rename
+persisting writer that prunes to a retain count, and a loader that treats a missing or unparsable file as
+"no prior state" while rejecting a structurally malformed record - a duplicate fingerprint, a finding
+missing a required field, an invalid `scope`, a non-boolean `suppressed`, an empty `cells` array - rather
+than half-loading it.
+`tests/suites/state.sh` exercises all four coverage-scope kinds this section's own table names, including
+`account-region` - schema-only, against a hand-authored fixture, since no real cloud emitter exists yet to
+produce one, a gap recorded explicitly in `lib/state.sh`'s own header rather than silently assumed
+covered.
+STATE-01 wires into nothing: `scan.sh`, every module's coverage behaviour, and the `diff` command stub
+are unchanged - coverage recording (STATE-02) and the classification engine (STATE-03 through STATE-05)
+remain unbuilt.
+
+**STATE-02 through STATE-06 have since landed, and step 7 is now visible to an operator for the first
+time: every normal run classifies itself, and `scan.sh diff --against <dir>` is a real command.**
+STATE-02 wired per-(check, cell) coverage recording into every module and `state_write` into
+`scan_main`'s own end-of-run persistence; STATE-03/04/05 wired tension 12's four-row table, tension 13's
+`SAST-HIST-*` boundary refinement, and tension 6's composite rule against real (still hand-authored)
+fixture state, with no scanner integration yet.  STATE-06 (`lib/diff.sh`) is that integration: a new
+`diff_classify_run` call, inserted into every module's own `run.sh` between `derive_findings` (stage 4)
+and its gate call (stage 7) - the exact stage-5 slot this tension's own pipeline freezes - loads
+`state/latest.json`, computes the guard, rewrites `status`/`first_seen` on every present finding in
+place, and records the resulting `state_add_finding` calls so a FUTURE run has something real to
+classify against (nothing before this ticket ever called `state_add_finding` for a live scan's own
+findings, which would otherwise have left `findings` permanently empty in every persisted state file).
+Absent prior findings are classified via the identical `findings_classify_absent`/`classify_derived`
+functions and written to a small ledger (`meta/diff_absent`, 0x1f-separated - never a tab, since `reason`
+is empty for `fixed` and a tab is IFS whitespace that `read` folds across an empty field, silently
+shifting every later column) that `lib/report.sh`'s `report_md`/`report_html` render as a "Since last
+scan" section leading the report, with `Fixed since last scan` and `Not assessed this run` always two
+separate headings - the literal wording this tension's own closing line requires so a reader can tell
+"we checked and it is gone" from "we never looked".  The standalone `diff` command
+(`diff_render_against`) performs no scan of its own: it classifies `state/latest.json` (the most
+recently completed real run) against the state recorded for an explicit `--against <prior-run-dir>`,
+matched to its own `state/<run-id>.json` by run id (`SCOURSH_RUN_ID` already defaults to the reports
+directory's own basename).  One correctness fix rides along: `diff`/`report` dispatch no module and add
+no coverage of their own, so `scan_main`'s end-of-run `state_write` is now gated to the six scanning
+commands only - calling it unconditionally (STATE-02's original wiring) would have let every `diff`
+invocation overwrite `state/latest.json` with an empty snapshot, silently erasing the very history the
+next real scan needs to classify against.  `tests/suites/state-diff.sh` is the proof.
+
+**STATE-07 (`config/baseline.json` suppression, tension 11 stages 6 and 9) has now landed.**
+`lib/diff.sh` gains `baseline_apply RUNDIR`, called from every module's own `run.sh` between
+`diff_classify_run` (stage 5) and the gate call (stage 7) - suppression is a late ANNOTATION, never a
+diff input, so it runs strictly between classification and the gate.
+`config/baseline.json`'s frozen array schema is a bare fingerprint string (sugar for `{fingerprint,
+reason: "", added: null, expires: null}`) or the full object; `--baseline FILE` replaces the default
+file rather than adding to it.
+**An unusable baseline dies loudly** (`SCOURSH_EXIT_INPUT`) rather than degrading gracefully the way
+`lib/state.sh` does for corrupt `state/`: a typo'd `--baseline` path, an unreadable file, unparsable
+JSON, a bare top-level object, a missing `fingerprint` key, a misspelled key, a duplicate fingerprint, or
+a garbage `expires` value are all real errors, because a human-edited accept-risk list misfiring silently
+in either direction (suppressing everything, or suppressing nothing) is the exact failure this ticket
+closes - only no `--baseline` and no `config/baseline.json` on disk at all is a quiet, honest no-op.
+Every suppressed finding goes through the already-shipped `findings_mark_suppressed`
+(`suppressed=true`/`suppressed_by=<reason>`) and is persisted via `state_set_finding_suppressed`;
+`lib/report.sh` renders a collapsed "accepted risk" section and counts suppressed findings separately.
+Tension 11's four ordering hazards are each pinned: unsuppressing does not fabricate a `new` finding; a
+suppressed finding that genuinely disappears is still reported `fixed`; an entry past its own `expires`
+stops suppressing (distinctly from an entry matching nothing, `stale`); and a stale entry is reported,
+never silently dropped.
+`tests/suites/state-baseline.sh` is the proof (52 assertions at landing).
+One known, deliberate gap: a bare `{}` array element flattens to zero lines in the shared JSON-flatten
+walk it reuses, so it is silently treated as absent rather than malformed - it carries no fingerprint to
+suppress anything by, so the failure mode is "one static entry ignored," never a suppression regression.
+
+**STATE-08 (the `--fail-on-new` gate carve-out, tension 11 stage 7) has now landed.**
+`modules/sast/engine.sh`'s `sast_evaluate_gate` - reused unchanged by `modules/iac/run.sh`,
+`modules/sca/run.sh`, and `modules/dast/run.sh` - replaces its bare `status == new` test with the frozen
+predicate: the status filter applies only when `SCOURSH_DIFF_USABLE` is true (set by `lib/diff.sh`'s
+`diff_classify_run`, which runs immediately before the gate at every one of those four call sites); when
+`diff_usable` is false, the gate considers ALL findings regardless of status, exactly as this section's
+own stage-7 text specifies.
+This is the carve-out this register calls "not optional wording": a bare status test happens to gate
+correctly on a first run or right after an `fp_schema` bump (everything really is `new` then, so gating
+only `new` findings and gating everything are the same set), which is precisely why it needs a mutation
+proof and not only an ordinary fixture - the bug only shows up once prior state exists and the guard has
+already declared it unusable, and a bare test would silently let a stale-but-non-`new` finding through
+untested.
+`tests/suites/gate-mutation-proof.sh` gained a fourth mutation for exactly this: it copies
+`modules/sast/engine.sh`, textually reverts the carve-out's own `if` to `if true; then` (reproducing the
+old unconditional bare-status reading), and proves the two readings disagree on an identical
+stale-partial input - one status-`old` finding with `SCOURSH_DIFF_USABLE=false` - where the real gate
+reports `fail 1` and the mutated one silently reports `pass 0`, the exact fail-open this register already
+recorded as having shipped once.
+`tests/suites/sast.sh`'s own in-process `sast_evaluate_gate` section gained the identical case (plus the
+`SCOURSH_DIFF_USABLE=true` cases it previously left implicit, now stated explicitly since the variable is
+now load-bearing rather than merely unread).
+No exit code changed: the gate still produces `SCOURSH_EXIT_GATE` (1) under tension 14's existing
+precedence.
+**STATE-07 landed while this ticket was in review, and it was rebased onto that rather than merged
+independently - closing a gap the mutation and fixture tests above could not**: every one of them proves
+the ORDER of the suppressed-check versus the diff_usable carve-out against a hand-set `suppressed`
+field, never that the field `sast_evaluate_gate` reads is the one STATE-07's `baseline_apply` actually
+writes.  `tests/suites/state-baseline.sh` gained a case with a real `config/baseline.json`, a real
+`baseline_apply` call, `SCOURSH_DIFF_USABLE` forced false, and the gate still passing - confirmed by
+mutation (renaming the field the gate reads turns it red).
+**Step 7 is complete**: STATE-01 through STATE-08 have all landed.
 
 **Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
 `tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's then-remaining
@@ -5469,7 +6161,76 @@ landed early, out of its normal step-9 sequence, as part of this ticket (immedia
 `lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
-step 6 do not; and SARIF, the compliance report, and `state/` remain unbuilt.
+step 6 do not; `state/` now has its schema, writer, loader, coverage recording, and real per-run
+classification wired into every module and the `diff` command (`lib/state.sh`/`lib/diff.sh`, STATE-01
+through STATE-06, above), baseline suppression is real (STATE-07, above), and the `--fail-on-new` gate
+carries its real `diff_usable` carve-out (STATE-08, above) - **step 7 is complete**; SARIF-01 through
+SARIF-06 have since landed (above), so Track
+A of step 10's SARIF emitter is complete, documentation included; COMPLIANCE-01 and COMPLIANCE-02 have
+also landed, so Track B's OWASP compliance view is complete too, and its CIS half (COMPLIANCE-03, the
+`data/cis-mappings` table, and COMPLIANCE-04, the CIS report view itself, unblocked once
+`modules/cloud/aws/live/s3.sh` supplied a real `cis`-carrying finding) has since landed as well - **step
+10 is complete in full**.
+
+**A surface outside `docs/DESIGN.md` §13's ten steps entirely - network/host scanning
+(`modules/network/`, the `NET` check-id prefix) - is now COMPLETE.** It was staged as
+NET-01 through NET-15 (Tier 0 through Tier 4), the same dependency-ordered,
+PR-sized shape DAST and Cloud were staged in; NET-01 through NET-11 (Tiers 0 through 3) have all
+landed, and NET-12 (this section's own update) is the docs sweep that closes the initiative out. `AGENTS.md`'s
+"Network module (NET)" section carries the full per-ticket landing detail; in short, `scan.sh network
+--target NAME` verifies the reachability, service identity/version, and transport posture of the
+listener set the target's `config/scope.conf` `base-url`/`extra-host` entries declare - never a port
+sweep or host discovery, a deliberate scope decision this module must not widen without an explicit
+captain decision, and none was taken. It reuses the identical
+`lib/http.sh` scope chokepoint, tension-16 rate/budget/breaker ceilings, and `--i-own-target`
+affirmation `dast` uses (`http_authorize_raw_connection`, tension 19's TLS-probe exemption pattern
+extended to a raw TCP connect), so a network probe is gated exactly as an HTTP request is. Fifteen
+`NET-*` check ids ship across six phase scripts (`inventory.sh`, `reachability.sh`, `banner.sh`,
+`tlsport.sh`, `httpport.sh`, `transport.sh`): three-state reachability verification
+(`NET-PORT-*`, open/not-open/filtered - "did not answer" and "refused" are kept as distinct facts,
+never folded together), banner and HTTP service/version disclosure (`NET-SVC-*`), TLS posture on
+non-`base-url` listeners (`NET-TLS-*`, six ids mirroring `DAST-TLS-*`), and plaintext/STARTTLS
+transport posture (`NET-TRANSPORT-*`). The two version-lookup checks
+(`NET-SVC-OUTDATED_COMPONENT-01`, `NET-SVC-HTTP_OUTDATED_COMPONENT-01`) are exact-match lookups against
+`data/versions.db`'s `banner` namespace, never range arithmetic (tension 25's discipline, one port
+over), and are `confidence: medium` rather than `high` because a version a service volunteers
+unprompted cannot show a distribution's backported security
+fix, so an exact match can name an already-patched host as vulnerable. Two capabilities this module
+explicitly declines for v1, and states as deliberate rather than silently drops: OS patch-level
+inference (no honest way to infer a host's patch level externally; a banner-version-only signal is
+already the WEAKER mechanism `docs/DESIGN.md` §6.5 chose against for the identical class via SCA) and
+UDP (no connect handshake, so "open" and "filtered" are indistinguishable without a per-service
+payload). Tier 4 (NET-13 an optional `nmap` adapter, NET-14 a `rules/derived.rules` composite
+correlating `NET-*` with a cloud/IaC open-CIDR contributor, NET-15 a local authorised network test
+target) is filed, not scheduled - the module ships with no `nmap` dependency at all, pure bash TCP
+connect only.
+
+**A second surface outside `docs/DESIGN.md` §13's ten steps - built-container-image scanning
+(`modules/image/`, the `IMAGE` check-id prefix) - is also now COMPLETE.** It was staged as
+IMG-01 through IMG-14 (Stage 0 foundation, Stage 1 the Alpine
+vertical slice, Stage 2 Debian/Ubuntu, Stage 3 breadth); every ticket has landed, most recently IMG-14
+(correlating `IMAGE-*` with `IAC-DOCKER-*` via `rules/derived.rules`). `AGENTS.md`'s "Container image
+scanning (the IMAGE module)" section carries the full per-ticket landing detail; in short,
+`scan.sh image --image ID [--source PATH]` opens an operator-supplied `docker save` tarball or OCI
+image-layout directory - never a registry pull, the same offline-database model SCA already lives
+in - and enumerates and matches installed apk, dpkg, and rpm packages against `data/advisories.db`'s
+per-distro-release ecosystem rows (`Alpine:vX.Y`, `Debian:N`, `Ubuntu:XX.YY`, the single flat
+`Red Hat` key), reusing that file's schema, `db_lookup_exact`, and range-row encoding unchanged. The
+one genuinely new mechanism per distro is a version comparator: `modules/sca/semver.sh` is npm-only by
+measured decision (7 of 12 real OS version pairs wrong, including a false negative), so apk, dpkg, and
+rpm each ship their own, differential-tested against a real harvested corpus at that same standard.
+Language dependencies found at a bounded set of conventional manifest locations inside the image's own
+rootfs reuse `modules/sca/`'s four tree-walkers unchanged, re-emitted under `IMAGE-LANGDEP-*` with the
+image's own `image-id` cell. Three config-blob checks (effective runtime user, exposed ports, mutable
+base-image reference) need no advisory database and run on every opened image regardless of distro.
+Matching an installed rpm package needs `sqlite3` on `PATH` - its database is a binary format no text
+tool can read - and its absence is a declared coverage reduction (`rpm_db_binary_format`), never a
+silent clean pass; a missing advisory database for the image's own distro release is
+`IMAGE-COV-NO_ADVISORY_DB-01` and exit `4` when `image` is the selected command, the identical SCA
+precedent one module over. This module deliberately never materialises a full rootfs (only the
+bounded, declared metadata paths a package database and conventional manifest locations occupy are
+ever extracted) and never inspects a running container or its runtime behaviour - see `docs/DESIGN.md`
+§15 for the stated boundary.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--
@@ -5510,15 +6271,15 @@ shipped here before.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/report.sh` |
 | `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
 | `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
 | `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/report.sh` |
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
-| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -5542,17 +6303,17 @@ Landed 6 of 6.  Outstanding: none.
 | --- | --- | --- | --- |
 | `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
-| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/agent-format.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
-| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/agent-format.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 
 Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/image/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 

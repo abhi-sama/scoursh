@@ -43,6 +43,28 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06/STATE-07: diff_classify_run and
+# baseline_apply (called below, between derive_findings and
+# sast_evaluate_gate) both live in lib/diff.sh, sourced here rather than from
+# modules/sast/engine.sh - that file is reached by every DAST phase test too,
+# and lib/diff.sh's own lib/state.sh edge is genuinely new content there (not
+# a diamond a back-edge cut could remove for free), which pushed
+# tests/suites/dast-methods.sh over its shellcheck -x memory budget and
+# killed a CI run.  Confining this source line to the four run.sh files that
+# actually call these two functions keeps that cost off every phase-level
+# test that has nothing to do with either.
+# Guarded exactly like modules/sast/engine.sh's own lib/report.sh/lib/config.sh
+# sources above: a real `scan.sh` subprocess has ALREADY sourced lib/diff.sh
+# via its own absolute path before scan_dispatch ever runs, and skipping the
+# self-relative resolution here is not just an optimisation - this file is
+# copied into fixture roots that carry no `lib/` sibling at all
+# (tests/suites/sast.sh's own ROOT_REAL_REGISTRY), where the unconditional
+# form's `source` would fail to even LOCATE the file, before its own
+# internal guard ever gets a chance to make the load a no-op.
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 # history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
 # DOES read git history; it is its own pure function library, sourced here
 # exactly like engine.sh, and its real work only happens when
@@ -115,19 +137,40 @@ _sast_run_module() {
     for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
       [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
       ids+=("$id")
-      run_record checks_run "$id"
     done
 
     if (( ${#ids[@]} == 0 )); then
       run_record coverage_reduction 'module=sast reason=no_checks_selected'
     else
+      # `--jobs N` is real for this module: sast_scan_tree fans out over the
+      # file list at the resolved width.  The call is BARE and the outcome is
+      # read from `SCOURSH_WALK_FAILED` afterwards, never from its exit status
+      # via `|| walk_ok=0` - bash suspends `set -e` for the whole call tree of a
+      # command whose status is being tested, and on the single-worker path that
+      # tree is the entire walk, so the shape that reads as careful error
+      # handling would switch `set -Eeuo pipefail` off for every per-file scan
+      # under it.  See `_sast_walk_parallel`'s own header for the measurement.
       sast_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+      if (( SCOURSH_WALK_FAILED == 0 )); then
+        # docs/STEP7-STATE-PLAN.md STATE-02: reached only when sast_scan_tree
+        # returned without dying AND every worker finished, so every id in
+        # `ids` genuinely ran to completion over this run's one path-root
+        # cell.  A walk that lost a worker never reaches this line: coverage
+        # is what a later run's `fixed` inference is computed against
+        # (tension 12), so claiming a cell a worker abandoned would let the
+        # next run report the findings it never got to as remediated.
+        sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      else
+        _sast_record_walk_failure sast
+      fi
+      # `checks_run` is recorded AFTER the walk, from `_SAST_CHECK_EVAL`
+      # (populated by sast_scan_tree during the walk that just returned, and
+      # folded back in from every worker by `sast_eval_absorb`), not from the
+      # selection list above - a check whose `files:` glob matched nothing in
+      # this tree is a declared coverage_reduction, never a silent
+      # `checks_run` entry (the AGENTS.md "checks_run semantics fix").
+      sast_record_checks_run sast "${ids[@]+"${ids[@]}"}"
     fi
-
-    # tension 16's parallel workers (rate limiter, request budget, circuit
-    # breaker) land at §13 step 5; this run is single-worker, honestly declared
-    # rather than silently claimed as parallel.
-    run_record coverage_reduction 'module=sast reason=single_worker_no_parallel_scan_yet'
   fi
 
   # Independent of the working-tree registry above: history.sh replays only
@@ -156,6 +199,14 @@ _sast_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-07: suppress (tension 11 stage 6) runs
+  # strictly after classify (5) and before the gate (7) - lib/diff.sh's own
+  # baseline_apply already documents why it lives beside diff_classify_run.
+  baseline_apply "$SCOURSH_RUN_DIR"
   sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }

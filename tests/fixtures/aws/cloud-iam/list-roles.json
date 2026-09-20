@@ -1,0 +1,32 @@
+{
+    "Roles": [
+        {
+            "RoleName": "scoursh-fixture-open-role",
+            "Path": "/",
+            "RoleId": "AROAOPEN0000000000001",
+            "Arn": "arn:aws:iam::123456789012:role/scoursh-fixture-open-role",
+            "CreateDate": "2019-05-01T09:00:00+00:00"
+        },
+        {
+            "RoleName": "scoursh-fixture-crossaccount-role",
+            "Path": "/",
+            "RoleId": "AROAXACC0000000000001",
+            "Arn": "arn:aws:iam::123456789012:role/scoursh-fixture-crossaccount-role",
+            "CreateDate": "2021-08-01T09:00:00+00:00"
+        },
+        {
+            "RoleName": "scoursh-fixture-hardened-role",
+            "Path": "/",
+            "RoleId": "AROAHARD0000000000001",
+            "Arn": "arn:aws:iam::123456789012:role/scoursh-fixture-hardened-role",
+            "CreateDate": "2024-05-01T09:00:00+00:00"
+        },
+        {
+            "RoleName": "scoursh-fixture-denied-role",
+            "Path": "/",
+            "RoleId": "AROADENY0000000000001",
+            "Arn": "arn:aws:iam::123456789012:role/scoursh-fixture-denied-role",
+            "CreateDate": "2022-02-01T09:00:00+00:00"
+        }
+    ]
+}

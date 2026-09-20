@@ -8,15 +8,35 @@
 #
 # Owns:
 #   docs/DESIGN.md      §6.5 "SCA (dependency vulnerabilities, offline)"
-#   docs/FOUNDATION.md  tension 25 - offline version matching: NO version-range
-#                       arithmetic, an exact (ecosystem, package, version)
-#                       lookup against a pre-expanded data/advisories.db, name
-#                       normalisation frozen per ecosystem (npm: verbatim,
-#                       scope included; PyPI: PEP 503; RubyGems: verbatim,
-#                       lowercased; Maven: `groupId:artifactId`; Composer:
-#                       verbatim, lowercased), and the ONE roll-up finding
-#                       (per ecosystem-scan entry point) for a package the db
-#                       knows but whose exact pinned version it does not.
+#   docs/FOUNDATION.md  tension 25 - offline version matching, amended:
+#                       pypi/maven/Go/RubyGems/composer keep the ORIGINAL
+#                       resolution unchanged - an exact (ecosystem, package,
+#                       version) lookup against a pre-expanded
+#                       data/advisories.db, no version-range arithmetic - but
+#                       npm now ALSO carries semver-interval rows
+#                       (sca_lookup_range, modules/sca/semver.sh), per the
+#                       amendment's own register entry: the four *other*
+#                       version algebras (PEP 440, Maven, Go, RubyGems) stay
+#                       unimplemented in bash exactly as tension 25 always
+#                       argued, and the amendment does not touch them - see
+#                       tension 25's amended RESOLUTION for the full
+#                       reasoning. Name normalisation stays frozen per
+#                       ecosystem (npm: verbatim, scope included; PyPI: PEP
+#                       503; RubyGems: verbatim, lowercased; Maven:
+#                       `groupId:artifactId`; Composer: verbatim, lowercased),
+#                       and the ONE roll-up finding (per ecosystem-scan entry
+#                       point) for a package the db knows but whose exact
+#                       pinned version it does not - EXCEPT for npm, where a
+#                       range lookup miss is a genuine "not affected" verdict
+#                       rather than missing coverage (see sca_scan_tree's own
+#                       npm walk below), so npm no longer contributes to that
+#                       roll-up.
+#                       `summary` (docs/FOUNDATION.md tension 25's other
+#                       amendment) no longer lives in data/advisories.db's
+#                       rows at all: it is normalised into an advisory-keyed
+#                       side table, data/advisory-summaries.db, read by
+#                       sca_lookup_summary below and joined back in by
+#                       _sca_emit_finding at finding-emission time.
 #
 # SCOPE: npm (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml) - PLUS
 # Python (requirements.txt, poetry.lock, Pipfile.lock) - PLUS Ruby/RubyGems
@@ -80,6 +100,13 @@ fi
 if [[ -z ${SCOURSH_SCA_PHP_ENGINE_SOURCED:-} ]]; then
   # shellcheck source=modules/sca/php_engine.sh
   source "${BASH_SOURCE[0]%/*}/php_engine.sh"
+fi
+# semver.sh (the npm-only semver comparator, docs/FOUNDATION.md tension 25's
+# amended resolution) is sourced unconditionally by npm's own range lookup
+# below; guarded the same way every sibling file here is.
+if [[ -z ${SCOURSH_SCA_SEMVER_SOURCED:-} ]]; then
+  # shellcheck source=modules/sca/semver.sh
+  source "${BASH_SOURCE[0]%/*}/semver.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -948,6 +975,91 @@ sca_package_known() {
   db_lookup_exact "$prefix" "$db" >/dev/null
 }
 
+# sca_advisory_summaries_db_path - data/advisory-summaries.db's location, or
+# SCOURSH_SCA_SUMMARIES_DB when overridden, mirroring
+# sca_advisories_db_path's own convention. docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment moved `summary` out of every
+# data/advisories.db row (it was ~73% of that file's bytes, duplicated
+# across every version row for one advisory) into this advisory-keyed side
+# table: one row per advisory_id, `advisory_id\tsummary`, LC_ALL=C sorted.
+sca_advisory_summaries_db_path() {
+  printf '%s' "${SCOURSH_SCA_SUMMARIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisory-summaries.db}"
+}
+
+# sca_lookup_summary ADVISORY_ID [DB] - prints the advisory's summary text,
+# or nothing (exit 1) when the side table has no row for it - an absent
+# summary is degraded evidence, never a fatal error: _sca_emit_finding falls
+# back to an explicit placeholder rather than aborting the scan over prose
+# text. advisory_id is guaranteed free of TAB/LF at import time
+# (tools/vendor-engines.sh's _veng_advisories_reject_tab_lf), so the trailing
+# TAB in the prefix can only ever land on a real field boundary - the same
+# argument db_lookup_exact's own header already makes for the three-field
+# advisories.db prefix.
+sca_lookup_summary() {
+  local advisory=$1 db=${2:-$(sca_advisory_summaries_db_path)}
+  local prefix row marked
+  prefix=$(printf '%s\t' "$advisory")
+  row=$(db_lookup_exact "$prefix" "$db") || return 1
+  marked=${row//$'\t'/$'\x1f'}
+  local _adv summary
+  IFS=$'\x1f' read -r _adv summary <<<"$marked"
+  printf '%s' "$summary"
+}
+
+# sca_lookup_range PACKAGE VERSION [DB] - the npm-only semver-interval
+# lookup docs/FOUNDATION.md tension 25's amendment adds. NPM ONLY: every other ecosystem keeps
+# sca_lookup_exact/db_lookup_exact unchanged, per the amendment's own
+# register entry, and this function is never called for them.
+#
+# A data/advisories.db npm row is
+# `npm\tpackage\tintroduced\tbound\tbound_kind\tadvisory_id\tseverity\tfixed_versions`
+# - bound_kind is one of exact|fixed|last|open (modules/sca/semver.sh's
+# semver_in_range_v owns what each means). The prefix here is
+# (ecosystem, package) ONLY, not (ecosystem, package, version) - unlike
+# sca_lookup_exact, because there is no single "version" field left to
+# include in the row's key; the version comparison happens per row, in bash,
+# against VERSION.
+#
+# Uses db_lookup_prefix (lib/core.sh), never db_lookup_exact: a
+# `look`-absent host's db_lookup_exact grep fallback is `-m 1`, correct for
+# an exact three-field prefix but a correctness bug here, where every row
+# sharing (ecosystem, package) must be evaluated - see db_lookup_prefix's
+# own header for the measurement. `look` still does the O(log n) work of
+# finding the right block; a real npm package carries a mean of ~1.2 rows
+# (feasibility scout §5b), so the per-row bash loop below is cheap.
+#
+# Prints one TAB-joined `advisory_id\tseverity\tfixed_versions` line per
+# matching row. Returns 0 when at least one row matched, 1 otherwise.
+sca_lookup_range() {
+  local package=$1 version=$2 db=${3:-$(sca_advisories_db_path)}
+  local prefix row marked intro bound kind advisory sev fixed matched=1
+  prefix=$(printf 'npm\t%s\t' "$package")
+  while IFS= read -r row; do
+    [[ -n $row ]] || continue
+    marked=${row//$'\t'/$'\x1f'}
+    IFS=$'\x1f' read -r _eco _pkg intro bound kind advisory sev fixed <<<"$marked"
+    semver_in_range_v "$version" "$intro" "$bound" "$kind" || continue
+    printf '%s\t%s\t%s\n' "$advisory" "$sev" "$fixed"
+    matched=0
+  # `|| true` is what makes this SAFE, not merely tidy: db_lookup_prefix's
+  # own no-match exit (1) is the ordinary case - most packages carry no
+  # advisory - but this line is an UNTESTED command (nothing wraps it in
+  # if/&&/||), and under scoursh's mandatory `set -Eeuo pipefail` any
+  # untested command with a nonzero exit trips the ERR trap, in a process
+  # substitution exactly as in a plain `x=$(cmd)` - both are ordinary
+  # subshells, so the fix is the same explicit guard `db_lookup_exact`'s
+  # OTHER call sites already use (e.g. `row=$(db_lookup_exact ...) ||
+  # return 1`), not some special exemption process substitution lacks.
+  # Without it, the ordinary no-match return here logged a spurious
+  # "command failed" line on every clean package (docs/FOUNDATION.md
+  # tension 4's trap, third instance - reported from a real scan). This does
+  # NOT risk swallowing a genuine engine/file failure: db_lookup_prefix now
+  # `die`s (exit, not return) on rc > 1 before this line ever sees a return
+  # value to test, so `|| true` here only ever catches the ordinary rc=1.
+  done < <(db_lookup_prefix "$prefix" "$db" || true)
+  return $matched
+}
+
 # sca_ecosystems_all - every ecosystem this module can scan, one per line,
 # LC_ALL=C sorted.  It is the ANSWER TO "what could this run not scan", so it
 # is deliberately a single list in a single place rather than a fact each walk
@@ -1069,6 +1181,117 @@ dependencies_checked: 0"
 declare -gA _SCA_UNKNOWN_COUNT=()
 declare -g _SCA_ROLLUP_DEFERRED=0
 
+# ---------------------------------------------------------------------------
+# 8a-bis. Unit partitioning for `--jobs N` (docs/DESIGN.md §5, lib/parallel.sh)
+# ---------------------------------------------------------------------------
+# SCA's scanning UNIT is one manifest/lockfile (one go.mod/go.sum DIRECTORY for
+# Go, which is what that ecosystem's own walk iterates).  Rather than teach each
+# of the six per-ecosystem loops how to fan out, every loop asks one question -
+# "is this unit mine?" - and lib/parallel.sh's worker decides the answer by
+# installing its own block of the run's unit list first.
+#
+# THE UNPARTITIONED ANSWER IS YES, and that direction is the load-bearing one.
+# Every unit test in tests/suites/sca.sh calls a walk directly, with no
+# partition installed anywhere in the process; a fail-closed default there would
+# make every one of those cases scan nothing while every "found the vulnerable
+# dependency" assertion in them went on passing against a stale expectation -
+# the same reading `dast_check_selected`'s own `declare -F` guard already ships
+# for the identical reason.
+#
+# THE UNIT LIST IS ENUMERATED IN WALK ORDER (`sca_enumerate_units` below) AND
+# THE PARTITION IS CONTIGUOUS BLOCKS.  Together those two facts are what make
+# the parallel run's `meta/` byte-identical to the single-worker run's: each
+# worker still visits its own units in walk order, and worker i's units all
+# precede worker i+1's, so the parent's worker-ordered concatenation of their
+# private meta directories reproduces exactly the sequence one walk would have
+# appended.  Changing either half - enumerating in a different order from the
+# walks, or partitioning round-robin - silently breaks that.
+declare -gA _SCA_UNIT_SET=()
+declare -g _SCA_UNIT_PARTITIONED=0
+
+# sca_unit_partition_set LISTFILE START COUNT - install this worker's block.
+sca_unit_partition_set() {
+  local listfile=$1 start=$2 count=$3 unit
+  _SCA_UNIT_SET=()
+  _SCA_UNIT_PARTITIONED=1
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    _SCA_UNIT_SET[$unit]=1
+  done < <(sed -n "$(( start + 1 )),$(( start + count ))p" "$listfile")
+  return 0
+}
+
+sca_unit_partition_clear() {
+  _SCA_UNIT_SET=()
+  _SCA_UNIT_PARTITIONED=0
+  return 0
+}
+
+# sca_unit_selected UNIT - see the "unpartitioned answer is yes" note above.
+sca_unit_selected() {
+  (( _SCA_UNIT_PARTITIONED )) || return 0
+  [[ -n ${_SCA_UNIT_SET[$1]:-} ]]
+}
+
+# sca_enumerate_units ROOT - every unit this module would visit, one per line,
+# IN THE ORDER THE WALKS VISIT THEM: npm, then RubyGems, then Composer (the
+# three inside sca_scan_tree, in its own order), then Python, then Java, then
+# Go.  A Go unit is a DIRECTORY, and only one that actually carries a go.mod or
+# a go.sum - the same predicate sca_go_scan_tree applies before it counts a
+# directory as processed, so "units assigned to Go" and "directories Go
+# processed" are the same number rather than nearly the same.
+sca_enumerate_units() {
+  local root=$1
+  sca_walk_npm_lockfiles "$root"
+  sca_walk_gemfile_locks "$root"
+  sca_walk_composer_lockfiles "$root"
+  sca_walk_python_manifests "$root"
+  sca_walk_java_manifests "$root"
+  sca_enumerate_go_units "$root"
+  return 0
+}
+
+# sca_enumerate_go_units ROOT - the Go half of the list above, on its own so
+# modules/sca/run.sh can also ask "did this run have any Go units at all"
+# without re-deriving the go.mod/go.sum predicate and risking the two answers
+# drifting apart.
+sca_enumerate_go_units() {
+  local root=$1 d
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    [[ -f $d/go.mod || -f $d/go.sum ]] || continue
+    printf '%s\n' "$d"
+  done < <(_sca_go_manifest_dirs "$root")
+  return 0
+}
+
+# sca_rollup_dump / sca_rollup_absorb - the unknown-version accumulator crosses
+# the worker boundary as `ecosystem<TAB>count` lines.  A worker's table lives in
+# its own memory and dies with it, so it is written to the aux directory on the
+# way out and the parent folds every worker's back in before the single flush.
+# Summing is exact because lib/parallel.sh assigns each unit to exactly one
+# worker: no manifest is counted twice and none is dropped, which is the whole
+# reason this roll-up exists to be honest about.
+sca_rollup_dump() {
+  local eco
+  (( ${#_SCA_UNKNOWN_COUNT[@]} > 0 )) || return 0
+  while IFS= read -r eco; do
+    [[ -n $eco ]] || continue
+    printf '%s\t%s\n' "$eco" "${_SCA_UNKNOWN_COUNT[$eco]}"
+  done < <(printf '%s\n' "${!_SCA_UNKNOWN_COUNT[@]}" | LC_ALL=C sort)
+  return 0
+}
+
+sca_rollup_absorb() {
+  local eco cnt
+  while IFS=$'\t' read -r eco cnt; do
+    [[ -n $eco ]] || continue
+    [[ $cnt =~ ^[0-9]+$ ]] || cnt=1
+    sca_rollup_add "$eco" "$cnt"
+  done < <(parallel_aux_read sca_rollup)
+  return 0
+}
+
 # sca_rollup_begin - open a deferred window: the walks accumulate, nobody
 # flushes until sca_rollup_flush is called.  Resets the table, so a window
 # never inherits a count from an earlier run in the same process.
@@ -1152,9 +1375,20 @@ _sca_rollup_autoflush() {
 # `*.rules` pattern record behind it - a table lookup is not a pattern rule,
 # per the npm ticket's own instruction, unchanged by later ecosystems
 # reusing the same emitter).
+# _sca_summary_for ADVISORY_ID - shared by _sca_emit_finding and
+# _sca_emit_finding_npm_range: the data/advisory-summaries.db lookup, with
+# the one placeholder both call sites need for the (rare, non-fatal) case
+# where an advisory's summary row is missing - never a reason to abort a
+# finding.
+_sca_summary_for() {
+  local advisory=$1 summary
+  summary=$(sca_lookup_summary "$advisory") || summary=''
+  printf '%s' "${summary:-no summary available}"
+}
+
 _sca_emit_finding() {
   local check_id=$1 direct=$2 manifest_label=$3 lockfile_rel=$4 row=$5
-  local eco pkg ver advisory sev fixed summary
+  local eco pkg ver advisory sev fixed
   # data/advisories.db is real-TAB TSV (tension 25's frozen on-disk schema,
   # not this file's own choice), and `fixed_versions` is legitimately empty
   # for a no-fixed-version advisory - exactly the middle-empty-field case
@@ -1166,8 +1400,16 @@ _sca_emit_finding() {
   # appears in an advisories.db field (tension 25 forbids TAB/LF in a field;
   # \x1f is neither) - sidesteps the bug entirely rather than working around
   # it per call site.
+  #
+  # ROW carries SIX fields now, not seven: tension 25's summary-normalisation
+  # amendment moved `summary` out of every data/advisories.db row into
+  # data/advisory-summaries.db (section 8's own sca_lookup_summary) - it was
+  # ~73% of the file's bytes, duplicated across every version row for one
+  # advisory. This function fetches it back by advisory_id below.
   local marked=${row//$'\t'/$'\x1f'}
-  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed summary <<<"$marked"
+  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed <<<"$marked"
+  local summary
+  summary=$(_sca_summary_for "$advisory")
 
   local accept_risk=false
   [[ -z $fixed ]] && accept_risk=true
@@ -1188,6 +1430,8 @@ _sca_emit_finding() {
   finding_set cell "$SCOURSH_PATH_ROOT"
   finding_set logical_kind dependency
   finding_set logical_fqn "$eco:$pkg@$ver"
+  finding_set dep_type "$direct"
+  finding_set fix_fixed_versions "$fixed"
   if [[ -n $fixed ]]; then
     finding_set remediation "Upgrade $pkg to one of: $fixed."
   else
@@ -1200,6 +1444,62 @@ _sca_emit_finding() {
   evline+="advisory: $advisory ($sev)"$'\n'
   evline+="fixed_versions: ${fixed:-none published}"$'\n'
   evline+="accept_risk_candidate: $accept_risk"$'\n'
+  evline+="summary: $summary"
+  finding_set_evidence "$evline"
+  finding_emit
+}
+
+# _sca_emit_finding_npm_range CHECK_ID DIRECT MANIFEST_LABEL MANIFEST_RELPATH
+# PACKAGE VERSION ROW - the npm-range sibling of _sca_emit_finding above.
+# ROW is one sca_lookup_range hit: `advisory_id\tseverity\tfixed_versions`
+# (NOT a raw data/advisories.db line - sca_lookup_range already parsed the
+# row's own introduced/bound/bound_kind fields and returns only what a
+# finding needs). PACKAGE/VERSION are the pinned dependency's own name and
+# version from the lockfile - unlike the exact-match path, a range row's
+# `introduced` field is NOT the matched version, so it cannot be read out of
+# ROW the way _sca_emit_finding reads `ver`.
+_sca_emit_finding_npm_range() {
+  local check_id=$1 direct=$2 manifest_label=$3 lockfile_rel=$4 pkg=$5 ver=$6 row=$7
+  local advisory sev fixed
+  local marked=${row//$'\t'/$'\x1f'}
+  IFS=$'\x1f' read -r advisory sev fixed <<<"$marked"
+  local summary
+  summary=$(_sca_summary_for "$advisory")
+
+  local accept_risk=false
+  [[ -z $fixed ]] && accept_risk=true
+
+  finding_new
+  finding_set check_id "$check_id"
+  finding_set module sca
+  finding_set title "npm: $pkg@$ver is vulnerable ($advisory)"
+  finding_set base_severity "$sev"
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp A06:2021
+  finding_set loc_ecosystem npm
+  finding_set loc_package "$pkg"
+  finding_set loc_version "$ver"
+  finding_set loc_advisory_id "$advisory"
+  finding_set path "$lockfile_rel"
+  finding_set cell "$SCOURSH_PATH_ROOT"
+  finding_set logical_kind dependency
+  finding_set logical_fqn "npm:$pkg@$ver"
+  finding_set dep_type "$direct"
+  finding_set fix_fixed_versions "$fixed"
+  if [[ -n $fixed ]]; then
+    finding_set remediation "Upgrade $pkg to one of: $fixed."
+  else
+    finding_set remediation "No fixed version is published upstream yet for $advisory against $pkg; this is an accept-risk candidate pending an upstream fix."
+  fi
+  local evline
+  evline="dependency: $pkg@$ver"$'\n'
+  evline+="dependency_type: $direct"$'\n'
+  evline+="$manifest_label: $lockfile_rel"$'\n'
+  evline+="advisory: $advisory ($sev)"$'\n'
+  evline+="fixed_versions: ${fixed:-none published}"$'\n'
+  evline+="accept_risk_candidate: $accept_risk"$'\n'
+  evline+="matched_via: semver-range (docs/FOUNDATION.md tension 25 amendment)"$'\n'
   evline+="summary: $summary"
   finding_set_evidence "$evline"
   finding_emit
@@ -1247,9 +1547,10 @@ sca_scan_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local lockfile relpath fmt row name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-hits.$BASHPID
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     # SC2100 false positive: `fmt=package-lock.json` below is a plain string
     # assignment (that case arm's own label), not an arithmetic expression -
     # the linter's own hyphen heuristic misreads it.  Same false positive
@@ -1270,13 +1571,25 @@ sca_scan_tree() {
     while IFS=$'\x1f' read -r name ver direct; do
       [[ -n $name && -n $ver ]] || continue
       name=$(sca_npm_normalize_name "$name")
-      if sca_lookup_exact npm "$name" "$ver" "$db" >"$hits"; then
+      # npm ONLY: docs/FOUNDATION.md tension 25's amendment -
+      # sca_lookup_range, evaluating semver
+      # intervals via modules/sca/semver.sh, replaces sca_lookup_exact for
+      # this ecosystem alone; the other five ecosystems below are unchanged.
+      #
+      # A range miss is NOT reported to the SCA-COV-UNKNOWN_VERSION-01
+      # roll-up, unlike the exact-match ecosystems below. That roll-up
+      # exists to tell "unknown version of a known package" (the exact-match
+      # db enumerates specific versions, so an unlisted one is a coverage
+      # gap) apart from "this package carries no advisory data at all". A
+      # range row instead covers a CONTINUOUS interval, so a miss against a
+      # known npm package's own range rows is a genuine, complete "not
+      # affected" verdict - reporting it as unknown coverage would be a
+      # false coverage_reduction on the exact case ranges were built to fix.
+      if sca_lookup_range "$name" "$ver" "$db" >"$hits"; then
         while IFS= read -r row; do
           [[ -n $row ]] || continue
-          _sca_emit_finding SCA-NPM-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
+          _sca_emit_finding_npm_range SCA-NPM-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$name" "$ver" "$row"
         done <"$hits"
-      elif sca_package_known npm "$name" "$db"; then
-        sca_rollup_add npm
       fi
     done < <(
       case $fmt in
@@ -1293,6 +1606,7 @@ sca_scan_tree() {
   # after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     relpath=$(sca_relpath "$root" "$lockfile")
     run_record checks_run SCA-RUBY-VULNERABLE_DEP-01
 
@@ -1316,6 +1630,7 @@ sca_scan_tree() {
   # computed once, after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     relpath=$(sca_relpath "$root" "$lockfile")
     run_record checks_run SCA-PHP-VULNERABLE_DEP-01
 
@@ -1340,11 +1655,19 @@ sca_scan_tree() {
   # flushes one roll-up for the whole run.
   _sca_rollup_autoflush
 
-  # tension 16's parallel workers (rate limiter, request budget, circuit
-  # breaker) land at §13 step 5, same as modules/sast/run.sh's identical
-  # note; this run is single-worker, honestly declared rather than silently
-  # claimed as parallel.
-  run_record coverage_reduction 'module=sca reason=single_worker_no_parallel_scan_yet'
+  # The module-level "was this run parallel at all" record used to be made
+  # here, as a flat `single_worker_no_parallel_scan_yet`.  It has moved to
+  # modules/sca/run.sh, which is the only layer that knows how wide the fan-out
+  # actually was: this walk is now one of four a worker runs over its own block
+  # of the unit list, so a record made here would be made once per worker and
+  # would describe a walk rather than the run.
+  #
+  # The explicit `return 0` restores what that removed `run_record` incidentally
+  # supplied: this function is called BARE from `_sca_scan_block` under
+  # `set -Eeuo pipefail`, so its status is the walk's, and leaving it to be
+  # whatever `_sca_rollup_autoflush` happened to end on would make a worker's
+  # survival depend on a roll-up detail that has nothing to do with the scan.
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1762,9 +2085,11 @@ sca_parse_pipfile_lock() {
 # (this ticket's scope line: do not modify section 9).
 _sca_py_emit_finding() {
   local direct=$1 lockfile_rel=$2 row=$3
-  local eco pkg ver advisory sev fixed summary
+  local eco pkg ver advisory sev fixed
   local marked=${row//$'\t'/$'\x1f'}
-  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed summary <<<"$marked"
+  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed <<<"$marked"
+  local summary
+  summary=$(_sca_summary_for "$advisory")
 
   local accept_risk=false
   [[ -z $fixed ]] && accept_risk=true
@@ -1843,9 +2168,10 @@ sca_scan_python_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local manifest relpath fmt name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-py-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-py-hits.$BASHPID
   while IFS= read -r manifest; do
     [[ -n $manifest ]] || continue
+    sca_unit_selected "$manifest" || continue
     case ${manifest##*/} in
       requirements.txt) fmt=requirements.txt ;;
       poetry.lock) fmt=poetry.lock ;;
@@ -2221,9 +2547,10 @@ sca_scan_java_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local manifest relpath fmt row name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-java-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-java-hits.$BASHPID
   while IFS= read -r manifest; do
     [[ -n $manifest ]] || continue
+    sca_unit_selected "$manifest" || continue
     case ${manifest##*/} in
       pom.xml) fmt=pom.xml ;;
       build.gradle) fmt=build.gradle ;;

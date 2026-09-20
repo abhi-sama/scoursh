@@ -1,0 +1,37 @@
+{
+    "UserPool": {
+        "Id": "eu-west-2_optpool01",
+        "Name": "scoursh-fixture-optional-pool",
+        "Policies": {
+            "PasswordPolicy": {
+                "MinimumLength": 8,
+                "RequireUppercase": true,
+                "RequireLowercase": true,
+                "RequireNumbers": true,
+                "RequireSymbols": true,
+                "TemporaryPasswordValidityDays": 7
+            }
+        },
+        "DeletionProtection": "ACTIVE",
+        "MfaConfiguration": "OPTIONAL",
+        "UserPoolAddOns": {
+            "AdvancedSecurityMode": "AUDIT"
+        },
+        "AdminCreateUserConfig": {
+            "AllowAdminCreateUserOnly": true
+        },
+        "AccountRecoverySetting": {
+            "RecoveryMechanisms": [
+                {
+                    "Priority": 1,
+                    "Name": "verified_email"
+                },
+                {
+                    "Priority": 2,
+                    "Name": "verified_phone_number"
+                }
+            ]
+        },
+        "Arn": "arn:aws:cognito-idp:eu-west-2:123456789012:userpool/eu-west-2_optpool01"
+    }
+}

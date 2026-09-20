@@ -47,8 +47,64 @@ ROOT_WITH_SCOPE=$W/root-with-scope
 mkdir -p "$ROOT_WITH_SCOPE/config"
 cp "$ROOT/tests/fixtures/config/scope.conf" "$ROOT_WITH_SCOPE/config/scope.conf"
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-06: as $ROOT_WITH_SCOPE above, plus a real
+# `modules/` - `_guide_g1_reachable` looks for `modules/<cmd>/run.sh` ON DISK
+# at G1 menu-build time, which $ROOT_WITH_SCOPE deliberately lacks (its own
+# dispatch-level tests rely on a missing module degrading to a harmless
+# coverage_reduction no-op, so it never needed one); a guided-menu case that
+# must actually REACH G3 needs `dast` to read as built, not only as
+# dispatchable.  COPIED, never symlinked, and canonicalised
+# (`cd && pwd -P`, matching $ROOT_WITH_CHECKS below): lib/records.sh resolves
+# every loaded file's path via realpath and strips $SCOURSH_INSTALL_ROOT as a
+# literal prefix, which a symlinked `modules/` defeats (realpath follows the
+# symlink to the REAL tree, so the strip fails and every real check-registry
+# load - anything that actually DISPATCHES, not merely a G1 reachability
+# probe - fires a spurious E081); measured directly building this fixture.
+ROOT_WITH_SCOPE_AND_MODULES=$(cd -- "$W" && mkdir -p root-with-scope-and-modules/config \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-modules/config/scope.conf \
+  && cp -R "$ROOT/modules" root-with-scope-and-modules/modules \
+  && cd -- root-with-scope-and-modules && pwd -P)
+
+# As $ROOT_WITH_SCOPE_AND_MODULES above, but carrying only sast/sca/iac - the
+# three modules the operator-reported preflight bug is about - and
+# deliberately WITHOUT modules/dast or modules/network, so a "valid --target,
+# does the run really reach dispatch" test can prove a real module actually
+# ran (a genuine modules/sast/rules/*.rules load, real checks_run facts)
+# without ever letting dast/network's own real HTTP layer attempt a
+# connection to the fixture's `https://app.fixture.invalid/` target (an RFC
+# 6761 reserved, deliberately non-resolving domain) - a network attempt this
+# suite has no business making and cannot make deterministic.  cloud/image
+# are left out for the same reason `all`'s own no-op fallback is desirable
+# here, not for any reason specific to them.
+ROOT_WITH_SCOPE_AND_SAST=$(cd -- "$W" && mkdir -p root-with-scope-and-sast/config root-with-scope-and-sast/modules \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-sast/config/scope.conf \
+  && cp -R "$ROOT/modules/sast" root-with-scope-and-sast/modules/sast \
+  && cp -R "$ROOT/modules/sca" root-with-scope-and-sast/modules/sca \
+  && cp -R "$ROOT/modules/iac" root-with-scope-and-sast/modules/iac \
+  && cd -- root-with-scope-and-sast && pwd -P)
+
 ROOT_NO_SCOPE=$W/root-no-scope
 mkdir -p "$ROOT_NO_SCOPE/config"
+
+# A scope.conf carrying two targets that deliberately share one base-url, so
+# a --target given as that URL resolves ambiguously (--target/--i-own-target
+# base-url resolution UX fix: an operator hit the "wants the ID, not the
+# base-url" refusal three times with the tool already holding the answer -
+# see lib/config.sh's config_scope_resolve_target and its own suite in
+# tests/suites/config.sh for the resolver's unit-level proof; this fixture
+# is what proves the wiring through scan_parse_args/_scan_resolve_target_flags
+# instead).
+ROOT_WITH_AMBIGUOUS_SCOPE=$W/root-with-ambiguous-scope
+mkdir -p "$ROOT_WITH_AMBIGUOUS_SCOPE/config"
+cat >"$ROOT_WITH_AMBIGUOUS_SCOPE/config/scope.conf" <<'EOF'
+id: dup-b
+base-url: https://shared.fixture.invalid/
+notes: Deliberately shares a base-url with dup-a below.
+
+id: dup-a
+base-url: https://shared.fixture.invalid/
+notes: See dup-b.
+EOF
 
 # A fixture SCOURSH_INSTALL_ROOT whose config/scanner.conf fails schema
 # validation, to prove the config loader really runs (and dies) before
@@ -65,6 +121,96 @@ printf 'id: scanner\njobs: 2\n' >"$ROOT_OK_SCANNER/config/scanner.conf"
 # is only ever called through assert_status, which contains that exit inside
 # its own subshell.
 _run_main() { scan_main "$@"; }
+
+# docs/STEP-GUIDE-PLAN.md GUIDE-03: `_run_main` alone is no longer safe for a
+# guided-eligible case now that a real G1/G2/G8 menu exists to block on -
+# `assert_status`'s own `( "$@" ) >/dev/null 2>&1` redirects stdout/stderr
+# but never stdin (AGENTS.md: "tests/run-tests.sh runs each suite as `bash
+# <path>` with no stdin ... redirection, and at a developer's terminal a
+# suite file therefore has stdin ... on a tty"), so an un-redirected guided
+# call here would try to read THIS suite's own real terminal.  `_run_main_in`
+# attaches STDIN (a here-string, a file, or /dev/null) directly to the
+# `scan_main` invocation itself - never through `$(...)`, which would let a
+# `die()` inside it escape only the subshell rather than the process, the
+# same hazard `_scan_require_readable_path`'s own comment documents at
+# length - so every guided case below that could reach a real prompt states
+# exactly what it feeds it rather than leaving that to chance.
+_run_main_in() {
+  local stdin_src=$1
+  shift
+  scan_main "$@" <"$stdin_src"
+}
+
+# `_run_main_answers ANSWERS CMD...` - the scripted-answer-stream sibling of
+# `_run_main_in`, for a case that must actually walk through G1/G2/G8 rather
+# than hit EOF immediately.  ANSWERS is fed via process substitution, the
+# same `< <(printf ...)` idiom tests/suites/guide.sh's own `guide_menu`
+# cases already use, for the identical reason: attaching the redirect
+# directly to the `scan_main` call keeps it OUT of any `$(...)` a die() could
+# only half-escape.
+_run_main_answers() {
+  local answers=$1
+  shift
+  scan_main "$@" < <(printf '%s' "$answers")
+}
+
+# `_guide_env [NAME=VALUE...] CMD...` - STATE the environment a guided case
+# needs instead of inheriting it from whatever machine the suite runs on.
+#
+# lib/guide.sh's five-condition gate reads NINE non-interactive environment
+# markers, and a hosted CI runner sets two of them (`CI` and `GITHUB_ACTIONS`)
+# for every process it starts.  `SCOURSH_GUIDE_FORCE_TTY` forces ONLY the two
+# terminal checks - deliberately, per that file's own header, so that a case
+# proving "the marker refuses even when the terminal check would pass" really
+# exercises the marker rather than re-proving the terminal gate - so it does
+# NOT make guided mode eligible on a runner, and a case that needs
+# ELIGIBILITY has to clear those markers for itself.  Inheriting eligibility
+# from "a developer's terminal happens not to be a CI runner" is an ambient
+# fact, and depending on it is what made this whole section pass at a
+# terminal and fail 13 assertions on BOTH `ubuntu-latest` and `macos-latest`
+# (identical counts on two userlands is what identifies it as an environment
+# difference rather than a GNU/BSD one).
+#
+# The clear-then-override order is what makes the two REFUSAL cases below
+# discriminating rather than vacuous: `_guide_env CI=1 ...` proves the `CI`
+# marker refuses because every other marker was removed first, and
+# `_guide_env SCOURSH_NO_PROMPT=1 ...` proves SCOURSH_NO_PROMPT refuses for
+# the same reason.  Run unchanged on a runner, each of those would have
+# passed off the runner's OWN inherited `CI`, certifying green whatever the
+# variable it names actually did.
+#
+# The marker list is read from lib/guide.sh's own `_GUIDE_ENV_MARKERS`, never
+# a second copy here: a copy would drift silently from the gate it exists to
+# mirror, and the drift would show up as this exact failure again.
+#
+# NONE OF THIS IS A NEW CONVENTION.  tests/suites/guide.sh has shipped the
+# identical shape since GUIDE-01 - `_GUIDE_TEST_CONTROLLED_VARS` plus
+# `_guide_test_prompt`, whose own comment already states the reason in as many
+# words ("so a real CI runner's own CI=true/GITHUB_ACTIONS=true ... never leaks
+# into a 'should allow' case").  This file's guided cases simply did not adopt
+# it, and the difference is the whole bug: that suite passed on CI and this one
+# did not.  A guided case added here later belongs in `_guide_env` for the same
+# reason, and a change to the gate's own condition list belongs in
+# `_GUIDE_ENV_MARKERS`, which both helpers read.
+#
+# Every caller runs this inside a subshell - `assert_status`'s own `( "$@" )`,
+# or an explicit `( ... ) >file 2>&1` capture - so the unsets and exports are
+# contained and one case can never alter the next.
+_guide_env() {
+  local _m
+  for _m in "${_GUIDE_ENV_MARKERS[@]+"${_GUIDE_ENV_MARKERS[@]}"}"; do
+    unset -v "$_m"
+  done
+  unset -v SCOURSH_NO_PROMPT
+  # Leading NAME=VALUE tokens only; the scan stops at the first token that is
+  # not one, which is the command to run.  Every command below is a `_run_main*`
+  # helper name, so there is no token this could mistake for an assignment.
+  while [[ ${1-} == [A-Za-z_]*=* ]]; do
+    export "${1?}"
+    shift
+  done
+  "$@"
+}
 
 # Portability (docs/FOUNDATION.md tension 24) is a structural property, not
 # something a text scan of the source can pin: `getopts` (the bash builtin)
@@ -156,23 +302,533 @@ t_case 'a non-numeric --jobs'
 assert_status 2 "'--jobs abc' is not a positive integer" \
   scan_parse_args sast --jobs abc --path .
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-02 moved the required-flag and cross-flag
+# block these four assertions pin out of scan_parse_args and into its own
+# `_scan_check_required`, called by scan_main AFTER its guided-mode routing
+# rather than from scan_parse_args itself - see that function's own header
+# for why. `scan_parse_args` ALONE no longer dies for any of these cases (a
+# bare `scan.sh dast` now parses cleanly, with no --target); this helper
+# runs the two in the same order scan_main does, so the four assertions
+# below keep pinning the exact same rules and exit-2 text they always did.
+_parse_and_require() {
+  scan_parse_args "$@"
+  _scan_check_required
+}
+
 t_case '--fail-on-new requires --fail-on in the SAME invocation'
 assert_status 2 '--fail-on-new with no --fail-on dies exit 2 (docs/FOUNDATION.md tension 14, the missing-gate-flags paragraph)' \
-  scan_parse_args sast --fail-on-new --path .
+  _parse_and_require sast --fail-on-new --path .
 scan_parse_args sast --fail-on-new --fail-on high --path .
 assert_eq true "${SCAN_FLAGS[fail-on-new]}" '--fail-on-new with --fail-on present parses cleanly'
 
 t_case "'dast' requires --target"
 assert_status 2 "'scan.sh dast' with no --target dies exit 2" \
+  _parse_and_require dast
+assert_status 0 \
+  "'scan.sh dast' with no --target parses cleanly through scan_parse_args ALONE - fails under 'the required-flag block never moved', which is exactly what would break 'scan.sh dast --guided' (docs/STEP-GUIDE-PLAN.md GUIDE-02)" \
   scan_parse_args dast
 
 t_case "'diff' requires --against, 'report' requires --from"
-assert_status 2 "'scan.sh diff' with no --against dies exit 2" scan_parse_args diff
-assert_status 2 "'scan.sh report' with no --from dies exit 2" scan_parse_args report
+assert_status 2 "'scan.sh diff' with no --against dies exit 2" _parse_and_require diff
+assert_status 2 "'scan.sh report' with no --from dies exit 2" _parse_and_require report
 
 t_case 'an unexpected positional argument'
 assert_status 2 'no documented command takes a bare positional (docs/DESIGN.md §5 is entirely flag-based)' \
   scan_parse_args sast extra-arg --path .
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: the guided-flow settable-flag registry --\n'
+# =============================================================================
+# GUIDE_SETTABLE_FLAGS lives in lib/guide.sh (scan.sh sources it), and is the
+# single source of truth every later GUIDE-0x ticket appends a flag NAME to
+# as it wires a real prompt. This is what makes "a guided prompt's flag must
+# already be legal for the parser" structural rather than a convention - see
+# that array's own header comment for the full contract. It is no longer
+# empty as of GUIDE-04 (G3/G5/G6's own `target`/`intensity`/`i-own-target`/
+# `requests-per-second`/`request-budget`/`allow-intrusive`), so the `for`
+# loop below now actually asserts something on every run rather than the
+# zero-iteration no-op it was under GUIDE-02 alone.
+t_case 'every entry in GUIDE_SETTABLE_FLAGS names a real _SCAN_FLAG_KIND key'
+if (( ${#GUIDE_SETTABLE_FLAGS[@]} == 0 )); then
+  _t_ok 'GUIDE_SETTABLE_FLAGS is empty - GUIDE-02 wires no real prompt yet, so there is nothing to check against _SCAN_FLAG_KIND, and a for loop over it below would run zero iterations either way'
+else
+  for _guide_flag in "${GUIDE_SETTABLE_FLAGS[@]}"; do
+    _guide_flag_found=0
+    for _guide_key in "${!_SCAN_FLAG_KIND[@]}"; do
+      [[ $_guide_key == *":$_guide_flag" ]] && _guide_flag_found=1 && break
+    done
+    if (( _guide_flag_found )); then
+      _t_ok "GUIDE_SETTABLE_FLAGS entry '$_guide_flag' matches a real _SCAN_FLAG_KIND key"
+    else
+      _t_no "GUIDE_SETTABLE_FLAGS entry '$_guide_flag' matches a real _SCAN_FLAG_KIND key" \
+        "no '*:$_guide_flag' key exists in _SCAN_FLAG_KIND - a guided prompt would compose a flag the parser itself refuses"
+    fi
+  done
+fi
+unset _guide_flag _guide_key _guide_flag_found
+
+t_case "--guided and --print-command (this ticket's own two additions) parse as ordinary global bool flags"
+scan_parse_args sast --guided --path .
+assert_eq true "${SCAN_FLAGS[guided]}" '--guided parses to true on an arbitrary command, since it is declared global'
+scan_parse_args sast --print-command --path .
+assert_eq true "${SCAN_FLAGS[print-command]}" '--print-command parses to true the same way'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: guided-mode routing in scan_main --\n'
+# =============================================================================
+# Every case here runs scan_main FOR REAL, through _run_main, never
+# scan_parse_args alone - the routing this ticket adds lives in scan_main
+# itself, both before and after the scan_parse_args call (see scan_main's
+# own comments at its top). assert_status already redirects both stdout and
+# stderr to /dev/null (tests/lib/assert.sh's own `( "$@" ) >/dev/null 2>&1`),
+# which alone makes stderr non-a-terminal for every case below, exactly as
+# tests/suites/scan.sh's own `_bin_run` helper already relies on further
+# down this file; SCOURSH_GUIDE_FORCE_TTY is the only way to force the
+# TERMINAL half of the gate under that redirection, the identical hook
+# tests/suites/guide.sh already uses for lib/guide.sh's own gate.
+#
+# The terminal half is not the whole gate, and every case below goes through
+# `_guide_env` (defined above with the other `_run_main*` helpers) for the
+# rest of it: whether guided mode is eligible, ineligible-for-the-terminal,
+# or ineligible-for-a-named-marker is stated per case rather than inherited
+# from the machine.  Nothing here reads as "eligible" merely because the
+# developer running it is not sitting inside a CI runner.  Read that
+# function's own header for the measured failure this shape exists to
+# prevent.
+#
+# STDIN IS STATED TOO, not inherited.  tests/run-tests.sh runs each suite as
+# `bash <path>` with no stdin redirection, so at a real developer terminal a
+# suite file's stdin IS a tty while on a headless runner it is not - and
+# `assert_status`/`( ... ) >file 2>&1` redirect stdout and stderr but never
+# stdin.  A case whose expected REASON is the stdin check therefore has to
+# attach its own stdin (`_run_main_in /dev/null`), or it names whichever
+# condition the ambient stdin happens to leave failing - the mirror image of
+# the marker problem, failing at a terminal and passing on a runner.
+
+t_case 'bare scan.sh (zero arguments) with no terminal is UNCHANGED: today''s "no command given" usage error, never a guided-mode message'
+# Genuinely ZERO arguments, on purpose - `--out X` alone makes `$#` 2, which
+# never satisfies scan_main's own `(( $# == 0 ))` guided-mode test and so
+# would exercise "unknown command: '--out'" instead of the case this claims
+# to test; both dead ends exit 2, which is exactly how that mistake would
+# stay invisible if made here.
+cd "$W"
+assert_status 2 \
+  'zero arguments with no terminal falls straight through to the unmodified scan_parse_args call - the dedicated byte-identical non-regression case further below in this file proves the text itself never changed' \
+  _run_main
+cd "$ROOT"
+
+t_case 'bare scan.sh (zero arguments) with a forced terminal: guided mode is eligible and reaches the real G1 menu (docs/STEP-GUIDE-PLAN.md GUIDE-03) - EOF at G1 refuses honestly rather than running an unconfigured scan'
+cd "$W"
+assert_status 2 \
+  "eligible zero-arg guided mode with no scripted answer hits EOF at G1's own menu and dies exit 2 - fails under 'fall back to silently running today's usage error', indistinguishable from the ineligible case above, and under 'silently run some default scan', which the plan calls a worse outcome than a clear refusal" \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null
+cd "$ROOT"
+assert_file_absent "$W/reports" 'a refused zero-argument invocation - eligible or not - never reaches run_init, so no default reports/<timestamp> directory was created under the cwd it ran from'
+
+t_case '--guided explicitly given with no terminal: fails LOUDLY with the concrete reason, before any required-flag check ever runs'
+# `_guide_env` with no override and `_run_main_in /dev/null` between them make
+# stdin the ONE failing condition: no marker is set, and stdin is a file.  That
+# is what makes the assertion below discriminating, since `guide_ineligible_reason`
+# names the FIRST failing condition in the gate's own order - with the ambient
+# stdin of a developer's terminal it would name stderr instead, and with a
+# runner's inherited `CI` left in place "no terminal" and "a CI marker is set"
+# would be indistinguishable, which is exactly what that assertion claims to
+# rule out.
+rm -rf "$W/run-guide-explicit-noterm"
+assert_status 2 \
+  '--guided with no terminal dies exit 2, even though `dast` was given no --target at all - fails if the moved required-flag check still ran first and reported the wrong reason' \
+  _guide_env _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-noterm"
+GUIDE_NOTERM_OUT=$W/guide-noterm.out
+( _guide_env _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-noterm2" ) >"$GUIDE_NOTERM_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_NOTERM_OUT")" 'standard input is not a terminal' \
+  'the concrete reason is named, not a generic refusal - fails under a message that cannot distinguish "no terminal" from "a CI marker is set" from "SCOURSH_NO_PROMPT is set"'
+assert_file_absent "$W/run-guide-explicit-noterm" 'no run directory was created'
+
+t_case '--guided explicitly given with a forced terminal: eligible, skips G1 (the command was already typed) and reaches G8 - EOF there refuses honestly (same "nothing ran" outcome as the bare-terminal case)'
+rm -rf "$W/run-guide-explicit-tty"
+assert_status 2 \
+  '--guided with a forced terminal and no CI marker, and no scripted answer, hits EOF at G8 (dast has no G2 follow-ups) and dies exit 2' \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-tty"
+assert_file_absent "$W/run-guide-explicit-tty" 'no run directory was created'
+
+t_case 'a CI marker refuses --guided even with a forced terminal - the environment layer can only ever turn prompting OFF, never on'
+rm -rf "$W/run-guide-ci"
+assert_status 2 \
+  "'CI' set in the environment refuses --guided even though the terminal checks would pass - fails under 'a pty-allocating CI runner is interactive', exactly the shape docs/STEP-GUIDE-PLAN.md's condition 4 exists to catch" \
+  _guide_env CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci"
+GUIDE_CI_OUT=$W/guide-ci.out
+( _guide_env CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci2" ) >"$GUIDE_CI_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_CI_OUT")" "'CI' is set in the environment" \
+  'the CI marker itself is named as the concrete reason'
+assert_file_absent "$W/run-guide-ci" 'no run directory was created'
+
+t_case 'SCOURSH_NO_PROMPT refuses --guided even with a forced terminal and no CI marker - the one documented way to force guided mode off'
+rm -rf "$W/run-guide-noprompt"
+assert_status 2 \
+  'SCOURSH_NO_PROMPT refuses --guided' \
+  _guide_env SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null dast --guided --out "$W/run-guide-noprompt"
+# The exit status ALONE does not pin this, and did not before `_guide_env`
+# either: an ELIGIBLE `--guided` that reads EOF at G8 also dies exit 2, so a
+# gate that ignored SCOURSH_NO_PROMPT entirely would still satisfy the status
+# assertion above.  Measured, not reasoned: with `guide_may_prompt` mutated to
+# drop its environment layer, the sibling `CI` case below went red on its own
+# reason assertion and this case stayed green until this one was added.  The
+# reason is what discriminates, exactly as it does for `CI`.
+GUIDE_NOPROMPT_OUT=$W/guide-noprompt.out
+( _guide_env SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_in /dev/null dast --guided --out "$W/run-guide-noprompt2" ) >"$GUIDE_NOPROMPT_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_NOPROMPT_OUT")" 'SCOURSH_NO_PROMPT is set' \
+  'SCOURSH_NO_PROMPT itself is named as the concrete reason - fails under a gate that dropped its environment layer, where the exit-2 status alone would still pass off the EOF an eligible run reaches at G8'
+assert_file_absent "$W/run-guide-noprompt" 'no run directory was created'
+assert_file_absent "$W/run-guide-noprompt2" 'and none for the reason probe either'
+
+t_case 'a fully-flagged command with no --guided is silent even on a forced terminal - guided mode never runs unless it was asked for'
+mkdir -p "$W/guide-silent-tree"
+printf 'print("hello")\n' >"$W/guide-silent-tree/x.py"
+rm -rf "$W/run-guide-silent"
+assert_status 0 \
+  "sast --path with everything it needs and no --guided runs normally on a 'terminal' - fails under 'guided mode fires whenever a terminal is present', which would make an ordinary interactive invocation impossible without a flag to suppress it" \
+  _guide_env SCOURSH_INSTALL_ROOT="$ROOT_OK_SCANNER" SCOURSH_GUIDE_FORCE_TTY=true \
+  _run_main sast --path "$W/guide-silent-tree" --out "$W/run-guide-silent"
+assert_file_exists "$W/run-guide-silent/run.json" 'the run actually happened - this is not another refusal that merely exits 0'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-03: the G1 scan-type menu --\n'
+# =============================================================================
+# This ticket's own acceptance criterion, verbatim: "a suite case asserting
+# the menu's ready set equals the set of modules with a run.sh on disk,
+# because a shared-function convention is a thing a future edit can break."
+# Two proofs, not one: against the REAL tree (where this project's own
+# build-order state decides the answer - as of PR #275, sast/sca/iac/dast
+# AND cloud have all landed, so every module in this loop is reachable on
+# a real checkout today; the assertion still holds because it reads
+# `_scan_module_built` at run time rather than hardcoding which are ready),
+# and against a FIXTURE tree built to name an arbitrary subset, so the
+# assertion is discriminating rather than a coincidence of what this
+# checkout happens to have on disk right now.
+t_case "_guide_g1_reachable equals _scan_module_built (\"the same probe scan_dispatch uses\") on the real tree"
+for _guide_mod in sast sca iac dast cloud; do
+  _guide_on_disk=0
+  [[ -f $(_scan_module_script "$_guide_mod") ]] && _guide_on_disk=1
+  _guide_reachable=0
+  _guide_g1_reachable "$_guide_mod" && _guide_reachable=1
+  assert_eq "$_guide_on_disk" "$_guide_reachable" \
+    "guided-menu reachability for '$_guide_mod' matches modules/$_guide_mod/run.sh (or, for cloud, modules/cloud/aws/run.sh) on disk"
+done
+unset _guide_mod _guide_on_disk _guide_reachable
+
+t_case '_guide_g1_reachable tracks an arbitrary fixture set of run.sh files, not a hardcoded list - fails under a hardcoded true/false per module name'
+ROOT_GUIDE_SUBSET=$W/root-guide-subset
+rm -rf "$ROOT_GUIDE_SUBSET"
+mkdir -p "$ROOT_GUIDE_SUBSET/modules/sast" "$ROOT_GUIDE_SUBSET/modules/iac"
+printf '#!/usr/bin/env bash\n' >"$ROOT_GUIDE_SUBSET/modules/sast/run.sh"
+printf '#!/usr/bin/env bash\n' >"$ROOT_GUIDE_SUBSET/modules/iac/run.sh"
+for _guide_mod in sast sca iac dast cloud; do
+  _guide_want=0
+  [[ $_guide_mod == sast || $_guide_mod == iac ]] && _guide_want=1
+  _guide_got=0
+  SCOURSH_INSTALL_ROOT=$ROOT_GUIDE_SUBSET _guide_g1_reachable "$_guide_mod" && _guide_got=1
+  assert_eq "$_guide_want" "$_guide_got" \
+    "on a fixture tree with only sast/iac run.sh present, '$_guide_mod' reachability matches"
+done
+unset _guide_mod _guide_want _guide_got
+
+# The five cases below all pick a scan type AT G1, which is only reachable
+# through the bare-zero-argument branch (docs/STEP-GUIDE-PLAN.md's own
+# `--guided` skips G1 whenever a command was already typed - see the preset
+# case further below).  Genuinely zero arguments means no `--out` either
+# (the earlier "bare scan.sh" cases above already establish why one more
+# token, even `--out X`, defeats scan_main's own `(( $# == 0 ))` test and
+# would exercise "unknown command" instead of the guided menu) - so each
+# case `cd`s into its own scratch directory instead, letting the default
+# `reports/<timestamp>` fall there if it were ever created, and always
+# `cd`s back out afterward.
+# PR #275 landed modules/cloud/aws/run.sh (30 of 30 AWS services), so every
+# item in this fixed 7-item menu (sast/sca/iac/dast/cloud/all/quit) is now
+# reachable on a real checkout - `_guide_g1_reachable` for every named module
+# returns 0, per the real-tree proof above.  The G1 "loops back with a
+# not-built explanation" branch (`_guide_g1_explain_not_built`, still present
+# in scan.sh for the day a module regresses or a new one is added ahead of
+# its own run.sh) therefore has NO module left to exercise it through this
+# menu - it is unreachable on this codebase's own real tree today, and this
+# case is re-expressed around cloud's real, current behaviour rather than
+# left pinning a defect that no longer exists.  Coverage for the loop-back
+# MECHANISM itself (re-asking and returning to G1) still lives in the
+# bad-`--path` case further below, which reaches it via a bad answer rather
+# than an unbuilt module.
+t_case "picking item 5 (cloud, now built) proceeds past G1 with its own partial-guided-setup note, never the not-built loop-back - the menu's fixed 7 items never reorder"
+GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
+rm -rf "$GUIDE_CLOUD_LOOP_DIR"
+mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
+cd "$GUIDE_CLOUD_LOOP_DIR"
+assert_status 0 \
+  "item 5 (cloud) proceeds past G1 into G8 (no local-surface G2/G3 questions apply to cloud); G8 '1' (no CI gate) then G9 '3' (Cancel) exits 0 with nothing scanned - fails if the menu numbering shifted cloud out of its fixed slot, or if picking it still bounced back to G1" \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n'
+cd "$ROOT"
+assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'cancelling from the guided flow never creates a run directory'
+
+GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
+cd "$GUIDE_CLOUD_LOOP_DIR"
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+cd "$ROOT"
+assert_not_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version' \
+  'cloud is built now, so the not-built loop-back explanation is never shown - fails if picking cloud still looped back to G1'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'guided setup for this is partial - see below' \
+  "cloud's menu row still names its OWN, real limitation (guided setup beyond scan type is partial) - fails under a status word that cannot distinguish this from an ordinary refusal"
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'Cancelled.  Nothing was scanned.' \
+  'Cancel at G9, reached only because cloud proceeded past G1, prints the ordinary cancellation message, never a guided-specific one'
+
+t_case 'sca with no advisories.db explains and still proceeds - the operator may proceed, per this ticket'"'"'s own G1 wording'
+GUIDE_SCA_DIR=$W/guide-sca-dir
+rm -rf "$GUIDE_SCA_DIR"
+mkdir -p "$GUIDE_SCA_DIR"
+GUIDE_SCA_OUT=$W/guide-sca.out
+GUIDE_SCA_RC=0
+cd "$GUIDE_SCA_DIR"
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'2\n\n1\n' ) >"$GUIDE_SCA_OUT" 2>&1 || GUIDE_SCA_RC=$?
+cd "$ROOT"
+assert_eq 2 "$GUIDE_SCA_RC" 'sca proceeds through G2/G8 to the "no G9 yet" refusal, never a loop-back, even with no advisories.db'
+assert_contains "$(cat "$GUIDE_SCA_OUT")" 'No advisory database is installed' \
+  'the missing-db explanation is shown - fails under sca silently being treated as ready'
+assert_contains "$(cat "$GUIDE_SCA_OUT")" 'scan.sh sca' \
+  'and the composed preview still names sca, proving it was not bounced back to G1'
+assert_file_absent "$GUIDE_SCA_DIR/reports" 'no run directory was created (G9 does not exist yet)'
+
+t_case 'docs/STEP-GUIDE-PLAN.md GUIDE-06: dast (module built) proceeds past G1 straight into the real G3 target menu, skips G2 entirely (dast has no --path/--lang/--history), and reaches G9'
+GUIDE_DAST_DIR=$W/guide-dast-dir
+rm -rf "$GUIDE_DAST_DIR"
+mkdir -p "$GUIDE_DAST_DIR"
+GUIDE_DAST_OUT=$W/guide-dast.out
+GUIDE_DAST_RC=0
+cd "$GUIDE_DAST_DIR"
+# G1 "4" (dast) -> G3 "1" (the first of three fixture targets, fixture-target)
+# -> G5 "1" (passive, the conservative default: guide_dast_limits_flow then
+# asks NOTHING further, per its own header - no affirmation, no rate/budget)
+# -> G8 "1" (no CI gate) -> G9 "2" (print the command and exit).  Five
+# answers exactly - a sixth would mean G2 or the affirmation flow were asked
+# unexpectedly for a conservative-intensity dast run.
+( _guide_env SCOURSH_INSTALL_ROOT="$ROOT_WITH_SCOPE_AND_MODULES" SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_answers $'4\n1\n1\n1\n2\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
+cd "$ROOT"
+assert_eq 0 "$GUIDE_DAST_RC" \
+  'G9''s own "Print the command and exit" item exits 0 - fails if G3/G5/G6 were still the pre-GUIDE-06 "not wired in" stub, which would die exit 2 well before a sixth prompt'
+GUIDE_DAST_TEXT=$(cat "$GUIDE_DAST_OUT")
+assert_contains "$GUIDE_DAST_TEXT" 'DAST only ever talks to a host you have authorised in config/scope.conf' \
+  'the real G3 target-menu banner was shown - fails under the pre-GUIDE-06 "guided setup beyond the scan type is not wired in" note, which this ticket removes for dast'
+assert_contains "$GUIDE_DAST_TEXT" 'scan.sh dast --target fixture-target' \
+  'the composed command names the chosen target and carries no --intensity/--i-own-target/--requests-per-second/--request-budget/--allow-intrusive, since item 1 was picked at every menu'
+assert_not_contains "$GUIDE_DAST_TEXT" '--intensity' \
+  'passive is the unspoken default - fails if choosing it at G5 still emitted an explicit --intensity passive'
+assert_contains "$GUIDE_DAST_TEXT" 'read-only checks against https://app.fixture.invalid/' \
+  'G9''s plain-language "This will:" statement describes the passive, read-only case for the CHOSEN target'"'"'s real base-url, read out of config/scope.conf - fails under prose that never varies with the answers given'
+assert_not_contains "$GUIDE_DAST_TEXT" 'Authorisation affirmed' \
+  'no affirmation was made on the conservative path, so G9 restates none'
+assert_file_absent "$GUIDE_DAST_DIR/reports" 'no run directory was created - "Print the command" never runs a scan'
+
+t_case 'the same G9 "Print the command" choice writes ONLY the command to stdout, per docs/STEP-GUIDE-PLAN.md'"'"'s own "so it pipes and copies"'
+GUIDE_DAST_STDOUT=$W/guide-dast.stdout
+cd "$GUIDE_DAST_DIR"
+( _guide_env SCOURSH_INSTALL_ROOT="$ROOT_WITH_SCOPE_AND_MODULES" SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_answers $'4\n1\n1\n1\n2\n' ) >"$GUIDE_DAST_STDOUT" 2>/dev/null || true
+cd "$ROOT"
+assert_eq 'scan.sh dast --target fixture-target' "$(cat "$GUIDE_DAST_STDOUT")" \
+  'stdout carries EXACTLY the composed command and nothing else - fails if any of the review-screen prose (the "Ready."/"This will:" text, which belongs on stderr) leaked onto stdout, which would break piping the output straight into a shell'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-06: the load-bearing round-trip test --\n'
+# =============================================================================
+# "Run the guided flow with a scripted answer stream, then run the rendered
+# command non-interactively, and assert the two runs' run.json flag facts,
+# authorization object and config object are byte-identical.  It must fail
+# under the reading 'the printed command is a best-effort summary'."
+#
+# Two REAL processes (`bash scan.sh ...`, not the sourced `_run_main`
+# helpers): the claim under test is that the printed command IS what ran, so
+# the second invocation is typed as an operator would actually type it - a
+# plain, non-guided `scan.sh dast --target ... --i-own-target ... ...`, spawned
+# fresh, with no guided-mode machinery anywhere near it.
+#
+# The target (http://169.254.1.1:1/, a link-local literal - `tests/lint-shell.sh`'s
+# DAST-35 check admits link-local/private/CGNAT/TEST-NET literals anywhere in
+# the tree, unlike loopback, which it restricts to `tools/dast-test-target/`'s
+# own path exemption) refuses every connection INSTANTLY: nothing listens on
+# TCP port 1, and no interface on this host is configured on that link-local
+# subnet, so the kernel refuses it without a single packet leaving the
+# machine (measured: `rc=7`, 0ms, vs. a TEST-NET literal like 192.0.2.1, which
+# is safe by the identical lint rule but is actually ROUTED off-host and so
+# blocks for the full `http-timeout` per attempt instead of failing
+# immediately - the wrong choice for a test that needs to stay fast).
+#
+# THAT "INSTANTLY" IS A PROPERTY OF THE HOST'S ROUTE TABLE, NOT OF THE
+# ADDRESS, AND IT IS FALSE ON EVERY CLOUD RUNNER - which is why every
+# invocation below ALSO pins `SCOURSH_HTTP_TIMEOUT`.  On a developer machine
+# 169.254.0.0/16 is a REJECT route (measured here: `netstat -rn` shows the
+# `!` blackhole flag, and curl returns `rc=7` "Could not connect" after 0 ms),
+# so the kernel refuses without a packet leaving the host, exactly as the
+# paragraph above says.  A GitHub-hosted runner is a cloud VM whose primary
+# NIC carries an ORDINARY link-local route, because 169.254.169.254 is the
+# instance-metadata endpoint - so the same connect ARPs for an address
+# nothing answers and blocks for the FULL `http-timeout` (20s, lib/http.sh's
+# `_http_transport_default` passes it to curl as `--max-time`) instead of
+# 0 ms.  At the default breaker ceiling that is 10 x 20s per run, and the
+# `--circuit-breaker-failures 50` case below tolerates FIFTY failures before
+# opening: 1000 seconds for one assertion group, on a suite CI must finish
+# inside a fixed budget.  Pinning the timeout bounds the damage to 2s per
+# attempt WITHOUT changing a single thing any assertion reads: every
+# assertion here is about what run.json RECORDS (the authorization object,
+# the config object, a flag fact), never about how many connections were
+# attempted, how long one took, or whether the breaker opened.  On a host
+# where the route really does reject instantly the value is never reached at
+# all, so this is inert there and identical to the pre-change behaviour.
+# `SCOURSH_HTTP_TIMEOUT` is lib/http.sh's own seam for this (read with a
+# default at the single curl invocation); the `http-timeout` scanner.conf key
+# is deliberately NOT used, because it is resolved for `run.json`'s config
+# record and never reaches the transport - setting it here would be a silent
+# no-op.
+# `--requests-per-second` is raised to "No limit" so nothing here is bounded
+# by wall-clock rate - the run therefore always ends the same way, in well
+# under a second: `lib/http.sh`'s own circuit breaker opens at its default
+# threshold (10 failed requests within its window) and the run stops itself.
+# That determinism is what keeps this test fast and non-flaky while still
+# exercising a REAL `scan_dispatch dast` from end to end - not merely
+# `scan_parse_args` in isolation, the way the earlier `guide_dast_configure`
+# round-trip cases above already do.
+#
+# Both fixture roots get their OWN COPY of modules/ (never a symlink - see
+# $ROOT_WITH_SCOPE_AND_MODULES's own header above for why a symlinked
+# modules/ fires a spurious E081 the instant a real check registry loads)
+# and are canonicalised (`cd && pwd -P`) for the identical
+# $ROOT_WITH_CHECKS reason.
+# The per-attempt transport bound the long comment above argues for.  Two
+# seconds rather than one: it has to stay a plausible REAL timeout, so that a
+# host which answers slowly but correctly is still answered rather than being
+# turned into a synthetic failure by the test's own impatience.  Every
+# consumer of it below (both round-trip runs and the circuit-breaker run)
+# takes the SAME value, which is what keeps RUN 1 and RUN 2 comparable - the
+# two are asserted byte-identical on their authorization and config objects,
+# so an asymmetric bound here would be a real difference between them.
+RT_HTTP_TIMEOUT=2
+RT_ROOT1=$(cd -- "$W" && mkdir -p rt-root1/config && cp -R "$ROOT/modules" rt-root1/modules \
+  && cd -- rt-root1 && pwd -P)
+RT_ROOT2=$(cd -- "$W" && mkdir -p rt-root2/config && cp -R "$ROOT/modules" rt-root2/modules \
+  && cd -- rt-root2 && pwd -P)
+cat >"$RT_ROOT1/config/scope.conf" <<'EOF'
+id: roundtrip-target
+base-url: http://169.254.1.1:1/
+allow-subdomains: false
+allow-private-addresses: true
+EOF
+cp "$RT_ROOT1/config/scope.conf" "$RT_ROOT2/config/scope.conf"
+
+t_case 'RUN 1: the guided flow, with a scripted answer stream, actually runs the scan ("Run it" at G9)'
+# `dast --guided` below already names the command, so G1 is skipped and the
+# FIRST scripted answer goes straight to G3: "1" (the only target) -> G5 "3"
+# (active) -> G6 confirm "roundtrip-target" -> G6 rate "4" (No limit) -> G6
+# budget "1" (unchanged from the ceiling) -> G6 intrusive "1" (No) -> G8 "1"
+# (no CI gate) -> G9 "1" (Run it).
+RT_ANSWERS=$'1\n3\nroundtrip-target\n4\n1\n1\n1\n1\n'
+RT_LOG1=$W/rt-run1.log
+( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT1" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
+    bash "$ROOT/scan.sh" dast --guided --out "$RT_ROOT1/out" <<<"$RT_ANSWERS" ) >"$RT_LOG1" 2>&1 || true
+assert_file_exists "$RT_ROOT1/out/run.json" \
+  'FAILS if the guided "Run it" path never reached scan_parse_args/run_init at all - a run this test cannot compare against anything'
+RT_PRINTED=$(grep '^  scan\.sh dast' "$RT_LOG1" | head -1)
+RT_PRINTED=${RT_PRINTED#  }
+assert_contains "$RT_PRINTED" 'scan.sh dast' \
+  'the composed command was actually printed on the review screen before "Run it" ran it'
+
+t_case 'RUN 2: that EXACT printed line, typed as a plain non-guided invocation in a fresh process'
+RT_ARGS=${RT_PRINTED#scan.sh }
+RT_ARGS=${RT_ARGS//"$RT_ROOT1/out"/"$RT_ROOT2/out"}
+RT_LOG2=$W/rt-run2.log
+# SC2086: RT_ARGS is deliberately unquoted here - it is a space-separated
+# argv line (flag tokens plus their values), and the whole point of this
+# case is to feed it to a fresh shell the way an operator pasting the
+# printed command would, which means real word splitting rather than one
+# giant single argument.
+# shellcheck disable=SC2086
+( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT2" SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
+    bash "$ROOT/scan.sh" $RT_ARGS ) </dev/null >"$RT_LOG2" 2>&1 || true
+assert_file_exists "$RT_ROOT2/out/run.json" \
+  'FAILS if the plain, non-guided invocation of the printed command could not even complete a run.json - the two runs would then have nothing to compare'
+
+t_case 'the load-bearing assertion: run.json'"'"'s authorization object is byte-identical between the two runs (modulo the wall-clock affirmed_at timestamp)'
+_rt_block() { sed -n "/^  \"$2\": {\$/,/^  },\$/p" "$1"; }
+RT_AUTH1=$(_rt_block "$RT_ROOT1/out/run.json" authorization | sed -E 's/"affirmed_at": "[^"]*"/"affirmed_at": "<TS>"/')
+RT_AUTH2=$(_rt_block "$RT_ROOT2/out/run.json" authorization | sed -E 's/"affirmed_at": "[^"]*"/"affirmed_at": "<TS>"/')
+assert_eq "$RT_AUTH1" "$RT_AUTH2" \
+  'FAILS under the reading "the printed command is a best-effort summary" - if the guided flow recorded anything (an affirmation_source, a limits_relaxed entry, an intensity) that the identical typed command did not reproduce, this is where it would show up'
+assert_contains "$RT_AUTH1" '"affirmed": true' \
+  'the comparison above is not vacuously true on two empty/unaffirmed objects - a real affirmation with real relaxed limits is what both runs actually recorded'
+assert_contains "$RT_AUTH1" 'requests-per-second:4.000->999999999.000' \
+  'and the specific numeric delta G6''s rate menu raised is part of what round-tripped identically'
+
+t_case 'the load-bearing assertion: run.json'"'"'s config object is byte-identical between the two runs'
+RT_CFG1=$(_rt_block "$RT_ROOT1/out/run.json" config)
+RT_CFG2=$(_rt_block "$RT_ROOT2/out/run.json" config)
+assert_eq "$RT_CFG1" "$RT_CFG2" \
+  'every scanner.conf key (not only the two the guided flow set) resolved to the identical value AND source in both runs, including scope_conf_sha256 tying both runs to the SAME authorisation-file bytes'
+assert_contains "$RT_CFG1" '"requests-per-second": {"value": "999999999", "source": "cli"}' \
+  'the raised rate is recorded as CLI-sourced in both, not merely present'
+
+t_case 'the load-bearing assertion: a "flag fact" (targets) is byte-identical between the two runs too'
+RT_TGT1=$(grep '"targets":' "$RT_ROOT1/out/run.json")
+RT_TGT2=$(grep '"targets":' "$RT_ROOT2/out/run.json")
+assert_eq '  "targets": ["roundtrip-target"],' "$RT_TGT1" 'RUN 1 recorded the chosen target'
+assert_eq "$RT_TGT1" "$RT_TGT2" 'and RUN 2 recorded the identical fact'
+
+t_case 'a bad --path is re-asked once, then returns to G1 (never dies) - docs/STEP-GUIDE-PLAN.md'"'"'s own G2 row'
+GUIDE_BADPATH_DIR=$W/guide-badpath-dir
+rm -rf "$GUIDE_BADPATH_DIR"
+mkdir -p "$GUIDE_BADPATH_DIR"
+GUIDE_BADPATH_OUT=$W/guide-badpath.out
+GUIDE_BADPATH_RC=0
+cd "$GUIDE_BADPATH_DIR"
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\n/no/such/dir-scoursh-guide-test\n/still/bad-scoursh-guide-test\n7\n' ) >"$GUIDE_BADPATH_OUT" 2>&1 || GUIDE_BADPATH_RC=$?
+cd "$ROOT"
+assert_eq 0 "$GUIDE_BADPATH_RC" 'two bad paths return to G1, where quit (item 7) exits 0 - fails under scan_parse_args-style die() on a bad guided-mode path answer'
+assert_contains "$(cat "$GUIDE_BADPATH_OUT")" 'does not exist, or is not readable' \
+  'the re-ask explanation is shown'
+assert_contains "$(cat "$GUIDE_BADPATH_OUT")" 'Returning to the scan-type menu' \
+  'and the second bad answer sends the operator back to G1 rather than a third re-ask'
+assert_file_absent "$GUIDE_BADPATH_DIR/reports" 'no run directory was created'
+
+t_case 'the full local-surface path (docs/STEP-GUIDE-PLAN.md G1+G2+G8) composes the expected flags into the preview'
+GUIDE_SAST_DIR=$W/guide-sast-dir
+rm -rf "$GUIDE_SAST_DIR"
+mkdir -p "$GUIDE_SAST_DIR/guide-sast-tree"
+GUIDE_SAST_OUT=$W/guide-sast.out
+GUIDE_SAST_RC=0
+cd "$GUIDE_SAST_DIR"
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\nguide-sast-tree\npy,js\n2\n4\n' ) >"$GUIDE_SAST_OUT" 2>&1 || GUIDE_SAST_RC=$?
+cd "$ROOT"
+assert_eq 2 "$GUIDE_SAST_RC" 'sast through G1/G2 (path, languages, git history) and G8 (fail-on) reaches the "no G9 yet" refusal'
+GUIDE_SAST_TEXT=$(cat "$GUIDE_SAST_OUT")
+assert_contains "$GUIDE_SAST_TEXT" 'scan.sh sast --fail-on medium --history --lang py,js --path guide-sast-tree' \
+  'the composed preview names every answered flag, alphabetically sorted, with the boolean --history carrying no value token - fails under a preview that drops an answer or mis-renders a bool as a value flag'
+assert_file_absent "$GUIDE_SAST_DIR/reports" 'no run directory was created'
+
+mkdir -p "$W/guide-sast-tree"
+
+t_case '`scan.sh sast --path X --guided` skips G1 (the command was already typed) and G2''s path question (--path was already given) - docs/STEP-GUIDE-PLAN.md: "'"'"'--guided'"'"' only ever fills flags that were not supplied on the command line"'
+GUIDE_PRESET_OUT=$W/guide-preset.out
+GUIDE_PRESET_RC=0
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'\n1\n1\n' sast --path "$W/guide-sast-tree" --guided --out "$W/run-guide-preset" ) >"$GUIDE_PRESET_OUT" 2>&1 || GUIDE_PRESET_RC=$?
+assert_eq 2 "$GUIDE_PRESET_RC" 'three answers (languages default, no history, no gate) are enough - a fourth for --path would mean G1 or the path question ran unexpectedly'
+assert_contains "$(cat "$GUIDE_PRESET_OUT")" "scan.sh sast --out $W/run-guide-preset --path $W/guide-sast-tree" \
+  'the already-typed --path (and --out, also already typed) survive into the composed preview unchanged, alphabetically sorted'
+assert_not_contains "$(cat "$GUIDE_PRESET_OUT")" 'What do you want to scan?' \
+  'G1 never printed - the command line already named the scan type'
+assert_file_absent "$W/run-guide-preset" 'no run directory was created'
+
+t_case 'a fully-flagged `--guided` invocation asks nothing at all and degrades to just the preview - docs/STEP-GUIDE-PLAN.md: "this is also how it degrades to a no-op"'
+GUIDE_FULL_OUT=$W/guide-full.out
+GUIDE_FULL_RC=0
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null sast --path "$W/guide-sast-tree" --lang py --history --fail-on high --guided --out "$W/run-guide-full" ) >"$GUIDE_FULL_OUT" 2>&1 || GUIDE_FULL_RC=$?
+assert_eq 2 "$GUIDE_FULL_RC" 'every flag G1/G2/G8 could have asked about was already supplied, so /dev/null stdin (immediate EOF) never gets read at all - fails if any question were still asked, which would die exit 2 with a DIFFERENT message ("input ended...") instead of reaching the composed preview'
+assert_contains "$(cat "$GUIDE_FULL_OUT")" "scan.sh sast --fail-on high --history --lang py --out $W/run-guide-full --path $W/guide-sast-tree" \
+  'the preview is exactly what was typed, byte for byte'
 
 # =============================================================================
 printf '\n-- the own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32) --\n'
@@ -240,6 +896,235 @@ assert_status 2 \
   '--i-own-target is not a valid flag on sast - fails if it is declared global, which invites it into CI files for runs that never touch a host' \
   scan_parse_args sast --i-own-target host-a --path .
 
+# =============================================================================
+printf '\n-- IMPORT-07: --openapi/--har/--postman/--graphql-schema require --target --\n'
+# =============================================================================
+t_case 'each discovery-input flag with no --target dies exit 2, matching --i-own-target'"'"'s own precedent'
+assert_status 2 \
+  '--openapi with no --target dies exit 2 - fails under a silent no-op, which would read as "the flag did nothing" rather than the accidental-misuse case this refuses' \
+  scan_parse_args dast --openapi spec.json
+assert_status 2 '--har with no --target dies exit 2 too' \
+  scan_parse_args dast --har capture.har
+assert_status 2 '--postman with no --target dies exit 2 too' \
+  scan_parse_args dast --postman collection.json
+assert_status 2 '--graphql-schema with no --target dies exit 2 too' \
+  scan_parse_args dast --graphql-schema schema.graphql
+assert_status 2 \
+  'the same holds on "all", which has no --target by default either' \
+  scan_parse_args all --openapi spec.json --path .
+
+t_case 'a discovery-input flag WITH --target parses cleanly and round-trips through SCAN_FLAGS'
+scan_parse_args dast --target host-a --openapi spec.json
+assert_eq spec.json "${SCAN_FLAGS[openapi]}" 'the flag'"'"'s value reaches SCAN_FLAGS unchanged'
+scan_parse_args dast --target host-a --har capture.har --postman collection.json --graphql-schema schema.graphql
+assert_eq capture.har "${SCAN_FLAGS[har]}" 'har round-trips'
+assert_eq collection.json "${SCAN_FLAGS[postman]}" 'postman round-trips'
+assert_eq schema.graphql "${SCAN_FLAGS[graphql-schema]}" 'graphql-schema round-trips'
+
+t_case 'the four discovery-input flags are not offered where they would only become boilerplate'
+assert_status 2 \
+  '--openapi is not a valid flag on sast - fails if it were declared global, which invites a spec path into a run that never crawls anything' \
+  scan_parse_args sast --openapi spec.json --path .
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-04: --requests-per-second / --request-budget --\n'
+# =============================================================================
+# DAST-32 already reads both as config/scanner.conf keys with a conservative
+# ceiling; this ticket is what gives the guided flow's G6 rate/budget prompts
+# (lib/guide.sh) a real flag to emit, per this plan's own "every prompt has a
+# flag equivalent" rule.
+
+t_case '--requests-per-second/--request-budget parse on dast and all, same shape lib/config.sh already enforces'
+scan_parse_args dast --target host-a --requests-per-second 20 --request-budget 20000
+assert_eq 20 "${SCAN_FLAGS[requests-per-second]}" 'requests-per-second parses'
+assert_eq 20000 "${SCAN_FLAGS[request-budget]}" 'request-budget parses'
+scan_parse_args all --requests-per-second 0.5 --request-budget 100000 --path .
+assert_eq 0.5 "${SCAN_FLAGS[requests-per-second]}" 'a fractional rate parses on all too (rules/RULE-FORMAT.md §9.6.1 allows a decimal)'
+assert_status 2 \
+  '--requests-per-second is not a valid flag on sast - it has nothing to throttle' \
+  scan_parse_args sast --requests-per-second 4 --path .
+assert_status 2 \
+  '--request-budget rejects zero - unlike requests-per-second, a budget of nothing is never legal (there is always a budget)' \
+  scan_parse_args dast --target host-a --request-budget 0
+assert_status 2 \
+  '--request-budget rejects a non-integer' \
+  scan_parse_args dast --target host-a --request-budget 4.5
+scan_parse_args dast --target host-a --requests-per-second 0
+assert_eq 0 "${SCAN_FLAGS[requests-per-second]}" \
+  'requests-per-second 0 is schema-legal at the CLI shape-validation layer - lib/http.sh is what actually refuses it, at run start, not the parser (see lib/guide.sh, "the limiter has no literal unbounded sentinel")'
+
+t_case 'a guided-composed dast argv round-trips through the real parser and the real affirmation check'
+DW=$SCOURSH_SCRATCH/scan-guide-roundtrip
+mkdir -p "$DW/config"
+cat >"$DW/config/scope.conf" <<'EOF'
+id: staging-api
+base-url: https://staging-api.fixture.example
+allow-subdomains: false
+allow-private-addresses: false
+EOF
+_scan_with_root() {
+  local SCOURSH_INSTALL_ROOT=$1
+  shift
+  "$@"
+}
+_scan_with_root "$DW" guide_dast_configure < <(printf '1\n3\nstaging-api\n2\n1\n2\n') 2>/dev/null
+assert_eq '--target staging-api --intensity active --i-own-target staging-api --requests-per-second 20 --request-budget 5000 --allow-intrusive' \
+  "${GUIDE_DAST_ARGV[*]}" 'the guided flow composed the expected argv (mirrors tests/suites/guide.sh'"'"'s own identical case)'
+_scan_guide_argv=("${GUIDE_DAST_ARGV[@]}")
+scan_parse_args dast "${_scan_guide_argv[@]}"
+assert_eq staging-api "${SCAN_FLAGS[target]}" 'round-trip: target'
+assert_eq active "${SCAN_FLAGS[intensity]}" 'round-trip: intensity'
+assert_eq staging-api "${SCAN_FLAGS[i-own-target]}" 'round-trip: i-own-target'
+assert_eq 20 "${SCAN_FLAGS[requests-per-second]}" 'round-trip: requests-per-second'
+assert_eq 5000 "${SCAN_FLAGS[request-budget]}" 'round-trip: request-budget'
+assert_eq true "${SCAN_FLAGS[allow-intrusive]}" 'round-trip: allow-intrusive'
+_scan_check_affirmation
+_t_ok '_scan_check_affirmation accepts the composed argv with no die (i-own-target matches target; intensity and allow-intrusive are both covered by it)'
+
+t_case 'the two-header form of the item-1-everywhere acceptance test round-trips to an unaffirmed, unraised parse too'
+_scan_with_root "$DW" guide_dast_configure < <(printf '1\n1\n') 2>/dev/null
+_scan_guide_argv=("${GUIDE_DAST_ARGV[@]}")
+scan_parse_args dast "${_scan_guide_argv[@]}"
+assert_eq '' "${SCAN_FLAGS[i-own-target]:-}" 'no affirmation on the conservative path'
+assert_eq '' "${SCAN_FLAGS[intensity]:-}" 'no --intensity flag at all - passive is the unspoken default'
+_scan_check_affirmation
+_t_ok '_scan_check_affirmation accepts the conservative composed argv with no die - nothing here needed an affirmation'
+
+t_case 'the two SCOURSH_CONFIG_* env vars reflect the CLI flag and are restored (never leaked) across a second scan_main-shaped call'
+(
+  unset SCOURSH_CONFIG_REQUESTS_PER_SECOND SCOURSH_CONFIG_REQUEST_BUDGET
+  _SCAN_ENV_RPS_PRISTINE='' _SCAN_ENV_RPS_PRISTINE_SET=''
+  _SCAN_ENV_BUDGET_PRISTINE='' _SCAN_ENV_BUDGET_PRISTINE_SET=''
+  SCAN_FLAGS=([requests-per-second]=20 [request-budget]=20000)
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  [[ ${SCOURSH_CONFIG_REQUESTS_PER_SECOND:-} == 20 ]] || exit 1
+  # A SECOND "call" giving neither flag must restore the pristine (unset) state.
+  SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  [[ -z ${SCOURSH_CONFIG_REQUESTS_PER_SECOND+set} ]] || exit 2
+)
+rc=$?
+assert_eq 0 "$rc" \
+  'FAILS if the first "call"'"'"'s export leaked into the second, flagless one (exit 2), or if the export never took effect at all (exit 1) - scan_main can run more than once in one process (tests/suites/scan.sh calls it repeatedly), so a leaked SCOURSH_CONFIG_REQUESTS_PER_SECOND would silently change an unrelated later run'
+
+t_case 'the real scan_main-run pristine-snapshot variables exist and reflect this process'"'"'s own environment at source time'
+assert_eq "${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}" "$_SCAN_ENV_RPS_PRISTINE" \
+  '_SCAN_ENV_RPS_PRISTINE was captured once, at the top of scan.sh, before any flag was parsed'
+assert_eq "${SCOURSH_CONFIG_REQUEST_BUDGET-}" "$_SCAN_ENV_BUDGET_PRISTINE" \
+  '_SCAN_ENV_BUDGET_PRISTINE likewise'
+
+# =============================================================================
+printf '\n-- DAST detector-gap fix: --circuit-breaker-failures --\n'
+# =============================================================================
+# A target that answers an unmatched path with 5xx (not 404) can trip the
+# breaker's default 10-failures/60s ceiling during discovery/methods before
+# the injection phase ever runs (docs/FOUNDATION.md tension 16's own DAST
+# note). This flag gives an owning operator the same raise mechanism
+# --requests-per-second/--request-budget already have - FAILS under the
+# pre-fix parser, which has no '[dast:circuit-breaker-failures]' key in
+# _SCAN_FLAG_KIND at all, so the flag is simply unrecognized (exit 2).
+
+t_case '--circuit-breaker-failures parses on dast and all, same positive-integer shape jobs/request-budget already enforce'
+scan_parse_args dast --target host-a --circuit-breaker-failures 50
+assert_eq 50 "${SCAN_FLAGS[circuit-breaker-failures]}" 'circuit-breaker-failures parses on dast'
+scan_parse_args all --circuit-breaker-failures 30 --path .
+assert_eq 30 "${SCAN_FLAGS[circuit-breaker-failures]}" 'circuit-breaker-failures parses on all too'
+assert_status 2 \
+  '--circuit-breaker-failures is not a valid flag on sast - it has no breaker to raise' \
+  scan_parse_args sast --circuit-breaker-failures 50 --path .
+assert_status 2 \
+  '--circuit-breaker-failures rejects zero - a breaker of nothing is never legal, matching jobs/request-budget' \
+  scan_parse_args dast --target host-a --circuit-breaker-failures 0
+assert_status 2 \
+  '--circuit-breaker-failures rejects a non-integer' \
+  scan_parse_args dast --target host-a --circuit-breaker-failures 4.5
+
+t_case 'SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES reflects the CLI flag and is restored (never leaked) across a second scan_main-shaped call'
+(
+  unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  _SCAN_ENV_BREAKER_PRISTINE='' _SCAN_ENV_BREAKER_PRISTINE_SET=''
+  SCAN_FLAGS=([circuit-breaker-failures]=50)
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  [[ ${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES:-} == 50 ]] || exit 1
+  # A SECOND "call" giving no flag must restore the pristine (unset) state.
+  SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  [[ -z ${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES+set} ]] || exit 2
+)
+rc=$?
+assert_eq 0 "$rc" \
+  'FAILS if the first "call"'"'"'s export leaked into the second, flagless one (exit 2), or if the export never took effect at all (exit 1) - mirrors the identical requests-per-second/request-budget proof above'
+
+t_case 'the real scan_main-run pristine-snapshot variable for circuit-breaker-failures exists and reflects this process'"'"'s own environment at source time'
+assert_eq "${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}" "$_SCAN_ENV_BREAKER_PRISTINE" \
+  '_SCAN_ENV_BREAKER_PRISTINE was captured once, at the top of scan.sh, before any flag was parsed'
+
+t_case 'a real scan_dispatch dast subprocess with --circuit-breaker-failures raises the breaker exactly like requests-per-second/request-budget do, per run.json'"'"'s own authorization record'
+# The same instantly-refusing link-local target the round-trip case above
+# uses - and, for the reason that section's own comment gives at length, the
+# same `SCOURSH_HTTP_TIMEOUT` bound, which matters MORE here than anywhere
+# else in this file: this is the one case that raises the breaker ceiling to
+# 50, so it is the one case where a host that blocks per attempt rather than
+# refusing costs fifty timeouts instead of ten.
+# uses (0ms per attempt, no packet leaves the host), so this stays fast: with
+# the DEFAULT ceiling (10) the breaker opens after 10 failed connections; with
+# --circuit-breaker-failures 50 it tolerates 50 before opening, which is what
+# run.json's authorization object is checked for - not that the run finishes
+# cleanly (it cannot, against a target that refuses every connection), only
+# that the RAISE itself was recorded, the identical proof the round-trip case
+# above uses for requests-per-second.
+rm -rf "$SCOURSH_SCRATCH/scan-circuit-breaker-flag"
+CBW=$(cd -- "$SCOURSH_SCRATCH" && mkdir -p scan-circuit-breaker-flag/config \
+  && cp -R "$ROOT/modules" scan-circuit-breaker-flag/modules \
+  && cd -- scan-circuit-breaker-flag && pwd -P)
+mkdir -p "$CBW/out"
+cat >"$CBW/config/scope.conf" <<'EOF'
+id: breaker-fixture
+base-url: http://169.254.1.1:1/
+allow-subdomains: false
+allow-private-addresses: true
+EOF
+( _guide_env SCOURSH_INSTALL_ROOT="$CBW" SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
+    bash "$ROOT/scan.sh" dast --target breaker-fixture \
+    --i-own-target breaker-fixture --circuit-breaker-failures 50 \
+    --out "$CBW/out" ) </dev/null >"$CBW/run.log" 2>&1 || true
+assert_file_exists "$CBW/out/run.json" \
+  'the subprocess reached run_init and wrote run.json at all - FAILS if the new flag were rejected at parse time (a usage-error exit before any output)'
+CBW_AUTH=$(_rt_block "$CBW/out/run.json" authorization)
+assert_contains "$CBW_AUTH" 'circuit-breaker-failures:10->50' \
+  'the raised breaker ceiling is recorded as a limits_relaxed delta in run.json, the identical mechanism requests-per-second/request-budget already use - FAILS under the pre-fix code, where lib/http.sh never sees a raised value because scan.sh never exported SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES for it'
+CBW_CFG=$(_rt_block "$CBW/out/run.json" config)
+assert_contains "$CBW_CFG" '"circuit-breaker-failures": {"value": "50", "source": "cli"}' \
+  'the raised value is recorded as CLI-sourced in the config object too'
+
+t_case 'the two flags are in GUIDE_SETTABLE_FLAGS, which the earlier section already proved matches _SCAN_FLAG_KIND'
+assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'requests-per-second' 'requests-per-second is guided-settable'
+assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'request-budget' 'request-budget is guided-settable'
+
 t_case 'the two User-Agent inputs refuse a header-injecting value'
 assert_status 2 \
   "a --contact carrying a space (the first byte of a second header token) is refused at parse time - fails if the flag is validated only by the generic non-empty rule, which lets an operator value be concatenated straight into a request header" \
@@ -295,6 +1180,78 @@ SCOURSH_INSTALL_ROOT=$ROOT_NO_SCOPE assert_status 4 \
   _run_main dast --target anything --out "$W/run-no-scope"
 
 # =============================================================================
+printf '\n-- --target/--i-own-target base-url resolution (the operator-reported UX fix) --\n'
+# =============================================================================
+# The real incident: `--target http://127.0.0.1:3400/` was refused even
+# though config/scope.conf's own declared target names that exact base-url -
+# the tool had already loaded the answer and refused to use it. Every case
+# here runs the FULL `scan_main` path (never scan_parse_args/
+# _scan_resolve_target_flags in isolation), because the fix's own value is
+# that config_scope_require, run_record, and every module's later
+# SCAN_FLAGS[target] read all see the SAME resolved id for free - that is
+# only provable by watching a real run reach (or fail to reach) dispatch.
+
+t_case 'a --target given as a declared target'"'"'s own base-url resolves and the run proceeds, printing the substitution'
+RESOLVE_OUT1=$W/resolve-out-1
+rm -rf "$RESOLVE_OUT1"; RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --out "$RESOLVE_OUT1" ) >"$W/resolve-1.log" 2>&1 || RC=$?
+assert_eq 0 "$RC" 'exactly one declared target'"'"'s base-url matches, so the run proceeds exactly as --target fixture-target would - fails if a URL-shaped value is refused outright regardless of whether it matches something'
+assert_contains "$(cat "$W/resolve-1.log")" "resolved to declared target id 'fixture-target'" \
+  'the substitution is printed, naming which target it resolved to - never a silent rewrite'
+
+t_case 'a missing trailing slash and an explicit default port both still resolve'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid' --out "$W/resolve-out-2" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'no trailing slash still resolves to fixture-target'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid:443/' --out "$W/resolve-out-3" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'an explicit :443 (https'"'"'s own default) still resolves to fixture-target'
+
+t_case 'a different scheme never resolves, and the run refuses exactly as an unmatched id would'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'http://app.fixture.invalid/' --out "$W/resolve-out-4" ) >"$W/resolve-4.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'fixture-target is declared https-only - an http:// value must be refused (exit 3), never silently authorised against it'
+assert_not_contains "$(cat "$W/resolve-4.log")" 'resolved to declared target id' \
+  'no substitution happened - the refusal below is the ORIGINAL, unresolved value'
+assert_contains "$(cat "$W/resolve-4.log")" 'has no entry in' \
+  'the existing, unchanged "no entry" refusal is what actually fires'
+
+t_case 'a URL matching no declared target at all still refuses with today'"'"'s teaching message, unchanged'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://not-declared-anywhere.fixture.invalid/' --out "$W/resolve-out-5" ) >"$W/resolve-5.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'an undeclared host is still refused by the scope gate - fails if base-url resolution widens the gate itself rather than only mapping a DECLARED target'"'"'s own address to its id'
+assert_contains "$(cat "$W/resolve-5.log")" "looks like a URL or host:port - --target wants the ID" \
+  'the URL-shaped hint still fires, exactly as before this feature existed'
+
+t_case 'a URL matching MORE THAN ONE declared target refuses and names every candidate, never guesses'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_AMBIGUOUS_SCOPE _run_main dast --target 'https://shared.fixture.invalid/' --out "$W/resolve-out-6" ) >"$W/resolve-6.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'ambiguous resolution refuses (exit 3, a scope-class problem), never picks one candidate silently'
+assert_contains "$(cat "$W/resolve-6.log")" 'dup-a' 'first candidate named'
+assert_contains "$(cat "$W/resolve-6.log")" 'dup-b' 'second candidate named'
+assert_contains "$(cat "$W/resolve-6.log")" 'matches more than one declared target' \
+  'the refusal states this is an ambiguity, not an ordinary "no entry" miss'
+
+t_case '--target as a URL and --i-own-target as that same target'"'"'s own id satisfy the "must equal --target" rule'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --i-own-target fixture-target --out "$W/resolve-out-7" ) >"$W/resolve-7.log" 2>&1 || RC=$?
+assert_eq 0 "$RC" 'the equality check compares RESOLVED values - fails if it still compares the raw strings, which differ here and would die exit 2'
+assert_not_contains "$(cat "$W/resolve-7.log")" 'does not match' \
+  'no mismatch was ever reported'
+
+t_case 'and the reverse - --target as a plain id, --i-own-target as its own URL - satisfies the rule too'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target fixture-target --i-own-target 'https://app.fixture.invalid/' --out "$W/resolve-out-8" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'symmetric: which flag carries the URL does not matter'
+
+t_case 'a GENUINE mismatch - one resolves to a DIFFERENT declared target - still fails'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --i-own-target fixture-wide --out "$W/resolve-out-9" ) >"$W/resolve-9.log" 2>&1 || RC=$?
+assert_eq 2 "$RC" 'fixture-target (what the URL resolves to) and fixture-wide (a real, different, already-valid id) are still a real mismatch - fails if resolution is used to EXCUSE a genuine mismatch rather than only to canonicalise a same-target spelling'
+assert_contains "$(cat "$W/resolve-9.log")" 'does not match' \
+  'the ordinary mismatch refusal fires'
+
+# =============================================================================
 printf '\n-- required-input gates: --path (sast/sca/iac), and the prior-run dirs (diff/report) --\n'
 # =============================================================================
 t_case 'a --path that does not exist is exit 4'
@@ -316,11 +1273,557 @@ printf '{}' >"$W/prior-run/run.json"
 assert_status 0 "--against a directory that has a run.json succeeds" \
   _run_main diff --against "$W/prior-run" --out "$W/run-diff-ok"
 
-t_case "report --from mirrors diff --against"
+t_case "report --from is STRICTER than diff --against - it feeds findings.fields/meta/ straight to report_all's own renderer, never just run.json/findings.jsonl"
 assert_status 4 "report --from a non-run directory dies exit 4" \
   _run_main report --from "$W/not-a-run-dir" --out "$W/run-report-bad"
-assert_status 0 "report --from a real prior run dir succeeds" \
-  _run_main report --from "$W/prior-run" --out "$W/run-report-ok"
+assert_status 4 "report --from diff's own minimal fixture (run.json only, no findings.jsonl/findings.fields/meta) still dies exit 4 - fails under '_scan_require_prior_run's own OR check is enough for report too'" \
+  _run_main report --from "$W/prior-run" --out "$W/run-report-shallow"
+
+mkdir -p "$W/real-prior-run/meta"
+printf '{}' >"$W/real-prior-run/run.json"
+: >"$W/real-prior-run/findings.jsonl"
+: >"$W/real-prior-run/findings.fields"
+assert_status 0 "report --from a genuine prior run directory (findings.fields and meta/ both present) succeeds" \
+  _run_main report --from "$W/real-prior-run" --out "$W/run-report-ok"
+
+# =============================================================================
+printf '\n-- preflight (operator-reported fail-fast bug): every problem knowable before dispatch, caught together --\n'
+# =============================================================================
+# Operator report, 2026-09-11: `scan.sh all --path <repo> --target
+# http://127.0.0.1:3400 ...` scanned sast/sca/iac for 3h03m before dying on a
+# --target typo that was knowable the instant flags were parsed, because
+# `all`'s own case arm called config_scope_require only AFTER sast/sca/iac had
+# already dispatched. $ROOT_WITH_SCOPE_AND_SAST carries real sast/sca/iac
+# modules (deliberately WITHOUT dast/network - see its own definition above
+# for why), so a bug that let sast/sca/iac actually run would leave real,
+# observable evidence behind (meta/checks_run) - this is what tells
+# "preflight refused before anything ran" apart from "an old bug let a module
+# run and then something else happened to still exit 3/4".
+
+t_case 'all --target <bad> fails IMMEDIATELY at exit 3, and NO module ran - the core bug'
+_PF_T0=$SECONDS
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
+  "all --target no-such-target dies exit 3, same as dast/network - fails under the pre-fix ordering, where sast/sca/iac dispatch before the target is ever checked" \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --target no-such-target --out "$W/run-all-badtarget"
+_PF_ELAPSED=$(( SECONDS - _PF_T0 ))
+assert_file_absent "$W/run-all-badtarget/meta/checks_run" \
+  'meta/checks_run was never written - fails if sast, sca or iac actually dispatched and recorded even one check as run before the target gate refused'
+if (( _PF_ELAPSED <= 10 )); then
+  _t_ok "returned in ${_PF_ELAPSED}s, not the hours a real sast/sca/iac walk would need"
+else
+  _t_no 'preflight should refuse in a couple of seconds, never run a real module first' "took ${_PF_ELAPSED}s"
+fi
+
+t_case 'the SAME bad --target under plain dast (single-module, always fast) still refuses at exit 3, unchanged'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
+  'dast on its own was already fail-fast before this fix and must stay that way' \
+  _run_main dast --target no-such-target --out "$W/run-dast-badtarget-2"
+
+t_case 'a VALID --target under all still dispatches normally - the fix must not refuse a good run'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 0 \
+  'all --target fixture-target (a real scope.conf entry) reaches dispatch and exits 0 - dast/network are absent from this fixture root, so they no-op harmlessly rather than attempting a real connection to the fixture base-url' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --target fixture-target --out "$W/run-all-goodtarget"
+assert_file_exists "$W/run-all-goodtarget/meta/checks_run" \
+  'this time sast (or sca/iac) really did dispatch and record at least one check as run'
+
+t_case 'all with a bad --baseline file fails immediately too - the identical late-check shape baseline_apply had (called from inside each module, after sast/sca/iac under all)'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 4 \
+  '--baseline pointing nowhere dies exit 4 before any module runs' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --baseline "$W/does-not-exist-baseline.json" --out "$W/run-all-badbaseline"
+assert_file_absent "$W/run-all-badbaseline/meta/checks_run" \
+  'no module ran for the bad-baseline case either'
+
+t_case 'all --live with no aws CLI on PATH fails immediately - the aws check used to sit after sast/sca/iac and dast/network under all'
+# Excludes only whichever PATH directories hold an `aws` executable, rather
+# than replacing PATH wholesale (e.g. with a bare /usr/bin:/bin) - a blanket
+# restriction also hides sha256sum/grep/rg and every other tool
+# core_require_baseline and the rule-compile probe need, which produces
+# unrelated noise (or a wrong exit code) that has nothing to do with the aws
+# check this case is actually about. Measured, not assumed.
+_PF_PATH_NO_AWS=''
+IFS=':' read -ra _pf_path_dirs <<<"$PATH"
+for _pf_dir in "${_pf_path_dirs[@]}"; do
+  [[ -x "$_pf_dir/aws" ]] && continue
+  _PF_PATH_NO_AWS=${_PF_PATH_NO_AWS:+$_PF_PATH_NO_AWS:}$_pf_dir
+done
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST PATH=$_PF_PATH_NO_AWS assert_status 4 \
+  'cloud --live requires aws, refused up front, with every OTHER tool still reachable' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --live --out "$W/run-all-badlive"
+assert_file_absent "$W/run-all-badlive/meta/checks_run" \
+  'no module ran for the missing-aws case either'
+
+t_case 'all with a missing --path fails immediately, same as it always has for sast/sca/iac alone'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 4 \
+  '--path pointing nowhere dies exit 4 under all too' \
+  _run_main all --path "$W/does-not-exist-for-all" --out "$W/run-all-badpath"
+assert_file_absent "$W/run-all-badpath/meta/checks_run" \
+  'no module ran for the bad-path case either'
+
+t_case 'MULTIPLE simultaneous faults are ALL reported together in one pass, not one per re-run'
+MULTI_LOG=$W/run-all-multi.log
+_MULTI_RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST scan_main all \
+    --path "$W/does-not-exist-for-multi" \
+    --target no-such-target \
+    --baseline "$W/does-not-exist-baseline-2.json" \
+    --out "$W/run-all-multi" ) >/dev/null 2>"$MULTI_LOG" || _MULTI_RC=$?
+assert_eq 3 "$_MULTI_RC" \
+  'scope beats input in the combined precedence (docs/FOUNDATION.md tension 14 2>3>4>5>1>0), even though a --path and --baseline problem are ALSO present'
+MULTI_MSG=$(cat "$MULTI_LOG")
+assert_contains "$MULTI_MSG" "does-not-exist-for-multi" \
+  'the --path problem is named in the SAME message as the scope problem - fails if only the first problem found is reported'
+assert_contains "$MULTI_MSG" 'no-such-target' \
+  'the --target problem is named too'
+assert_contains "$MULTI_MSG" 'does-not-exist-baseline-2.json' \
+  'and the --baseline problem is named too - all three in one refusal, one round trip'
+assert_file_absent "$W/run-all-multi/meta/checks_run" \
+  'and still, no module ran'
+
+t_case 'an unresolvable --image is a WARNING, not a fatal preflight refusal - the existing, tested, declared-skip design (tests/suites/image.sh) is deliberately left alone'
+# Needs $ROOT_WITH_SCOPE_AND_MODULES specifically (the one fixture root that
+# actually carries modules/image/), or scan_dispatch's own "no run.sh on
+# disk" no-op would make this pass trivially regardless of what preflight
+# does. `image` never touches dast/network, so this is still network-free.
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_MODULES assert_status 0 \
+  "image --image nonexistent-id (no config/images.conf entry, no --source) still exits 0 - fails if preflight were widened to refuse this too, which would break tests/suites/image.sh's own 'an --image run completes cleanly and exits 0' case" \
+  _run_main image --image nonexistent-id --out "$W/run-image-warn"
+
+# =============================================================================
+printf '\n-- preflight: --use-engines is warned as inert BEFORE dispatch when no engine can possibly help this run --\n'
+# =============================================================================
+# Operator report, 2026-09-12: a real 4h27m `all` run passed --use-engines
+# against a fresh checkout with nothing vendored at all (no vendor/ dir), and
+# only learned this afterwards from run.json's coverage_reduction array -
+# every module had already run. Whether an adapter is vendored is a pure
+# filesystem question (has_engine, lib/engines.sh), knowable before dispatch
+# exactly as it is inside modules/sast/run.sh/modules/iac/run.sh, so this is
+# a WARNING (never a refusal - --use-engines with nothing vendored is still a
+# perfectly runnable scan, just one that gets no engine checks) printed at
+# preflight, not discovered from run.json afterwards.
+#
+# $ROOT_WITH_SCOPE_AND_SAST (defined above) carries real modules/sast and
+# modules/iac trees but no modules/*/adapters/ directory at all, so
+# has_engine is false for every engine under it - exactly the "nothing
+# vendored" shape the operator hit.
+t_case '--use-engines against a checkout with NOTHING vendored: sast warns, naming every missing engine and the fix'
+USE_ENG_LOG=$W/use-engines-sast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --use-engines --out "$W/run-use-engines-sast" \
+) >"$USE_ENG_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_LOG")" 'preflight' 'the warning is printed at preflight, before/alongside the rest of the run'
+assert_contains "$(cat "$USE_ENG_LOG")" 'semgrep' 'names semgrep as one of the missing engines'
+assert_contains "$(cat "$USE_ENG_LOG")" 'gitleaks' 'names gitleaks as the other missing sast engine'
+assert_contains "$(cat "$USE_ENG_LOG")" 'tools/vendor-engines.sh' 'names the fix'
+
+t_case 'the SAME checkout under `all` warns about all three engines (sast: semgrep, gitleaks; iac: trivy) - fails if the pair list were hardcoded to one module'
+USE_ENG_ALL_LOG=$W/use-engines-all.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --use-engines --out "$W/run-use-engines-all" \
+) >"$USE_ENG_ALL_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'semgrep' 'names semgrep'
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'gitleaks' 'names gitleaks'
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'trivy' 'names trivy - fails if only sast were consulted under all'
+
+t_case '--use-engines under a command with no engine-consuming module at all (dast): warns, naming the reason, regardless of vendoring'
+USE_ENG_DAST_LOG=$W/use-engines-dast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main dast \
+    --target fixture-target --use-engines --out "$W/run-use-engines-dast" \
+) >"$USE_ENG_DAST_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_DAST_LOG")" 'dispatches no module that consults it' \
+  'dast never calls has_engine at all - fails if the check only looked at vendoring and missed the "wrong command" case entirely'
+
+t_case '--use-engines is silent when it was never given (no flag, healthy default run) - never fires unprompted'
+NOFLAG_LOG=$W/use-engines-absent.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --out "$W/run-use-engines-absent" \
+) >"$NOFLAG_LOG" 2>&1 || true
+assert_not_contains "$(cat "$NOFLAG_LOG")" 'tools/vendor-engines.sh' \
+  'fails if the warning fired even though the operator never passed --use-engines'
+
+# A SEPARATE root, with one real (fake, for-test) adapter vendored, to prove
+# the warning does NOT fire on a run where --use-engines genuinely does
+# something - the "not noisy on a healthy run" design constraint. Only
+# semgrep is vendored; gitleaks and trivy are still absent, which is exactly
+# the "partial vendoring" case the warning must stay silent on (it fired for
+# ALL of them or none, never a subset - firing here would be false: the flag
+# DID engage a real check this run).
+ROOT_WITH_SCOPE_AND_ENGINE=$(cd -- "$W" && rm -rf root-with-scope-and-engine \
+  && mkdir -p root-with-scope-and-engine/config root-with-scope-and-engine/modules \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-engine/config/scope.conf \
+  && cp -R "$ROOT/modules/sast" root-with-scope-and-engine/modules/sast \
+  && cp -R "$ROOT/modules/sca" root-with-scope-and-engine/modules/sca \
+  && cp -R "$ROOT/modules/iac" root-with-scope-and-engine/modules/iac \
+  && mkdir -p root-with-scope-and-engine/modules/sast/adapters/semgrep \
+  && printf 'semgrep_detect() { return 0; }\nsemgrep_run() { return 1; }\nsemgrep_normalize() { return 1; }\n' \
+       >root-with-scope-and-engine/modules/sast/adapters/semgrep/adapter.sh \
+  && cd -- root-with-scope-and-engine && pwd -P)
+
+t_case '--use-engines with ONE real engine vendored (semgrep) but others missing (gitleaks, trivy): no inert-flag warning - the flag genuinely does something this run'
+USE_ENG_PARTIAL_LOG=$W/use-engines-partial.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_ENGINE _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_ENGINE" --use-engines --out "$W/run-use-engines-partial" \
+) >"$USE_ENG_PARTIAL_LOG" 2>&1 || true
+assert_not_contains "$(cat "$USE_ENG_PARTIAL_LOG")" 'this run will use no engine checks at all' \
+  'fails if the warning fired on a partial-vendoring run, which is noise: --use-engines DID engage semgrep this run'
+assert_not_contains "$(cat "$USE_ENG_PARTIAL_LOG")" 'dispatches no module that consults it' \
+  'all dispatches both sast and iac, so the "wrong command" message must not fire either'
+
+# =============================================================================
+printf '\n-- preflight: --lang is warned as inert BEFORE dispatch, unconditionally, whenever given --\n'
+# =============================================================================
+# `--lang` is validated as a CSV of the four language names
+# (`_SCAN_FLAG_KIND`'s `lang) _scan_validate_csv ...` case) and then never
+# read by anything: `grep -rn 'flags\[lang\]' scan.sh modules/` is 0 hits, so
+# `--lang go` and no `--lang` at all produce byte-identical findings on the
+# same tree. Unlike `--use-engines`, there is no partial-effect case: `--lang`
+# reaches zero consumers under every command that accepts it, so this warning
+# fires on every non-empty value, never just some of them.
+t_case '--lang go on a real sast dispatch: warns, naming the given value and that it is never read'
+LANG_LOG=$W/lang-sast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --lang go --out "$W/run-lang-sast" \
+) >"$LANG_LOG" 2>&1 || true
+assert_contains "$(cat "$LANG_LOG")" 'preflight' 'the warning is printed at preflight, before/alongside the rest of the run'
+assert_contains "$(cat "$LANG_LOG")" "lang 'go'" 'names the exact value the operator gave'
+assert_contains "$(cat "$LANG_LOG")" 'never read' 'states plainly that the value has no effect'
+
+t_case '--lang under `all`: warns too - fails if the probe only checked SCAN_COMMAND == sast'
+LANG_ALL_LOG=$W/lang-all.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --lang 'py,js' --out "$W/run-lang-all" \
+) >"$LANG_ALL_LOG" 2>&1 || true
+assert_contains "$(cat "$LANG_ALL_LOG")" "lang 'py,js'" 'names the CSV value verbatim under all too'
+
+t_case '--lang is silent when it was never given (no flag, healthy default run) - never fires unprompted'
+LANG_NOFLAG_LOG=$W/lang-absent.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --out "$W/run-lang-absent" \
+) >"$LANG_NOFLAG_LOG" 2>&1 || true
+assert_not_contains "$(cat "$LANG_NOFLAG_LOG")" '--lang' \
+  'fails if the warning fired even though the operator never passed --lang'
+
+# =============================================================================
+printf '\n-- preflight timing: the new inert-flag warnings must not slow preflight down --\n'
+# =============================================================================
+# This must isolate PREFLIGHT's OWN cost, never the cost of a real scan
+# alongside it. A first draft of this case measured a real, end-to-end
+# `sast --use-engines` run: pointed at $ROOT_WITH_SCOPE_AND_SAST's own copied
+# modules/sast+sca+iac trees (necessary so scan_dispatch really dispatches
+# sast, proving the warning fires against a genuinely dispatching module -
+# not scan_dispatch's not_yet_built no-op) as the --path TARGET too, it
+# measured 24s: the real SAST engine walking its hundreds of copied rule
+# files, not preflight. Pointing --path at a tiny scratch directory instead
+# still measured 9s - not the pattern-engine walk this time, but
+# checks_registry_load's own real parse of the full production sast/sca/iac
+# *.rules catalog (~9-10s on this tree, per this file's own "Sharp edges"
+# notes on the report.sarif registry walk) - a real, pre-existing, entirely
+# unrelated cost every ordinary dispatching `sast` run already pays, and
+# still no measurement of the new probe itself. So this calls
+# `_scan_pf_warn_inert_use_engines` DIRECTLY, with the minimal global state
+# `_scan_preflight` itself would set up for it (SCAN_COMMAND, SCAN_FLAGS,
+# SCOURSH_INSTALL_ROOT) and nothing past it - no config load, no check
+# registry, no dispatch - which is the only way to measure this probe's own
+# cost rather than a number dominated by something else in the pipeline.
+# `date +%s%N` (nanosecond resolution) rather than bash's own $SECONDS
+# (one-second resolution, too coarse to say anything about a sub-second
+# probe) - the same profiling technique this file's own "Sharp edges" notes
+# name for exactly this class of measurement.
+t_case '_scan_pf_warn_inert_use_engines itself: repeated calls average well under 50ms each - fails if the probe (or its has_engine calls) is slow, isolated from every other cost a real dispatch pays'
+declare -A SCAN_FLAGS=([use-engines]=true)
+SCAN_COMMAND=all
+_UEW_NS0=$(date +%s%N 2>/dev/null || printf '')
+for _uew_i in $(seq 1 20); do
+  ( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _scan_pf_warn_inert_use_engines ) >/dev/null 2>&1
+done
+_UEW_NS1=$(date +%s%N 2>/dev/null || printf '')
+if [[ $_UEW_NS0 =~ ^[0-9]+$ && $_UEW_NS1 =~ ^[0-9]+$ ]]; then
+  _UEW_AVG_MS=$(( (_UEW_NS1 - _UEW_NS0) / 20 / 1000000 ))
+  if (( _UEW_AVG_MS <= 50 )); then
+    _t_ok "20 calls to _scan_pf_warn_inert_use_engines averaged ${_UEW_AVG_MS}ms each"
+  else
+    _t_no 'the inert-flag probe must stay cheap (pure filesystem probes only)' "averaged ${_UEW_AVG_MS}ms each"
+  fi
+else
+  # This userland's `date` does not support %N (nanosecond resolution) - a
+  # real BSD/macOS possibility this project's own dual-userland testing
+  # discipline requires accounting for, never assumed away. Report the gap
+  # honestly rather than asserting a pass/fail from a garbage subtraction
+  # (a literal trailing "N" is not numeric and would abort under set -u a
+  # different way, or silently produce a nonsense elapsed value).
+  printf '  NOTICE date(1) on this host has no %%N (nanosecond) support: the sub-second per-call microbenchmark did NOT run. This is a SKIP, not a pass.\n'
+fi
+# Reset, never `unset` - scan.sh declares SCAN_FLAGS as `declare -A` at its
+# own top level, and `unset SCAN_FLAGS` strips that attribute permanently
+# for the rest of THIS PROCESS (every later t_case in this same suite file
+# runs in the one sourced process). scan_parse_args's own re-entry does the
+# identical `SCAN_FLAGS=()` (never re-declares -A either), which is safe
+# only because the attribute is never removed in the first place. Measured
+# the regression this caused: with `unset` here, `SCAN_FLAGS=()` afterwards
+# silently recreates it as an INDEXED array, so every later
+# `SCAN_FLAGS[$flag]=$val` evaluates `$flag` (e.g. `target`) as an
+# arithmetic subscript instead of a string key - which reads the shell
+# variable named `target` under `set -u` and aborts with "target: unbound
+# variable" the moment any later case sets that flag with an unset local by
+# that name in scope.
+SCAN_FLAGS=()
+SCAN_COMMAND=''
+
+# A looser, real end-to-end sanity check alongside the microbenchmark above:
+# a genuinely dispatching sast run, with --use-engines, over a TINY --path
+# target (never the copied rule-pack tree itself, per the measurement
+# above), still completes on an ordinary machine - a generous bound (the
+# multi-hour scale the motivating operator report exists to avoid), not a
+# tight one, since this number is dominated by the pre-existing registry
+# parse rather than by anything this ticket added.
+UEW_TINY_TARGET=$W/use-engines-timing-target
+mkdir -p "$UEW_TINY_TARGET"
+printf 'print("nothing interesting")\n' >"$UEW_TINY_TARGET/app.py"
+t_case 'sast --use-engines over a tiny --path target still completes well under a minute end to end (sanity check, not a tight bound)'
+_UEW_T0=$SECONDS
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$UEW_TINY_TARGET" --use-engines --out "$W/run-use-engines-timing" \
+) >/dev/null 2>&1 || true
+_UEW_ELAPSED=$(( SECONDS - _UEW_T0 ))
+if (( _UEW_ELAPSED <= 60 )); then
+  _t_ok "sast --use-engines over a tiny scan target completed in ${_UEW_ELAPSED}s"
+else
+  _t_no 'an inert-flag warning must never turn a fast run into a slow one' "took ${_UEW_ELAPSED}s"
+fi
+
+# =============================================================================
+printf '\n-- scan.sh section 6b: the interactive authorisation OFFER for an unauthorised --target --\n'
+# =============================================================================
+# config/scope.conf is the PRIMARY safety control, so every case here is about
+# what the offer REFUSES to do.  Each is named for the reading it fails under,
+# per AGENTS.md, and each asserts on the FILE (was a record written) as well as
+# the exit code - "it refused" must not be satisfiable by a path that wrote the
+# authorisation and then returned non-zero.
+#
+# $AUTH_URL is an RFC 6761 reserved, deliberately non-resolving name, and
+# $ROOT_AUTH_* fixture roots carry NO modules/dast, so a run that DOES continue
+# past the gate degrades to scan_dispatch's logged no-op and never opens a
+# socket - the same reason $ROOT_WITH_SCOPE_AND_SAST exists above.
+AUTH_URL='https://authorise-me.fixture.invalid/'
+AUTH_ID='authorise-me-fixture-invalid-443'
+
+# Never resolves a real name: lib/guide_scope.sh's `guide_scope_resolve` goes
+# through lib/http.sh's SCOURSH_HTTP_RESOLVE hook, the same stand-in
+# tests/suites/guide.sh's own G4 section uses.
+_auth_test_resolve() {
+  case $1 in
+    authorise-me.fixture.invalid) printf '93.184.216.34' ;;
+    elsewhere.fixture.invalid) printf '93.184.216.35' ;;
+    *) return 1 ;;
+  esac
+}
+
+# A fresh, EMPTY install root per case - no config/scope.conf at all, which is
+# the fresh-checkout shape this whole feature exists for ("I don't believe user
+# going to create file and copy").  `guide_scope_append` creates the file, so
+# the offer must work here and not only for a present-but-unmatched file.
+_auth_root() {
+  local d=$W/auth-$1
+  rm -rf "$d"
+  mkdir -p "$d/config"
+  printf '%s' "$d"
+}
+
+t_case 'NON-TTY: a piped/scripted stdin gets today refusal with NO prompt and NO write - fails under any reading that probes something other than the terminal, or that prompts first and checks after'
+AR=$(_auth_root nontty)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-nontty-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>"$W/auth-nontty.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" \
+  'exit is unchanged from before this feature (a wholly absent scope.conf is tension 14 exit 4) - fails if a non-tty run is allowed to prompt, or to succeed'
+assert_file_absent "$AR/config/scope.conf" \
+  'NOTHING was written: the answers it was fed WOULD have authorised the target had a prompt been shown, so this fails loudly if the tty gate is ever inverted'
+assert_not_contains "$(cat "$W/auth-nontty.log")" 'DECLARES THAT YOU OWN THIS HOST' \
+  'the ownership banner is never printed into a pipeline'
+
+t_case 'SCOURSH_NO_PROMPT suppresses the offer entirely even with the terminal checks forced TRUE - fails under a reading that only gates on the terminal'
+AR=$(_auth_root noprompt)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true SCOURSH_NO_PROMPT=1 \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-noprompt-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>"$W/auth-noprompt.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'refused exactly as today'
+assert_file_absent "$AR/config/scope.conf" 'and wrote nothing'
+assert_not_contains "$(cat "$W/auth-noprompt.log")" 'DECLARES THAT YOU OWN THIS HOST' \
+  'no banner, so SCOURSH_NO_PROMPT really is consulted before anything is printed'
+
+t_case 'a CI environment marker suppresses the offer too (guide_may_prompt condition 4, reused rather than re-derived)'
+AR=$(_auth_root cimarker)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true CI=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-ci-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>&1 || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'a runner that allocated a pty is still refused'
+assert_file_absent "$AR/config/scope.conf" 'and wrote nothing'
+
+t_case 'TTY + the operator DECLINES (a blank URL, guide_g4_authorize_target own cancel contract): today refusal, today exit, no write'
+AR=$(_auth_root decline)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-decline-run" \
+    < <(printf '\n') ) >/dev/null 2>"$W/auth-decline.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'a cancel is a refusal, never a fatal guide error and never a pass'
+assert_file_absent "$AR/config/scope.conf" 'a cancelled offer writes nothing at all'
+DECLINE_MSG=$(cat "$W/auth-decline.log")
+assert_contains "$DECLINE_MSG" 'DECLARES THAT YOU OWN THIS HOST' \
+  'the ownership assertion IS stated before the first question - fails if the banner is a bare continue? [y/N]'
+assert_not_contains "$DECLINE_MSG" 'To authorise it: re-run this command at an interactive terminal' \
+  'the teaching hint is NOT appended when the operator just saw the offer and declined it - the refusal is today message, unchanged'
+
+t_case 'TTY + the operator ACCEPTS: the record lands in config/scope.conf, --target is re-resolved to the new id, and the run CONTINUES through the normal gate'
+AR=$(_auth_root accept)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-accept-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-accept.log" || _AUTH_RC=$?
+assert_eq 0 "$_AUTH_RC" \
+  'the run continues to completion - fails if the offer writes the record but preflight still refuses, the whole point of the re-resolve'
+assert_file_exists "$AR/config/scope.conf" 'the authorisation is durable, in the file, exactly as a hand edit would be'
+records_clear scope
+config_scope_load "$AR/config/scope.conf"
+assert_eq 1 "$(records_count scope)" 'exactly one record was appended'
+assert_eq "$AUTH_ID" "$(records_id scope 0)" \
+  'the id is guide_scope_unique_id own derivation - no second id scheme was invented here'
+assert_eq "$AUTH_URL" "$(records_field scope 0 base-url)" \
+  'base-url is the bytes the operator typed (lib/guide_scope.sh rule 2), not a normalised substitute'
+assert_eq 'false' "$(records_field_or scope 0 allow-subdomains false)" \
+  'allow-subdomains is still always false - the offer grants no wider scope than the guided menu does'
+assert_eq "$AUTH_ID" "$(cat "$W/auth-accept-run/meta/scope_authorization_interactive")" \
+  'run.json meta records WHICH target was authorised interactively, so the route is auditable and is never inferred from the config note'
+assert_file_exists "$W/auth-accept-run/meta/config_scope_conf_sha256_post_authorization" \
+  'and the post-write state of the file, because _scan_record_config already wrote config_scope_conf_sha256 for the PRE-write file and lib/report.sh reads that key with _meta_first'
+# The "it continued" proof is `meta/targets`, which the `dast` arm writes
+# immediately AFTER `config_scope_require` - so it exists only if the
+# non-bypassable §7 gate itself accepted the newly written record, and it
+# carries the RESOLVED id rather than the URL the operator typed.  Deliberately
+# NOT meta/checks_run: these fixture roots carry no modules/ at all, so
+# scan_dispatch degrades to its logged no-op exactly as \$ROOT_WITH_SCOPE's own
+# dispatch cases already rely on.
+assert_eq "$AUTH_ID" "$(cat "$W/auth-accept-run/meta/targets")" \
+  'the run really reached the real §7 gate afterwards, with --target carrying the resolved id - fails if the offer short-circuits the run instead of continuing it, and fails if the URL reaches the run record unresolved'
+assert_file_exists "$W/auth-accept-run/meta/coverage_reduction" \
+  'and scan_dispatch ran too - with no modules/ under this fixture root, its declared no-op is what a completed dispatch looks like here'
+
+t_case 'the newly authorised target then passes the normal gate on a LATER, wholly NON-INTERACTIVE run by its own id - the record is ordinary, and the gate is unchanged'
+SCOURSH_INSTALL_ROOT=$AR SCOURSH_NO_PROMPT=1 assert_status 0 \
+  "a second run with --target $AUTH_ID and no terminal at all succeeds - fails if the offer wrote something config_scope_require cannot match" \
+  _run_main dast --target "$AUTH_ID" --out "$W/auth-accept-run-2"
+SCOURSH_INSTALL_ROOT=$AR SCOURSH_NO_PROMPT=1 assert_status 0 \
+  'and by its base-url too, through the existing _scan_resolve_target_flags resolution' \
+  _run_main dast --target "$AUTH_URL" --out "$W/auth-accept-run-3"
+
+t_case 'a host the operator did NOT pass is never authorised FOR THIS RUN: typing a different host at the prompt writes that operator own record but leaves the run refused, and the refusal names what is actually in the file now'
+AR=$(_auth_root elsewhere)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-elsewhere-run" \
+    < <(printf 'https://elsewhere.fixture.invalid/\nelsewhere.fixture.invalid\n') ) \
+  >/dev/null 2>"$W/auth-elsewhere.log" || _AUTH_RC=$?
+assert_eq 3 "$_AUTH_RC" \
+  'still refused - fails under any reading that treats "a write happened" as "this run is authorised", which is the whole of safety constraint 7'
+ELSEWHERE_MSG=$(cat "$W/auth-elsewhere.log")
+assert_contains "$ELSEWHERE_MSG" 'elsewhere-fixture-invalid-443' \
+  'the refusal lists the id that IS now declared - fails if the pre-write message is reported stale, which would claim a scope.conf that now exists does not'
+assert_not_contains "$ELSEWHERE_MSG" 'and it does not exist' \
+  'and specifically does not still say the file is absent'
+records_clear scope
+config_scope_load "$AR/config/scope.conf"
+assert_eq 1 "$(records_count scope)" 'exactly the one record the operator themselves typed'
+assert_eq 'elsewhere-fixture-invalid-443' "$(records_id scope 0)" \
+  'and it is for the host they typed, never for the --target they passed'
+assert_file_absent "$W/auth-elsewhere-run/meta/scope_authorization_interactive" \
+  'no interactive-authorisation fact is recorded for a run that was still refused'
+
+t_case 'a BARE, non-URL --target id is never offered at all: the id guide_scope_unique_id derives comes from the host, so no answer at that prompt could match it, and prompting then refusing is worse than refusing now'
+AR=$(_auth_root bareid)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target some-typo-id --out "$W/auth-bareid-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-bareid.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'refused as today'
+assert_file_absent "$AR/config/scope.conf" \
+  'and nothing was written - fails if the offer fires for a value it cannot re-resolve, which would authorise a host the operator never named'
+BAREID_MSG=$(cat "$W/auth-bareid.log")
+assert_not_contains "$BAREID_MSG" 'DECLARES THAT YOU OWN THIS HOST' 'no banner either'
+assert_contains "$BAREID_MSG" 'To authorise it: re-run this command at an interactive terminal' \
+  'but the operator IS told the easy paths, since no offer was shown'
+assert_contains "$BAREID_MSG" '--guided' 'including that --guided exists'
+
+t_case 'the offer is NOT made when something ELSE would refuse the run anyway - accepting it must always continue the run, never write an authorisation for a run that dies on the next line'
+AR=$(_auth_root otherproblem)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main all --target "$AUTH_URL" --path "$W/auth-no-such-path" \
+    --out "$W/auth-otherproblem-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-otherproblem.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'the --path problem still refuses the run'
+assert_file_absent "$AR/config/scope.conf" \
+  'and no authorisation was written - fails under a reading that offers as soon as the target check fails, before the other checks have had their say'
+OTHER_MSG=$(cat "$W/auth-otherproblem.log")
+assert_contains "$OTHER_MSG" 'auth-no-such-path' 'the --path problem is named'
+assert_contains "$OTHER_MSG" '2 problem(s) found' \
+  'BOTH problems are still reported together in one refusal, exactly as before this feature'
+# This fixture root has no config/scope.conf at all, so the TARGET problem's own
+# message names the absent file rather than the --target value - it is the same
+# message, in the same first position, that a non-interactive run has always
+# produced.
+assert_contains "$OTHER_MSG" '--target-scoped command requires' \
+  'and the target problem is still named in the same refusal, in the order it always was'
+
+t_case 'NO FLAG authorises a target: the absence is asserted against _SCAN_FLAG_KIND itself, so a later ticket cannot quietly add one'
+_AUTH_BAD_FLAGS=''
+for _auth_k in "${!_SCAN_FLAG_KIND[@]}"; do
+  case ${_auth_k#*:} in
+    yes | y | force | authorize | authorise | authorize-target | authorise-target \
+      | accept | accept-scope | auto-authorize | auto-authorise | assume-yes \
+      | no-confirm | non-interactive-authorize | non-interactive-authorise)
+      _AUTH_BAD_FLAGS=${_AUTH_BAD_FLAGS:+$_AUTH_BAD_FLAGS, }$_auth_k
+      ;;
+  esac
+done
+if [[ -n $_AUTH_BAD_FLAGS ]]; then
+  _t_no 'no --yes/--force/--authorize-shaped flag exists in the CLI grammar (safety constraint 3: such a flag can sit in a CI file, which is exactly the non-bypassability docs/DESIGN.md §7 demands)' \
+    "found: $_AUTH_BAD_FLAGS"
+else
+  _t_ok 'no --yes/--force/--authorize-shaped flag exists in the CLI grammar (safety constraint 3: such a flag can sit in a CI file, which is exactly the non-bypassability docs/DESIGN.md §7 demands)'
+fi
+# And the mechanism itself reads no flag at all: the only gate is
+# guide_may_prompt.  Read off the real source, so wiring a flag in WITHOUT
+# touching _SCAN_FLAG_KIND (a `${SCAN_FLAGS[...]}` read of a global-fallback
+# spelling, say) still fails this.
+_AUTH_OFFER_SRC=$(sed -n '/^_scan_pf_offer_authorize_target() {/,/^}/p' "$ROOT/scan.sh")
+assert_contains "$_AUTH_OFFER_SRC" 'guide_may_prompt true'   'the offer gates on guide_may_prompt and nothing else'
+# It reads SCAN_FLAGS[target] - it has to, in order to re-resolve and then
+# record the id it just authorised - so this asserts the exact KEY SET rather
+# than banning the array outright, which would be unsatisfiable and so would
+# pin nothing at all.
+_AUTH_FLAG_KEYS=$(printf '%s\n' "$_AUTH_OFFER_SRC" \
+  | grep -o 'SCAN_FLAGS\[[a-z-]*\]' | sed 's/SCAN_FLAGS\[//; s/\]//' | LC_ALL=C sort -u | tr '\n' ',') \
+  || _AUTH_FLAG_KEYS=''
+assert_eq 'target,' "$_AUTH_FLAG_KEYS" \
+  'the ONLY flag the offer reads is --target, the value it was asked about - fails the moment any other flag can influence whether an authorisation is written'
+
+t_case 'an unknown --target flag value IS still refused with exit 2 before any of this - the grammar has gained no new spelling'
+assert_status 2 'a bogus flag is still a usage error, not an authorisation question' \
+  _run_main dast --target "$AUTH_URL" --authorize-target
 
 # =============================================================================
 printf '\n-- the config loader runs before scan_dispatch (this ticket''s 3rd acceptance criterion) --\n'
@@ -417,6 +1920,32 @@ _bin_run() {
   return "$rc"
 }
 
+t_case "GUIDE-02 non-regression: bare scan.sh with no terminal keeps today's exit-2 usage text byte-identically"
+# The direct non-regression test docs/STEP-GUIDE-PLAN.md GUIDE-02 names by
+# name: a script piping scan.sh with no arguments today must see NO change
+# whatsoever once guided-mode routing lands. tests/fixtures/scan-usage/
+# no-command-given.txt is the real output of THIS repository's scan.sh,
+# captured before any GUIDE-02 code existed, with only the wall-clock
+# timestamp normalised to a fixed placeholder (die()'s message is otherwise
+# static and untouched by this ticket - see scan_usage's own heredoc and
+# scan_die_usage, neither of which this ticket edits). A real subprocess,
+# never the sourced function, and stdin explicitly redirected from
+# /dev/null so this assertion holds regardless of whether the process
+# running the suite itself has a terminal attached.
+GUIDE02_BASELINE=$ROOT/tests/fixtures/scan-usage/no-command-given.txt
+GUIDE02_ACTUAL=$W/guide02-bare.out
+GUIDE02_RC=0
+bash "$ROOT/scan.sh" >"$GUIDE02_ACTUAL" 2>&1 </dev/null || GUIDE02_RC=$?
+assert_eq 2 "$GUIDE02_RC" 'bare scan.sh with no terminal still exits 2'
+GUIDE02_NORM=$W/guide02-bare.norm
+sed -E 's/^[0-9TZ:-]{20} error/<TIMESTAMP> error/' "$GUIDE02_ACTUAL" >"$GUIDE02_NORM"
+if diff -q "$GUIDE02_BASELINE" "$GUIDE02_NORM" >/dev/null 2>&1; then
+  _t_ok 'output is byte-identical (modulo the wall-clock timestamp) to the frozen pre-GUIDE-02 fixture - fails under any change to what a piped, argument-less scan.sh prints or how it exits'
+else
+  _t_no 'output is byte-identical (modulo the wall-clock timestamp) to the frozen pre-GUIDE-02 fixture' \
+    "diff: $(diff "$GUIDE02_BASELINE" "$GUIDE02_NORM" || true)"
+fi
+
 t_case '--help exits 0 and prints the documented grammar'
 assert_status 0 './scan.sh --help exits 0' _bin_run --help
 assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text is printed'
@@ -424,10 +1953,55 @@ assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text 
 t_case 'an unknown command exits 2 when run as a real script, matching the sourced-function behaviour'
 assert_status 2 './scan.sh bogus exits 2' _bin_run bogus
 
+# THE SCAN ROOT IS THIS REPOSITORY'S OWN SOURCE, ASSEMBLED, RATHER THAN THE
+# CHECKOUT ITSELF - AND THAT IS A COST FIX, NOT A NARROWING OF THE CLAIM.
+#
+# What this case asserts is that the real script, run as a real subprocess,
+# completes a `sast` dispatch end to end and writes an honest run.json.  None
+# of its three assertions reads the tree: not the finding count, not which
+# rules fired, not the scan root.  The tree only has to be a large, real,
+# heterogeneous one rather than a curated fixture, which this still is.
+#
+# What it was paying for instead was DRIFT.  `--path "$ROOT"` walks whatever
+# happens to be committed, and `bench/` - a corpus of benchmark OUTPUT
+# (scorecards, findings dumps, raw engine stdout) - is now 2438 of the
+# checkout's 3653 files, 66% of the walk.  Measured on this host: the whole
+# checkout costs 715s, the same scan without that corpus costs 332s, and
+# assembling the root costs 0.25s.  Nobody chose 715s; it grew, silently,
+# every time a benchmark result landed, and it will keep growing.  That is the
+# same shape as the stale link-local claim this file's round-trip section now
+# documents - an assumption about the machine that was true when written and
+# was never re-checked - and it is why the sibling `all` case a few lines below
+# already states the principle in its own comment: "the smallest tree that does
+# so", rather than the whole fixture tree.
+#
+# The exclusions are the benchmark corpus plus the three the walker prunes for
+# itself anyway (`.git`, `reports`, `state` are in SAST_DEFAULT_EXCLUDE_DIRS),
+# so skipping those in the copy costs nothing and is not a second policy.
+# `git init` is run in the assembled root so `--path` still resolves its scan
+# root through the git-toplevel branch (lib/core.sh) exactly as the checkout
+# does, rather than silently taking the plain-path fallback; it is guarded
+# because a host without git must not turn this into a failure.
+#
+# This does NOT stop scoursh being scanned by scoursh: `bench/` is excluded
+# because it is committed scanner OUTPUT, not because it is expensive, and
+# every line of first-party source and every test fixture is still walked.
+SELF_SCAN_ROOT=$W/self-scan-root
+rm -rf "$SELF_SCAN_ROOT"
+mkdir -p "$SELF_SCAN_ROOT"
+for _e in "$ROOT"/* "$ROOT"/.[!.]*; do
+  [[ -e $_e ]] || continue
+  case ${_e##*/} in
+    .git | bench | reports | state) continue ;;
+  esac
+  cp -R "$_e" "$SELF_SCAN_ROOT/"
+done
+git -C "$SELF_SCAN_ROOT" init -q >/dev/null 2>&1 || true
+
 t_case 'a full sast invocation exits 0 and writes a real run.json to disk'
 rm -rf "$W/real-run"
-assert_status 0 './scan.sh sast --path . --out DIR exits 0 end to end' \
-  _bin_run sast --path "$ROOT" --out "$W/real-run"
+assert_status 0 './scan.sh sast --path <this repository'"'"'s own source> --out DIR exits 0 end to end' \
+  _bin_run sast --path "$SELF_SCAN_ROOT" --out "$W/real-run"
 assert_file_exists "$W/real-run/run.json" 'run.json was written by the real script, not just the sourced function'
 assert_contains "$(cat "$W/real-run/run.json")" '"gate": "not-evaluated"' \
   'run.json honestly reports that no gate has been evaluated yet (no findings pipeline exists yet)'
@@ -469,14 +2043,16 @@ printf '\n-- --format actually selects which artifacts get written --\n'
 # empty tree that would write the same five near-empty files whatever
 # --format asked for and pin nothing.
 
-t_case 'no --format: the five artifacts this project has always written are all still written'
+t_case 'no --format: the six artifacts this project now writes by default are all still written'
 rm -rf "$W/fmt-default"
 assert_status 0 './scan.sh all --path DIR --out DIR (no --format) exits 0' \
   _bin_run all --path "$W/all-tree" --out "$W/fmt-default"
-for f in findings.json findings.jsonl report.md report.html run.json; do
+for f in findings.json findings.jsonl report.md report.html agent-fix.json run.json; do
   assert_file_exists "$W/fmt-default/$f" \
-    "$f is written with no --format given - pins today's unchanged default, fails under a default that silently narrows what a caller who never asked for --format gets"
+    "$f is written with no --format given - agent-fix.json joined the default list as a first-class deliverable; fails under a default that silently narrows what a caller who never asked for --format gets"
 done
+assert_file_absent "$W/fmt-default/report-audit.html" \
+  'report-audit.html is NOT written with no --format given - audit alone stays opt-in'
 
 t_case '--format md writes only report.md, plus the two mandatory records'
 rm -rf "$W/fmt-md"
@@ -491,6 +2067,8 @@ assert_file_absent "$W/fmt-md/findings.json" \
   "findings.json is NOT written - fails under the shipped defect where --format is parsed and then discarded, so 'md' still got findings.json too"
 assert_file_absent "$W/fmt-md/report.html" \
   "report.html is NOT written - fails under the same discarded-format defect"
+assert_file_absent "$W/fmt-md/agent-fix.json" \
+  "agent-fix.json is NOT written - naming --format explicitly replaces the default list, it does not force-add agent"
 
 t_case '--format json,html (multi-format) writes exactly those two, and nothing findings.jsonl/run.json would not already cover'
 rm -rf "$W/fmt-json-html"
@@ -500,6 +2078,8 @@ assert_file_exists "$W/fmt-json-html/findings.json" 'findings.json is written'
 assert_file_exists "$W/fmt-json-html/report.html" 'report.html is written'
 assert_file_absent "$W/fmt-json-html/report.md" \
   "report.md is NOT written - fails under 'every format list still writes all five artifacts'"
+assert_file_absent "$W/fmt-json-html/agent-fix.json" \
+  "agent-fix.json is NOT written - it was not named, and an explicit --format list is never widened to include it"
 
 t_case '--format sarif alone: no SARIF emitter exists yet (docs/DESIGN.md §13 step 10), so it selects nothing beyond the two mandatory records'
 rm -rf "$W/fmt-sarif"
@@ -510,35 +2090,46 @@ assert_file_exists "$W/fmt-sarif/run.json" 'run.json is still written (mandatory
 assert_file_absent "$W/fmt-sarif/findings.json" 'findings.json is NOT written for --format sarif'
 assert_file_absent "$W/fmt-sarif/report.md" 'report.md is NOT written for --format sarif'
 assert_file_absent "$W/fmt-sarif/report.html" 'report.html is NOT written for --format sarif'
+assert_file_absent "$W/fmt-sarif/agent-fix.json" 'agent-fix.json is NOT written for --format sarif alone'
 
 # =============================================================================
 printf '\n-- per-subcommand help: scan.sh <command> --help --\n'
 # =============================================================================
-t_case 'dast --help exits 0 with no --target given, and states it is only partially built'
+t_case 'dast --help exits 0 with no --target given, and states its real build status'
 assert_status 0 './scan.sh dast --help exits 0 with no --target' _bin_run dast --help
 DAST_HELP=$(cat "$W/bin.out")
 assert_contains "$DAST_HELP" 'scan.sh dast [options]' 'command-specific header'
-assert_contains "$DAST_HELP" 'partially built' \
-  "dast states plainly that it is only partially built - fails under the shipped defect where every subcommand prints the same global usage and says nothing about build status"
+assert_contains "$DAST_HELP" 'built' \
+  "dast states plainly what its build status is - fails under the shipped defect where every subcommand prints the same global usage and says nothing about build status"
 assert_contains "$DAST_HELP" 'scan phases implemented' \
   'the phase count is stated, not just a bare "partial"'
 assert_not_contains "$DAST_HELP" 'Commands:' \
   "dast --help is NOT the global usage text - fails under 'scan.sh dast --help prints the same global usage' (the shipped defect this ticket fixes)"
 
-t_case 'cloud --help exits 0 and states plainly it is not built'
+t_case 'cloud --help exits 0 and states plainly it IS built, per PR #275 (30 of 30 AWS services)'
 assert_status 0 './scan.sh cloud --help exits 0' _bin_run cloud --help
 CLOUD_HELP=$(cat "$W/bin.out")
 assert_contains "$CLOUD_HELP" 'scan.sh cloud [options]' 'command-specific header'
-assert_contains "$CLOUD_HELP" 'NOT built' 'cloud states plainly that it is not built'
-assert_contains "$CLOUD_HELP" 'modules/cloud/aws/run.sh does not exist' \
-  'the reason is the real, checkable fact scan_dispatch itself acts on, not a hand-typed claim'
+assert_contains "$CLOUD_HELP" 'Status: built' \
+  "cloud states plainly what its build status is - fails under the pre-#275 defect where this command claimed modules/cloud/aws/run.sh does not exist on disk"
+assert_contains "$CLOUD_HELP" 'AWS services implemented' \
+  'the service count is stated, not just a bare "built" - fails under hand-typed prose that cannot regress if a service script is removed'
+assert_not_contains "$CLOUD_HELP" 'NOT built' \
+  'the stale "NOT built" wording is gone now that modules/cloud/aws/run.sh exists'
+assert_eq "$(_scan_cloud_service_status)" "$(printf '%s' "$CLOUD_HELP" | grep -oE '[0-9]+ of [0-9]+ AWS services implemented')" \
+  "the reason is the real, checkable fact _scan_cloud_service_status itself computes from modules/cloud/aws/engine.sh's own _CLOUD_SERVICES table, not a hand-typed claim - fails if the help text and the live status function were ever allowed to drift apart"
 
-t_case 'diff --help exits 0 with no --against given, and states plainly it is not built'
+# docs/STEP7-STATE-PLAN.md STATE-06: `diff` is a real command now
+# (lib/diff.sh's diff_render_against), so its --help text says "built",
+# never "NOT built" - this test's own pre-STATE-06 assumption is updated
+# rather than left pinning a defect that no longer exists.
+t_case 'diff --help exits 0 with no --against given, and states plainly it IS built'
 assert_status 0 './scan.sh diff --help exits 0 with no --against' _bin_run diff --help
 DIFF_HELP=$(cat "$W/bin.out")
 assert_contains "$DIFF_HELP" 'scan.sh diff [options]' 'command-specific header'
-assert_contains "$DIFF_HELP" 'NOT built' 'diff states plainly that it is not built'
-assert_contains "$DIFF_HELP" 'state/' 'the reason names the real step-7 dependency, not a vague "later"'
+assert_contains "$DIFF_HELP" 'Status: built' \
+  'diff is real (lib/diff.sh) and says so, distinctly from a NOT-built command'
+assert_contains "$DIFF_HELP" 'state/latest.json' 'the status line names what it actually does'
 
 t_case 'sca --help exits 0 and states plainly it IS built'
 assert_status 0 './scan.sh sca --help exits 0' _bin_run sca --help

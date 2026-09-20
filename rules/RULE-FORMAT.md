@@ -387,7 +387,10 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | `config/auth.conf` | **auth identity** (§9.6.2) |
 | `config/discovery.conf` | **discovery input** (§9.6.3) |
 | `config/posture.conf` | **posture expectation** (§9.6.4) |
+| `config/images.conf` | **image source** (§9.6.8) |
 | `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
+| `data/owasp-categories.conf` | **OWASP category label** (§9.6.6) |
+| `data/cis-mappings` | **CIS control label** (§9.6.7) |
 
 **The first matching row wins**, which is why the two `checks` rows are first.
 The basename `checks.rules` is **reserved repository-wide**: it always takes the §9.5 schema regardless
@@ -470,18 +473,31 @@ more than one record.
 | `severity-floor` | optional | single | no | Severity name; the rubric may never lower the finding below it. |
 | `severity-ceiling` | optional | single | no | Severity name; the rubric may never raise the finding above it. |
 | `format-version` | optional | single | no | `1`. Only meaningful on the first record of a file. |
+| `fix-kind` | optional | single | no | One of `replace` / `replace-tpl` / `insert-near` / `dep-upgrade`, §9.1.4. |
+| `fix-find` | optional | single | no | The literal text `fix-replace`/`fix-snippet` acts against. Never derived from `evidence` (`docs/AGENT-FORMAT.md`). |
+| `fix-replace` | optional | single | no | Replacement text for `fix-find`, when `fix-kind` is `replace` or `replace-tpl`. Requires `fix-find` (`E082`). |
+| `fix-snippet` | optional | single | **yes** | Text to insert near `fix-find` (an anchor line), when `fix-kind` is `insert-near`. |
 
 #### 9.1.1 Check id
 
 ```
 id     = MODULE "-" FAMILY "-" NAME [ "-" SEQ ]
-MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "COMPOSITE"
+MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "NET" / "IMAGE" / "COMPOSITE"
 FAMILY = 1*( ALPHA / DIGIT )                 ; uppercase
 NAME   = 1*( ALPHA / DIGIT / "_" )           ; uppercase
 SEQ    = 2DIGIT
 ```
 
-Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
+Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|IMAGE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
+`NET` is the network/host-scanning module (`modules/network/`): declared-listener reachability,
+service/version identification, and transport posture on an operator-authorised `(host, port)` tuple.
+Its own module directory does not match its enum spelling - `modules/network/` rather than
+`modules/net/` - which §9.5.1's owning-module map states explicitly, the same way `POSTURE` nests under
+`modules/cloud/posture/` without matching a `modules/posture/` path.
+`IMAGE` is the built-container-image scanning module (`modules/image/`): offline package enumeration
+and installed-package CVE matching against an operator-supplied docker-save tarball or OCI image
+layout - never a registry pull. Unlike `NET`, its module
+directory matches its enum spelling exactly, so it needs no owning-module-map exception.
 
 `SEQ` is **required in every schema except the derived-finding schema (§9.2), where it MUST be
 omitted**.
@@ -527,7 +543,9 @@ expectation id silently collide with a scope target id.
 | **discovery id** | `config/discovery.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file, and MUST name an existing target id (`E080`) |
 | **auth identity id** | `config/auth.conf` | `<target>.<label>` | Unique within the file; the `<target>` part MUST name an existing target id (`E080`) |
 | **expectation id** | `config/posture.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **image id** | `config/images.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file. Operator-assigned and deliberately **stable**: it is the `image-id` coverage cell (§9.5.1), so it must survive a rebuild and a retag, and it is never validated against the image's own digest, tag or content. |
 | **rubric modifier id** | `data/severity-rubric.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **CIS control id** | `data/cis-mappings` | `^[0-9]+(\.[0-9]+)+$`, the benchmark's own dotted-decimal numbering, §9.6.7 | Unique within the file. This namespace is **never** validated against a `cis:` field value (§9.1, §9.2, §9.5): the id is authored on the check record and this table is a reference the report layer consults, not a cross-reference the linter enforces either direction. |
 | **config literal** | single-record config files | the frozen basename literal | One record per file (`E071`) |
 | **adapter check id** | not a record file; produced at runtime by a vendored engine (§6.4) | `<ADAPTER>:<engine rule id>`, for example `semgrep:python.lang.security.eval` | Unique within the adapter's own output; never linted, since no record declares it |
 
@@ -562,6 +580,39 @@ Tags drive check-set selection (`docs/FOUNDATION.md` tension 15).
 - The `intrusive` tag marks a check that mutates target state; it is refused unless `--allow-intrusive`
   is given.
   A pattern rule may never carry `intrusive` (`E043`).
+
+#### 9.1.4 `fix-*` - the optional deterministic fix scaffold
+
+Four optional keys, read by `finding_from_record` (`lib/findings.sh`) and carried onto the finding as
+first-class fields (`fix_kind`/`fix_find`/`fix_replace`/`fix_snippet`) so `--format agent`
+(`docs/AGENT-FORMAT.md`) can build a remediation scaffold without re-parsing the rule registry at
+render time. Absent on a check means that check's findings are `fixability: manual` in the agent
+format - most checks, deliberately (`docs/AGENT-FORMAT.md` §3).
+
+- `fix-kind: replace` - `fix-find` names the exact, literal text matched; `fix-replace` is the exact
+  literal text to put there instead. A complete, unattended edit (`fixability: auto`).
+- `fix-kind: replace-tpl` - same mechanics as `replace`, but `fix-replace` contains a
+  `<PLACEHOLDER>` a human must fill in (an operator-specific value scoursh cannot know offline, for
+  example a trusted CIDR). `fixability: assisted`.
+- `fix-kind: insert-near` - `fix-find` matches an ANCHOR line, not the offending line (for example
+  `containers:` for a missing `runAsNonRoot`); `fix-snippet` is text to insert into the enclosing
+  block near that anchor, indentation and placement left to the fixer. `fixability: assisted`.
+- `fix-kind: dep-upgrade` - reserved for `modules/sca/`'s own finding fields (`fix_fixed_versions`,
+  `dep_type`), set directly by the SCA engine rather than authored on a record (SCA ships no
+  `*.rules` at all). Illegal on an actual pattern-rule record; listed here only so the enum is the
+  same four values everywhere the fix scaffold is documented.
+
+Two rules, both enforced rather than merely documented:
+
+- `fix-find` MUST be authored on the record, and MUST NEVER be derived from a finding's `evidence` at
+  emission or render time - evidence is the regex match, which can be a truncated fragment, and is
+  **redacted** for every secret check (`docs/FOUNDATION.md` tension 9). `docs/AGENT-FORMAT.md` calls
+  this out as the tempting shortcut that produces a wrong edit to a real file.
+- A check whose id is in the secret family (`finding_check_is_secret_family`, `lib/findings.sh`) MUST
+  carry no `fix-*` key at all: `finding_from_record` `die()`s if one is present. An automated edit
+  that deletes a matched credential literal leaves a live, unrotated compromised credential the agent
+  cannot even see (its evidence is `<redacted:SECRET:...>`) - `manual` is correct there on purpose,
+  not a gap.
 
 ### 9.2 Schema: derived finding
 
@@ -622,6 +673,8 @@ there.
 | DAST | **yes** | no | no | no |
 | CLOUD | **yes**, by attribution | **yes** | **yes** | no |
 | POSTURE | **yes**, by scope-key | **yes** | **yes** | no |
+| NET | **yes** | no | no | no |
+| IMAGE | no | no | no | **yes**, conditionally |
 
 `E053` fires when a derived record's `correlate-on` is a key that **any** of its `requires` or `any-of`
 contributors' modules cannot supply per this table.
@@ -629,14 +682,23 @@ contributors' modules cannot supply per this table.
 
 Every **yes** in this table is a statement about the module *in principle*, which is what makes the
 table static and `E053` decidable from record text alone.
-Two cells are supplied conditionally at runtime, and both resolve the same graceful way: a finding that
-cannot produce the value simply has no value for that key and does not participate in that composite.
+Three cells are supplied conditionally at runtime, and all three resolve the same graceful way: a
+finding that cannot produce the value simply has no value for that key and does not participate in
+that composite.
 
 - **CLOUD / `target`** is supplied by attribution, below; zero host matches means no `target` value.
 - **POSTURE / `target`** is supplied when the finding's expectation carries a `scope-key` that is a
   scope target id (`rules/RULE-FORMAT.md` §9.6.4).
   When the `scope-key` is an account id or `account/region` instead, the finding has no `target` value
   and does not participate in a `target` composite, exactly as for a cloud finding with no host match.
+- **IMAGE / `file`** is supplied only when the operator declares which Dockerfile built the image, via
+  the optional `dockerfile` key on its `config/images.conf` record (§9.6.8) - the value scoursh reads
+  is never inferred from the image's own content, exactly as `id` never is (§9.6.8's own "deliberately
+  not derived" paragraph). A `config/images.conf` record with no `dockerfile` key gives every
+  `IMAGE-*` finding for that image no `file` correlation value, so it cannot join an
+  `IAC-DOCKER-*` finding whatever the two scans actually built - the same conservative "no value,
+  no participation" outcome CLOUD's zero-host-match case reaches, never a guess at which Dockerfile
+  produced an image nobody named.
 
 Neither case is an error, and neither is silent: a composite that never fires because its contributors
 never share a correlation value is reported in `run.json` under `coverage_gap`, so the operator sees a
@@ -779,6 +841,8 @@ The value is fixed per module, so the linter checks it against this table alone 
 | `DAST` | `target` | the `config/scope.conf` target id |
 | `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
+| `NET` | `target` | the `config/scope.conf` target id |
+| `IMAGE` | `image-id` | the operator-declared stable image id (`config/images.conf`) |
 
 `none` is not a legal value in a §9.5 record: no script check is all-or-nothing.
 Derived findings have no `coverage-scope` at all - §9.2 has no such key - because they are classified by
@@ -817,6 +881,8 @@ The map is frozen here, **most specific first, first match wins**:
 | `modules/sca/` | `SCA` |
 | `modules/iac/` | `IAC` |
 | `modules/dast/` | `DAST` |
+| `modules/network/` | `NET` |
+| `modules/image/` | `IMAGE` |
 | `rules/derived.rules` | `COMPOSITE` |
 | `rules/redaction.rules` | `SAST` (redaction ids are `SAST-REDACT-*`, §9.3) |
 
@@ -851,6 +917,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `max-redirects` | single | no | Non-negative integer | `5` |
 | `request-budget` | single | no | Positive integer, per run | `20000` |
 | `circuit-breaker-failures` | single | no | Positive integer | `10` |
+| `circuit-breaker-5xx-failures` | single | no | Positive integer | `200` |
 | `circuit-breaker-window` | single | no | Seconds | `60` |
 | `fail-on` | single | no | Severity name or `none` | `none` |
 | `min-confidence` | single | no | `high` `medium` `low` | `low` |
@@ -886,6 +953,13 @@ peers that made adding a key to this frozen schema costly to land in parallel) h
 `modules/dast/passive/headers_engine.sh`'s `hdr_load_recommended` header for the read precedence
 (config, then the vendored-file/environment-seam mechanism it replaces as the primary source but does
 not remove).  Additive and optional, so it too trips §14 item 2 alone with no `format_version` bump.
+
+`circuit-breaker-5xx-failures` is the same shape again (the breaker-5xx-semantics fix,
+`docs/FOUNDATION.md` tension 16's amendment): a well-formed 5xx response is counted toward this
+SEPARATE counter rather than toward `circuit-breaker-failures`, which after this fix counts only
+transport-level failures (no usable response at all).  See `lib/http.sh`'s
+`_http_breaker_record_failure` for the full reasoning behind the split.  Additive and optional, so it
+too trips §14 item 2 alone with no `format_version` bump.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.
@@ -936,6 +1010,7 @@ One record per target, `id` = the target id.
 | `crawl-depth` | optional | single | no | Non-negative integer. Default `3`. |
 | `include-path` | optional | repeatable | no | Glob (§9.1.2) of target-relative paths to crawl. |
 | `exclude-path` | optional | repeatable | no | Glob of target-relative paths never to request. |
+| `js-endpoint-discovery` | optional | single | no | `true`/`false`. Default `true`. Mine URL-shaped literal strings out of a fetched JS/source-map response and seed them into the inventory as `source=js` rows (docs/INVENTORY-FORMAT.md §2). An additive optional key (§14's "additive optional key" shape); `false` opts a target out for an operator who wants a strictly crawl/spec/HAR-only inventory. |
 | `notes` | optional | single | yes | Free text. |
 
 #### 9.6.4 `config/posture.conf` - posture expectation
@@ -980,6 +1055,100 @@ One record per modifier, implementing the frozen table in `docs/FOUNDATION.md` t
 The rubric reads no field outside this table, which is what makes `severity_of()` pure and total.
 `E075` fires when two records share the same (`fact`, `equals`) pair, since that would make the sum
 order-dependent.
+
+#### 9.6.6 `data/owasp-categories.conf` - OWASP category label
+
+One record per OWASP Top 10 category, expanding the id every pattern-rule, derived, and script-check
+`owasp` field carries (§9.1, §9.2, §9.5) into its published category name - the "the report expands it
+to the full label" §9.1 promises and COMPLIANCE-01 (`docs/STEP10-SARIF-PLAN.md`) implements.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | `^A[0-9]{2}:[0-9]{4}$` - an OWASP Top 10 category id, in the same edition-qualified form the `owasp` field uses (§9.1) minus its `none` alternative. `none` is a fixed literal meaning "not categorised" and is never a row in this table - it is handled directly by the report layer. MUST be first. |
+| `category` | required | single | no | The category's published name, verbatim from the cited edition, for example `Broken Access Control`. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+A finding's `owasp` id with no row here (a different edition's id, or an id `E026` admits but this table
+has never been given a row for) is not a parse or validation error - `owasp` only has to match `E026`'s
+pattern, not appear in this table. The report layer renders the bare id plus a recorded reason in that
+case, never a blank or an invented label, so a category this table has never heard of is visibly
+distinct from a category that is genuinely covered and simply produced no finding this run.
+
+#### 9.6.7 `data/cis-mappings` - CIS control label
+
+One record per CIS AWS Foundations Benchmark control, expanding the id every `cis:` field (§9.1, §9.2,
+§9.5) carries into its published short title - the CIS half of the same "the report expands it to the
+full label" job §9.6.6 does for `owasp` (COMPLIANCE-03, `docs/STEP10-SARIF-PLAN.md`).
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | The CIS control number, verbatim from the benchmark's own dotted-decimal numbering (for example `1.4`, `2.1.1`), matching `^[0-9]+(\.[0-9]+)+$`. MUST be first. |
+| `title` | required | single | no | The control's published short title, verbatim from the cited benchmark and version. Never the rationale, audit, or remediation prose - see below for why. |
+| `benchmark` | optional | single | no | The benchmark's published name, for example `CIS Amazon Web Services Foundations Benchmark`. Meaningful only on the **first** record of the file, exactly as `format-version` is (§9.6.5); every record is transcribed from one benchmark version, so repeating it on every record would only give a future version bump a second place to edit. |
+| `benchmark-version` | optional | single | no | The benchmark's published version, for example `3.0.0`. Same first-record-only convention as `benchmark`. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+**This table is an id -> label reference table, and is never a source of control ids.** A check's `cis:`
+field is authored on the check record itself (§9.1, §9.2, §9.5); nothing in `lib/`, `modules/`, or `scan.sh`
+may look a control id up in this file and treat the result as anything other than a display string. The
+distinction matters because "CIS AWS Foundations Benchmark v3.0.0 control 1.4" and "v1.4.0 control 1.4"
+are different controls: a check's `cis:` value has no version component of its own, so the benchmark name
+and version this file carries are what pin which numbering a given id is drawn from, and a `cis:` value
+authored against one version must not be silently re-interpreted against another.
+
+**Copyright-safe by construction.** A CIS benchmark's control ids and their short recommendation titles
+are facts about a published standard; the rationale, audit, and remediation prose accompanying each
+control is CIS's copyrighted text. This schema has no field for any of that prose - `title` is the only
+value field besides the id - so a conformant file cannot accidentally carry it.
+
+An id with no row here (a control this table has not yet been given a row for, whether because the
+benchmark added it in a later revision or because the table is a seed rather than the whole benchmark) is
+not a parse or validation error - a `cis:` field value is free text, not validated against this table
+either direction (§9.1.1a) - and is the report layer's degrade-visibly case, exactly as an unknown `owasp`
+id is (§9.6.6): the bare id plus a recorded reason, never a blank or an invented title. `docs/CIS-MAPPINGS.md`
+is the normative document for what is currently seeded, what is a stated gap, and the refresh procedure for
+closing it - read it before adding or editing a row here.
+
+#### 9.6.8 `config/images.conf` - image source
+
+One record per built container image the operator makes available to `scan.sh image`, mapping an
+operator-assigned **stable** id to a **local, already-on-disk** image.
+The table below is the whole of this schema: a single-image source needs no `reference`, and a
+multi-image source needs one naming which image inside it to read.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | The image name used by `--image`. `^[a-z][a-z0-9-]*$`. Unique within the file. MUST be first. |
+| `source` | required | single | no | `docker-archive` or `oci-layout`. Anything else is `E024`. |
+| `path` | required | single | no | Path to the docker-save tarball (`docker-archive`) or to the OCI image-layout directory (`oci-layout`). A relative path resolves against the process's working directory, never against the install root; an absolute path is recommended. |
+| `reference` | optional | single | no | Which image inside a multi-image source to read: a `RepoTags` entry for `docker-archive`, or the `org.opencontainers.image.ref.name` annotation for `oci-layout`. A source holding exactly one image needs no `reference`; a source holding more than one and naming no `reference` is a **declared refusal**, never an arbitrary pick. |
+| `dockerfile` | optional | single | no | The **scan-root-relative** path (`modules/sast/engine.sh`'s `sast_relpath` shape - no leading `/`, no leading `./`) of the Dockerfile that built this image, when the operator scans it as source too. Never validated against the image's own content (a built image carries no record of which Dockerfile built it, so there is nothing on disk to check this path against - a typo here is silent). This is IMAGE's `file` correlation value (§9.2.2): populating it is what lets `rules/derived.rules` join an `IMAGE-*` finding to the `IAC-DOCKER-*` findings from scanning that same Dockerfile with `modules/iac/`. Omitting it leaves every `IMAGE-*` finding for this image with no `file` correlation value, so it simply cannot join - never a guess at which Dockerfile built an image the operator did not name one for. |
+| `notes` | optional | single | yes | Free text. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+**The id is deliberately not derived from anything the image itself carries.** The digest changes on
+every rebuild and the tag changes on every release, so either one would put every finding in a fresh
+`image-id` coverage cell (§9.5.1) and nothing would ever be classified `fixed` - the whole product
+value of scanning an image run over run.  This is `config/scope.conf`'s own decision one module over
+(`docs/FOUNDATION.md` tension 5: DAST's location component is "the `config/scope.conf` id, **not the
+URL**"), and it means `id` is never validated against the image's real content, on purpose.
+
+**There is no registry, daemon or URL value, and that is a safety property rather than an omission.**
+`lib/http.sh` refuses any host absent from `config/scope.conf` and there is no third egress channel
+(`docs/FOUNDATION.md` tension 19), so an image is supplied the way `data/advisories.db` is: built on a
+networked box and handed to the scanner as a file.  Report §1.2's shape C - shelling out to a local
+`docker save` - is convenience sugar that **produces** a shape-A tarball and re-enters the
+`docker-archive` path; if it is ever built it adds no `source` value of its own, because a second
+acquisition path is a second door of exactly the kind tension 19 refuses for the network.
+
+**`dockerfile` is §14's additive-optional-key shape (`contact` in §9.6.1 is the worked example) and
+trips item 2 alone, so it needs no `format_version` bump.** No existing `config/images.conf` record is
+rewritten (an absent `dockerfile` key already validates exactly as it did before this key existed);
+`lib/records.sh`'s `image-source` schema gains the one arm and `tests/lint-rules.sh` is re-run over
+every shipped record file; `IMAGE-*`/`IAC-DOCKER-*` are ordinary check ids and `dockerfile` feeds no
+fingerprint (§9.2's correlation value is a derived-finding-only input, §9.2's "attribution never enters
+the fingerprint" paragraph applies here identically), so `state/` and `config/baseline.json` stay valid
+and no SARIF `ruleId`/`partialFingerprints` value changes either.
 
 ## 10. The `context` directive
 
@@ -1360,7 +1529,7 @@ Warnings are reported and do not fail unless `--strict`.
 | Code | Severity | Check |
 |---|---|---|
 | E023 | error | Missing required key |
-| E024 | error | Enum value outside its permitted set (`severity`, `confidence`, `dialect`, `kind`, `correlate-on`, boolean fields) |
+| E024 | error | Enum value outside its permitted set (`severity`, `confidence`, `dialect`, `kind`, `correlate-on`, `fix-kind`, boolean fields) |
 | E025 | error | `cwe` does not match `^(CWE-[0-9]+\|none)$` |
 | E026 | error | `owasp` does not match `^(A[0-9]{2}:[0-9]{4}\|none)$` |
 | E027 | error | `id` does not match the form its namespace requires (§9.1.1a); for check ids that is the §9.1.1 regex, with `SEQ` forbidden in the derived schema and required in every other |
@@ -1380,6 +1549,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E078 | error | Two §9.6.4 records share the same (`check`, `scope-key`) pair |
 | E079 | error | §9.5 `coverage-scope` is not its module's required value (§9.5.1) |
 | E081 | error | A `checks.rules` sits outside every prefix of the §9.5.1 owning-module map, so its records have no owning module |
+| E082 | error | `fix-replace` present without `fix-find` (§9.1.4) |
 
 ### Regex (from §8)
 
@@ -1457,6 +1627,14 @@ trips item **2** and nothing else, so it needs **no `format_version` bump**:
 A key that were **required**, renamed, retyped, or removed would trip item 1 (every file rewritten) and
 IS a versioned migration.  The distinction is the optionality, not the size of the diff.
 
+§9.1.4's four `fix-*` keys are the identical shape applied to the pattern-rule schema instead of
+`config/scanner.conf`: optional, single-cardinality (`fix-snippet` is multi-line, which trips no
+extra item either - multi-line-ness is a parsing property, not an identity one), and read nowhere
+that participates in a fingerprint or a SARIF `ruleId`. Item 2 is what this ticket discharges:
+`lib/records.sh`'s schema table gains the four arms plus `E082`, and `lib/findings.sh`'s
+`finding_from_record` (the shared consumer for `sast`, `iac` and `cloud`) reads them onto the
+finding. Items 1, 3 and 4 do not apply, for the same reasons `contact` does not trip them.
+
 **Which of the four an ADDITIVE PATH-TABLE ROW trips, checked the same way.**
 The `checks-<name>.rules` row in §9 is the worked example. It **widens** the set of legal paths: a path
 that resolved to a schema before this row still resolves to the same schema after it, because the row is
@@ -1483,8 +1661,55 @@ inserted above only the pattern-rule row and no existing repository file has a b
 4. **Does not apply.** SARIF `ruleId` is the check id and `partialFingerprints` derives from the
    fingerprint; item 3 establishes neither changes, so no previously-ingested result is orphaned.
 
-Generalising, since this is the second worked example and the pair is the actual rule: an amendment that
-**adds** a legal spelling, leaving every existing one valid and every existing file parsing unchanged,
-trips item 2 alone. An amendment that **retires, renames or re-schemas** an existing spelling trips item
-1, and items 3 and 4 with it whenever the re-schema reaches a check id. Only the second is a versioned
-migration.
+**Which of the four ADDING A NEW MODULE ENUM VALUE trips, checked the same way.**
+`NET` (§9.1.1, the network/host-scanning module) is the worked example. It **widens** the `MODULE`
+alternation: every id that matched the enum before this change still matches it after, because the
+regex gained an alternative rather than losing or renaming one, and no existing check id, module
+prefix, or record file used the string `NET` for anything before this change. Like the two worked
+examples above, it trips item **2** and nothing else, so it needs **no `format_version` bump**:
+
+1. **Does not apply.** No existing `.rules` pack or `config/*.conf` file is rewritten, and none *has* to
+   be: every check id already on disk still matches the widened `MODULE` alternation in `lib/records.sh`
+   and in this section, because the change only adds an alternative rather than removing or renaming
+   one.
+2. **Applies, and is discharged inside the same change.** `lib/records.sh` gains three arms: the
+   `re_check` alternation (§9.1.1), `records_owning_module`'s `modules/network/*) NET` case (§9.5.1's
+   owning-module map), and `_records_check_coverage_scope`'s `NET) want='target'` case (§9.5.1's
+   coverage-scope table). `lib/findings.sh` gains the `net` arms of `_fp_profile_for` and
+   `_fp_components_for` - the finding profile `target host port transport`, with no `version` component
+   for the identical reason SCA's profile omits one (§9.2, "SCA excludes the version deliberately") -
+   plus `loc_host`, `loc_port`, and `loc_transport` in `_finding_known_field`'s allowlist (`loc_target`
+   is already there, shared with `dast` and `cloud`); without that third piece the location profile
+   this paragraph names could be declared but never actually populated by `finding_set`.
+   `lib/checks.sh`'s `checks_module_dir` gains the `network` -> `modules/network` arm, and
+   `tests/lint-rules.sh`'s `module_can_supply` (`E053`) gains `NET` alongside `DAST`/`CLOUD`/`POSTURE` in
+   its `target` case, matching the §9.2.2 row this change adds - keeping the frozen table and its one
+   executable enforcer in step is the same discipline item 2 already requires of
+   `records_schema_for_path` and `tests/lint-rules.sh` together. None of the module's own files exist
+   yet - no `modules/network/` directory, no probe script, no finding emitter, no `scan.sh` dispatch
+   entry - so every one of these arms is reached by no caller today; they are inert until a later ticket
+   adds one, exactly as an additive optional key's consumer arm is inert on every file that omits the
+   key.
+3. **Does not apply.** No existing check id, module prefix, or fingerprint input changes. `NET` is a new
+   alternative in an enum no existing id used, so `state/` and `config/baseline.json` stay valid and no
+   finding becomes `new`.
+4. **Does not apply.** No existing SARIF `ruleId` or `partialFingerprints` value changes, for the
+   identical reason item 3 does not apply.
+
+**Which of the four ADDING A WHOLE NEW SCHEMA trips.**
+`image-source` (§9.6.8, `config/images.conf`) is the worked example, and it is the two examples above
+taken together rather than a fourth shape: a new §9.6 schema plus the one path-table row that reaches
+it. It trips item **2** alone, for their reasons combined - no existing file's schema resolution
+changes, because `config/images.conf` matched no row before and every other path still matches the row
+it always did; `lib/records.sh` gains a `_schema_fields` arm, a `records_schema_names` entry, a
+`records_schema_for_path` row and one `_records_check_enum` call, and the file's own consumer
+(`modules/image/acquire.sh`) lands in the same change; and no check id, module prefix, fingerprint
+input or SARIF value derives from an operator-config schema, so items 3 and 4 do not apply and
+`state/` and `config/baseline.json` stay valid. The image **id** an operator writes here is a
+coverage-CELL value, never a check id - it is not in the check-id namespace (§9.1.1a) and does not
+enter a fingerprint's `check_id` component.
+
+Generalising, since this is the third worked example and all three agree: an amendment that **adds** a
+legal spelling, leaving every existing one valid and every existing file parsing unchanged, trips item 2
+alone. An amendment that **retires, renames or re-schemas** an existing spelling trips item 1, and items
+3 and 4 with it whenever the re-schema reaches a check id. Only the second is a versioned migration.

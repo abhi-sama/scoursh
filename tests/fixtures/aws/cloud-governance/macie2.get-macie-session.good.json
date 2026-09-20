@@ -1,0 +1,7 @@
+{
+    "status": "ENABLED",
+    "createdAt": "2020-09-13T12:00:00.000Z",
+    "updatedAt": "2023-11-14T12:00:00.000Z",
+    "serviceRole": "arn:aws:iam::123456789012:role/aws-service-role/macie.amazonaws.com/AWSServiceRoleForAmazonMacie",
+    "findingPublishingFrequency": "SIX_HOURS"
+}

@@ -144,9 +144,15 @@ assert_eq '0 1 2 3 4 5 ' "$codes" \
 
 _row_clean() {
   local code=$1
+  rm -rf "$W/row-clean"
   assert_status "$code" \
     'sast --path <repo> --out DIR, run as a real subprocess, dispatches cleanly - fails under any reading where a healthy run does not exit 0' \
     _bin_run sast --path "$ROOT" --out "$W/row-clean"
+  # HONESTY FIX (record-abort-reason): a clean run never called die(), so it
+  # must record no abort_reason at all - fails if the field were written
+  # unconditionally rather than only on an actual die()-driven termination.
+  assert_eq '' "$(cat "$W/row-clean/meta/abort_reason" 2>/dev/null || printf '')" \
+    'a clean run records no abort_reason'
 }
 
 _row_gate() {
@@ -170,16 +176,42 @@ _row_usage() {
 
 _row_scope() {
   local code=$1
+  rm -rf "$W/row-scope"
   SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE assert_status "$code" \
     "dast --target no-such-target as a real subprocess exits 3, never 4 - fails under 'any scope.conf problem is exit 4', which docs/FOUNDATION.md tension 14 explicitly rejects" \
     _bin_run dast --target no-such-target --out "$W/row-scope"
+  # HONESTY FIX (record-abort-reason): the scope gate refusal is known at the
+  # exact point the process dies, and must now be recorded durably (meta/
+  # abort_reason) rather than lost to stderr - fails under the pre-fix
+  # behaviour, where this file never existed.  It is a SEPARATE field from
+  # incomplete_reason, which must stay untouched: that field's emptiness is
+  # exactly the exit-5 predicate (tension 14), so folding a scope abort into
+  # it would silently turn this exit-3 row into exit 5.
+  assert_contains "$(cat "$W/row-scope/meta/abort_reason" 2>/dev/null || printf '')" 'exit=3' \
+    'meta/abort_reason names the exit class - fails if the abort reason were never captured'
+  # This scenario is refused at the section-6a preflight gate (`_scan_preflight`
+  # in scan.sh), before `dast` is ever dispatched - not at lib/http.sh's own
+  # "scope gate refused ..." message, which fires only once a module is
+  # already making requests. Assert on the target id itself, which appears in
+  # BOTH refusal messages, rather than on wording specific to one call site.
+  assert_contains "$(cat "$W/row-scope/meta/abort_reason" 2>/dev/null || printf '')" 'no-such-target' \
+    'and carries the actual scope-refusal message naming the bad target, not just the exit class'
+  assert_eq '' "$(cat "$W/row-scope/meta/incomplete_reason" 2>/dev/null || printf '')" \
+    'incomplete_reason stays EMPTY - fails if a scope abort were folded into the exit-5 predicate field, which would silently make this run report exit 5'
 }
 
 _row_input() {
   local code=$1
+  rm -rf "$W/row-input"
   assert_status "$code" \
     "sast --path pointing at a directory that does not exist, as a real subprocess, exits 4 - fails under a reading where a bad --path is only caught when a module actually reads it" \
     _bin_run sast --path "$W/does-not-exist-at-all" --out "$W/row-input"
+  # HONESTY FIX (record-abort-reason): same guarantee as the scope row above,
+  # for the input-class abort.
+  assert_contains "$(cat "$W/row-input/meta/abort_reason" 2>/dev/null || printf '')" 'exit=4' \
+    'meta/abort_reason names the exit class for an input-class abort too'
+  assert_eq '' "$(cat "$W/row-input/meta/incomplete_reason" 2>/dev/null || printf '')" \
+    'incomplete_reason stays EMPTY here too - an input abort must never read as an incomplete (exit 5) run'
 }
 
 _row_incomplete() {
@@ -203,6 +235,12 @@ _row_incomplete() {
     'SIGTERM to a genuinely in-flight real scan.sh process exits 5 via core_on_signal - fails under a reading where scan.sh has no live trigger for exit 5 at all, and fails under "the default SIGTERM disposition (143) is close enough"'
   assert_contains "$(cat "$W/row-incomplete/meta/incomplete_reason" 2>/dev/null || printf '')" 'SIGTERM' \
     'and run.json/meta records why, which is the exit-5 predicate per docs/FOUNDATION.md tension 14 ("incomplete_reason non-empty is exactly the exit-5 predicate")'
+  # HONESTY FIX (record-abort-reason): a genuine exit-5 incomplete run is
+  # unaffected by that ticket - core_on_signal never writes meta/abort_reason
+  # (only lib/core.sh's die() does, and only for its 2/3/4 codes), so this
+  # row must still exit 5 and must NOT pick up the new field.
+  assert_eq '' "$(cat "$W/row-incomplete/meta/abort_reason" 2>/dev/null || printf '')" \
+    'meta/abort_reason stays empty on a SIGTERM/circuit-breaker incompleteness - fails if it were written for every terminating path instead of only die()'"'"'s 2/3/4 codes'
 }
 
 for _row in "${EXIT_CODE_TABLE[@]}"; do

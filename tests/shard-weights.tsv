@@ -1,0 +1,42 @@
+# tests/shard-weights.tsv - per-item wall-clock cost, in SECONDS, for weighted
+# CI sharding (`tests/run-tests.sh --shard I/N`; see that file's own `--shard`
+# header for the full derivation and the LPT algorithm this table feeds).
+#
+# Format: one `<kind>:<name><TAB><seconds>` record per line. `<kind>` is
+# `suite`, `linter`, `stage`, or `file` (one per shellcheck file - see below),
+# matching the prefixes `shard_work` itself prints, so two items of different
+# kinds sharing a name can never collide. Comments are whole-line, first byte
+# `#`.
+#
+# An item with NO row here is never dropped: `_shard_weight_of`
+# (tests/run-tests.sh) falls back to `SHARD_DEFAULT_WEIGHT_SECONDS` for a
+# `suite`/`linter` key this file does not name, and to a computed hub-sum
+# estimate (`_sc_file_weight_seconds`, tests/lib/hubsum.sh) for a `file` key -
+# see tests/run-tests.sh's own `--shard` header, "The shellcheck STAGE is not
+# one item in that plan - its FILE LIST is", for why a file gets a smarter
+# default than a flat number: real per-file shellcheck timing does not exist
+# yet (that needs a `--shard` CI run to have happened at least once with this
+# mechanism live), and the tree's own measured shellcheck -x cost is driven by
+# source-graph fan-out, not line count, so a structural proxy beats a flat
+# guess for files the way it never could for an untimed suite.
+#
+# A REAL `file:<path>` ROW STILL WINS the instant one is folded in, exactly
+# like any suite or linter row - nothing about the computed default forecloses
+# hand-tuning a specific file once real `SCOURSH_SHARD_RECORD` data exists for
+# it.
+#
+# THESE TWO ROWS ARE THE ONLY REAL, SOURCED NUMBERS IN THIS FILE TODAY.
+# Both are cited directly from tests/run-tests.sh's own long-standing comment
+# ("tests/suites/scan.sh alone has run for 91 minutes on a hosted runner while
+# `color` finishes in under a second"), not fabricated for this table.
+suite:scan	5460
+suite:color	1
+#
+# REFRESH THIS FILE DELIBERATELY, from real data, never by generating it.
+# Run with `SCOURSH_SHARD_RECORD=<path>` set (CI's own "Run the suite" step
+# does this and uploads the result as a `shard-timing-<os>-shard<N>`
+# artifact) to collect real `<kind>:<name><TAB><seconds>` lines, then fold
+# them into this file by hand. There is deliberately no importer that writes
+# this file unattended - a suite's true cost moves with the runner and the
+# fixture tree, and an unreviewed auto-update could drift the shard plan
+# without anyone deciding it should.

@@ -1,6 +1,13 @@
 # Run output and run-to-run state are artifacts, never sources.
-reports/
-state/
+#
+# ANCHORED WITH A LEADING SLASH, same reasoning as /pnpm-lock.yaml below: an
+# unanchored `state/` matches at ANY depth and silently swallowed this
+# ticket's own tests/fixtures/state/ fixtures (STATE-01, lib/state.sh) until
+# it was anchored - already-tracked fixtures would have survived, so the
+# damage would have stayed invisible until the next state/ fixture was
+# silently never added.
+/reports/
+/state/
 
 # Suite-run artifacts, never sources.  tools/daily-suite.sh writes its own
 # results under $SCOURSH_DAILY_DIR (outside the checkout), but a leg run by hand
@@ -34,6 +41,20 @@ findings.normalised.jsonl
 # deliberate `git add -f`, and only with real, pinned provenance.
 data/advisories.db
 data/versions.db
+data/advisory-summaries.db
+data/version-summaries.db
+
+# Vendored engine binaries and rulesets (tools/vendor-engines.sh and each
+# modules/*/adapters/*/vendor.sh), on the same "generated, on a networked
+# box, never during a scan, never in this repository" footing as the two
+# databases above.  Some of these rulesets carry a non-redistributable
+# licence (e.g. Semgrep's own Semgrep Rules License v1.0, which forbids
+# distributing the rules or making them available to others as a service) -
+# committing one from a PUBLIC checkout would republish it under scoursh's
+# own Apache-2.0 licence.  Reproducibility is the pinned version + digest an
+# operator supplies, not a git commit of the bytes.
+modules/*/adapters/*/bin/
+modules/*/adapters/*/rules/
 
 # `pnpm test` / `npm test` drop these even though package.json declares no
 # dependency of any kind (see AGENTS.md: it exists ONLY so the conventional
@@ -49,3 +70,10 @@ data/versions.db
 /node_modules/
 /pnpm-lock.yaml
 /package-lock.json
+
+# Compiled bytecode cache from importing tests/lib/*.py as modules (the
+# docs/build.html command-builder cross-check imports build_page_model.py
+# and scan_flag_model.py rather than only running them as __main__, which is
+# what tests/lib/sarif_validate.py never needed one for). Not a source file
+# in any of the ecosystems SCA already ignores above.
+tests/lib/__pycache__/

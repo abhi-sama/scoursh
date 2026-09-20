@@ -1,0 +1,11 @@
+{
+    "DBSnapshotAttributesResult": {
+        "DBSnapshotIdentifier": "scoursh-fixture-hardened-db-snap",
+        "DBSnapshotAttributes": [
+            {
+                "AttributeName": "restore",
+                "AttributeValues": ["111122223333"]
+            }
+        ]
+    }
+}

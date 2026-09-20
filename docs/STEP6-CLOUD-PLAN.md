@@ -8,34 +8,32 @@ small, independently reviewable tickets the moment its blockers clear, instead o
 `docs/DESIGN.md` §8 from scratch by whoever picks it up first, mirroring `docs/STEP5-DAST-PLAN.md` for
 step 5.
 
-## Status: not started, but every sequential blocker is now cleared
+## Status: complete for the live-checks half; `posture/` is the one thing still open
 
-**The build order (§13) is strictly sequential, and every step ahead of step 6 - step 3 (SAST), step 4
-(SCA + IaC), and step 5 (DAST) - is now complete on `dev`.** `dev` is the integration branch (`main` is
-the release branch; work lands on `dev` first and reaches `main` in batches - both exist on the
-remote).
+**Step 6 is done except for the `posture/` phase.** CLOUD-01 through CLOUD-04 (the `lib/awscli.sh`
+hardening, `modules/cloud/aws/regions.sh` account/region iteration including `--assume-role`, the
+read-only-verb lint's remaining scope, and `modules/cloud/aws/run.sh`'s `scan_dispatch cloud` entry
+point) have landed, and so has every one of CLOUD-05 through CLOUD-34: all 30 `docs/DESIGN.md` §8.1
+AWS service scripts (`modules/cloud/aws/live/*.sh`, one per service - iam, ec2, s3, rds, kms, lambda,
+ecs, cloudfront, route53, secretsmanager, sns, sqs, cloudtrail, eks, guardduty, inspector, macie,
+config, cognito, apigw, appsync, dynamodb, opensearch, redshift, efs, backup, acm, ecr, elb, ssm),
+totalling 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped, each with its own
+`tests/suites/cloud-*.sh` suite. `scan.sh cloud --live` resolves the account(s) and region(s) and runs
+every landed service against them today; it is not a dispatch that finds nothing to run.
 
-1. **§13 step 3 (SAST).** **Complete.** All ten catalog artifacts (`secrets`, `crypto`, `injection`,
-   `python`, `go`, `javascript`, `java`, `nosql`, `ldap`, and `history.sh`) have landed; the generated
-   status block in `AGENTS.md` reports SAST at `Landed 10 of 10`, `Outstanding: none`.
-2. **§13 step 4 (SCA + IaC).** **Complete.** `modules/sca/` covers all six `docs/DESIGN.md` §6.5
-   ecosystems, and `modules/iac/` carries all six rule packs; the generated status block in `AGENTS.md`
-   reports `Landed 6 of 6` with `Outstanding: none` for each of them.
-3. **§13 step 5 (DAST).** **Complete.** Every DAST-01 through DAST-36 ticket has landed
-   (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
+Only the `posture/` phase remains: POSTURE-01 (`config/posture.conf`/`.example`, the operator-authored
+expected-control baseline schema) has landed, but POSTURE-02 (`modules/cloud/posture/sso.sh`),
+POSTURE-03 (`edge.sh`) and POSTURE-04 (`session.sh`) have not - `modules/cloud/posture/` does not exist
+on disk - so a posture-phase run today is a declared skip. `ROADMAP.md`'s "Step 6" entry and
+`AGENTS.md`'s generated module-status block are the always-current mirrors of this paragraph; if either
+ever disagrees with this file, trust them and fix this file's wording rather than the other way round.
 
-**No CLOUD-0x or POSTURE-0x ticket has been picked up yet, but that is no longer because step 6 is
-blocked - it is simply next in an unclaimed queue.**
-Once step 5 landed, the priority order this project has been using put step 7 (persistent run state,
-`docs/STEP7-STATE-PLAN.md`) and step 10 (SARIF plus the compliance report) ahead of step 6 for
-sequencing reasons rather than a technical dependency - see `ROADMAP.md` for the current priority
-ordering, which is the live answer if this paragraph and that document ever disagree.
-This plan stays a written breakdown for whenever step 6 is picked up.
+**The build order (§13) is strictly sequential, and every step through step 10 is now complete on
+`dev`** (`main` is the release branch; work lands on `dev` first and reaches `main` in batches - both
+exist on the remote) - see `ROADMAP.md` for the current, terse per-step summary.
 
-This applies to the whole module - both the `CLOUD-*` per-service tickets and the `POSTURE-*` tickets
-below, since `docs/DESIGN.md` §13 names them as one step ("6. **Cloud**: ... + `posture/` checks.").
-Whoever lifts this block should update the "Status" line above, and the two build-order sections named
-in "Doc-update process" below, in the same change that starts CLOUD-01.
+Whoever picks up POSTURE-02 through POSTURE-04 should update this "Status" section, and the two
+build-order sections named in "Doc-update process" below, in the same change.
 
 ## `lib/awscli.sh`'s read-only lint has already shipped as a no-op stub - do not re-plan its matching logic
 
@@ -250,3 +248,87 @@ change, exactly as every §13 sub-step landing so far has had to. `docs/DESIGN.m
 (per this project's documented rule that its wording is load-bearing and preserved as-is) - it is never
 the place build-order status is recorded; `AGENTS.md`/`CLAUDE.md` and this section of `docs/FOUNDATION.md`
 are.
+
+## Landed tickets
+
+Appended to, one block per landing, rather than edited into the tables above. Step 6's per-service
+tickets are dispatched as PARALLEL PRs against one `dev`, so a shared row edited in place is a conflict
+for every peer that lands after it - the same argument `modules/cloud/aws/live/checks-cognito.rules`'s
+own header makes for not appending its records to the shared `checks.rules`. A conflict here is
+resolved by KEEPING BOTH BLOCKS, never by choosing a side.
+
+### CLOUD-20 - `aws/live/cognito.sh` (§8.3)
+
+Ships `modules/cloud/aws/live/cognito_engine.sh` (the pure classifiers, the ARN builders, the IAM
+policy reader and the emitter), `modules/cloud/aws/live/cognito.sh` (the pass `cloud_run_service`
+sources), `modules/cloud/aws/live/checks-cognito.rules` (24 `CLOUD-COGNITO-*` records) and
+`tests/suites/cloud-cognito.sh` with fixtures under `tests/fixtures/aws/cloud-cognito/`. It needed NO
+edit to `modules/cloud/aws/engine.sh`: the `'live/cognito.sh:regional'` row has been in
+`_CLOUD_SERVICES` since CLOUD-04, so landing the script alone flips the service from `absent` to `ran`.
+
+Eight things about it a later ticket will otherwise rediscover the expensive way.
+
+- **It is the first `regional` service to land, and its cell is `<account>/<region>` rather than the
+  `<account>/global` the `s3` row beside it uses.** Both `cognito-idp` and `cognito-identity` are
+  regional namespaces, so the pass is sourced once per enabled region, every resource it sees is in the
+  region it is enumerating, and the finding's `loc_region` and its `cell` are the same value.
+  `s3.sh`'s long note about the two deliberately DIFFERING is specific to a global namespace and must
+  not be copied: a `global` cell here would file every finding in a cell no pass ever covers, so
+  tension 12 could never classify one `fixed`.
+- **It reaches a THIRD API namespace, `iam`, and only where §8.3 requires it.** That section's
+  identity-pool bullet says the unauthenticated role must be inspected "for over-permissiveness ... as
+  its own high-severity finding, not a note", so the pass reads that role's inline and managed policies
+  through `iam list-role-policies` / `list-attached-role-policies` / `get-role-policy` / `get-policy` /
+  `get-policy-version`. All five are admitted by the frozen read-only prefix allowlist and need no
+  `tests/aws-readonly-allow.txt` entry. The calls are made ONLY when a pool both allows unauthenticated
+  identities and has such a role attached - there is nothing to inspect otherwise, and spending them
+  anyway would multiply an estate's IAM API cost by its region count for no finding.
+- **The policy classifier answers a NARROW question on purpose, and the narrowing is the honest part.**
+  It reports an `Allow` statement with NO `Condition` granting a wildcard action (`*` or `<service>:*`)
+  against `Resource: "*"`, plus `NotAction`/`NotResource`, and nothing else. A statement that DOES
+  carry a `Condition` is COUNTED and set aside with its own `coverage_reduction`, never judged:
+  deciding what a conditioned policy really permits is IAM policy evaluation, which
+  `s3_engine.sh`'s own `s3_policy_is_public` header already records as the thing not to reimplement in
+  shell - and for an IAM role there is no `get-bucket-policy-status` equivalent to ask instead.
+  `Statement` is read in BOTH its array and its single-object forms; the object form is the ordinary
+  shape for a hand-written Cognito unauthenticated role, and a walk handling only the array form
+  reports the most permissive role in the account as having no statements at all.
+- **An app-client finding cites the USER POOL's real ARN with the client id in `loc_sub_key`, and never
+  an invented client ARN.** AWS defines no ARN for a Cognito app client - it is addressed by
+  `(user pool id, client id)` everywhere in the API - and `loc_resource_key` is a fingerprint component
+  (tension 5), so an invented `.../userpool/<pool>/client/<id>` would change every stored baseline the
+  day someone noticed and removed it.
+- **Nothing is probed.** §8.3's closing paragraph is explicit that config-derived detection of
+  user-enumeration and self-signup is preferred, "active probing creates real users and fires
+  verification email/SMS", and this pass calls no `SignUp`, no `ForgotPassword`, no `InitiateAuth` and
+  no `GetCredentialsForIdentity`. `PreventUserExistenceErrors` is read off the app client (which is
+  where the API carries it, despite §8.3 listing it under the user pool as well), and §8.3's fourth
+  check group - the unauthenticated API surface - is a single `info` finding derived from
+  `AdminCreateUserConfig`, `AccountRecoverySetting` and `AutoVerifiedAttributes`.
+- **NOT ONE of the 24 records carries a `cis:` value, and that is an honest absence.** CIS AWS
+  Foundations Benchmark v3.0.0 - the version `data/cis-mappings` declares - has NO Cognito section.
+  The two tempting neighbours are both misattributions `docs/CIS-MAPPINGS.md` §5 item 5 forbids: 1.8
+  governs the IAM ACCOUNT password policy (IAM principals with console access), not an application's
+  end-user pool, and 1.10 is MFA for IAM users. This is the same decision this directory's
+  `checks.rules` already records from the other side, where three of its seven S3 records cite nothing.
+  `tests/suites/cloud-cognito.sh` section G asserts the DURABLE invariant instead: every `cis` value
+  authored anywhere under `modules/cloud/` resolves to a row in `data/cis-mappings`.
+- **Three id PAIRS exist because severity varies with what was observed** - `MFA_OFF`/`MFA_OPTIONAL`,
+  `CLIENT_INSECURE_CALLBACK`/`CLIENT_WILDCARD_CALLBACK`, and
+  `IDPOOL_UNAUTH_ROLE_ADMIN`/`IDPOOL_UNAUTH_ROLE_BROAD` - and `severity` is a per-record registry field
+  (`rules/RULE-FORMAT.md` §9.5) the suites assert the script and the registry agree on, so a script
+  that weighted a finding higher at runtime would put the two into disagreement. The identity-pool
+  trio (`UNAUTH_IDENTITIES` medium, `UNAUTH_CREDENTIALS` high, `UNAUTH_ROLE_ADMIN` critical) is the
+  same reasoning applied to an escalation ladder rather than a pair.
+- **The registry is a per-service `checks-cognito.rules`, not a block appended to the shared
+  `checks.rules`.** That file's own header names exactly this condition ("a later service whose peers
+  really are in flight simultaneously may add its own `checks-<service>.rules`"), and step 6's
+  per-service tickets ARE in flight simultaneously. `rules/RULE-FORMAT.md` §9's path table reserves the
+  `checks-` PREFIX repository-wide and at any depth (`docs/FOUNDATION.md` tension 29), so this is a
+  §9.5 script-check registry by that row; the SUFFIX spelling `cognito-checks.rules` is still `E070`.
+
+One correction outside its own files: `lib/report.sh`'s cloud coverage-strength note said
+`modules/cloud/aws/live/` "ships the S3 service only so far", which this ticket makes false. It now
+names both services, and `tests/suites/cloud-s3.sh`'s own E16 assertion moved with it in the same
+change - the assertion is on the LIST, so the next service to land finds a failing test rather than a
+stale sentence in a shipped report.

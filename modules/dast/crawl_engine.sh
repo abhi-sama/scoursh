@@ -54,12 +54,26 @@
 #     form element they are lexically inside.  It skips comments and the
 #     contents of `<script>`/`<style>`.  It does NOT recover from malformed
 #     nesting the way a browser does, and it deliberately does NOT mine
-#     URL-shaped strings out of JavaScript: a string in a bundle is not
-#     evidence of a route, and guessing produces a request to a path the
-#     operator's application may never have had.
-#   * No parser here resolves `$ref` in an OpenAPI document, or Postman
-#     `{{variables}}`.  An unresolved `$ref` on a parameter costs that
-#     parameter; both are recorded rather than assumed away.
+#     URL-shaped strings out of an INLINE `<script>` block sitting inside an
+#     HTML page it is already parsing: a string glimpsed on the way through a
+#     document is not evidence of anything (pinned by
+#     tests/suites/dast-crawl.sh's "a URL-shaped string in a script body is
+#     not mined" case, which still holds). Section 5a below is the narrower,
+#     deliberate exception: a response whose OWN Content-Type or URL
+#     extension says it IS JavaScript or a source map - fetched because a
+#     `<link>`/`<a>`/form action pointed at it, never a new fetch this
+#     feature adds - is mined for URL-shaped literal strings and seeds
+#     `source=js` inventory rows, weaker evidence than a route this scanner
+#     actually requested, gated through the identical scope predicate every
+#     crawled link already goes through before it is ever written to disk.
+#   * `crawl_spec_openapi` resolves a `requestBody`/Swagger-2 `in: body`
+#     schema's `$ref` against `components.schemas` (IMPORT-03) - bounded depth
+#     and cycle-guarded, never followed forever - and picks the FIRST
+#     subschema of a 3.1 `oneOf`/`anyOf`, recording a counted
+#     coverage_reduction for both a dropped cycle/depth-bound and a
+#     first-subschema pick.  `allOf` and Postman `{{variables}}` are still not
+#     resolved; a construct this cannot represent costs that field/endpoint
+#     rather than being guessed at, and is recorded rather than assumed away.
 #
 # shellcheck shell=bash
 #
@@ -635,6 +649,37 @@ crawl_html_extract() {
   '
 }
 
+# `crawl_body_looks_like_markup FILE` - 0 when the first 512 bytes of FILE
+# contain a case-folded HTML/markup marker. Used only when a fetched response
+# carried no Content-Type at all, so a headerless binary is not fed to the tag
+# scanner (crawl.sh's own caller comment explains why).
+#
+# Matched on the FILE, through scan_match, never by reading FILE into a bash
+# string. A fetched response body is arbitrary target-controlled bytes and can
+# legitimately contain a NUL; `sniff=$(head -c 512 -- "$file")` (the shape
+# this used to have) runs the file through command substitution, which
+# silently drops every NUL byte AND prints bash's own "warning: command
+# substitution: ignored null byte in input" to stderr - a warning an operator
+# running a real scan must never see. `-a`/`--text` on both bound pattern
+# engines (tension 2's `core_bind_engine`) forces byte-for-byte text-mode
+# matching straight off the file, bypassing rg's default NUL-triggered
+# "binary file matches" heuristic, which would otherwise report no offsets at
+# all. See modules/dast/active/hosthdr_engine.sh's `hh_body_reflects` for the
+# fuller account of the same defect and the identical fix.
+crawl_body_looks_like_markup() {
+  local file=$1
+  local bounded=$SCOURSH_SCRATCH/crawl-sniff.$BASHPID
+  local hits=$SCOURSH_SCRATCH/crawl-sniff-hits.$BASHPID
+  local rc=0
+  [[ -s $file ]] || return 1
+  head -c 512 -- "$file" >"$bounded" 2>/dev/null || : >"$bounded"
+  scan_match "$hits" -a -i \
+    -e '<html' -e '<!doctype html' -e '<body' -e '<a ' -e '<form' \
+    -- "$bounded" || rc=$?
+  rm -f "$bounded" "$hits"
+  return "$rc"
+}
+
 # `crawl_html_looks_client_rendered FILE` - a bounded, stated heuristic, used
 # ONLY to sharpen the wording of a coverage_gap that is emitted either way.
 #
@@ -795,6 +840,261 @@ crawl_query_names() {
 }
 
 # ---------------------------------------------------------------------------
+# 5a. JS / source-map URL mining (SPA endpoint discovery)
+# ---------------------------------------------------------------------------
+# An SPA's real API surface routinely exists nowhere but as plain strings
+# inside the JS bundles the crawl already fetched and, until now, only ever
+# checked for security headers.  `crawl_html_extract`'s own header still says
+# a tag scanner "does NOT recover from malformed nesting... and deliberately
+# does NOT mine URL-shaped strings out of JavaScript" - that restraint is
+# UNCHANGED and still correct for an INLINE `<script>` block sitting inside an
+# HTML page (see the "commented-out link and a URL inside <script> are NOT
+# links" case in tests/suites/dast-crawl.sh, which still passes): a string
+# glimpsed on the way through an HTML document is not evidence of anything.
+# What is different here is the input: a response whose OWN Content-Type or
+# URL extension says it IS JavaScript or a source map (`crawl_body_is_js`
+# below) was fetched, on purpose, because a `<link>`/`<a>`/form action pointed
+# at it, and its own code naming a path IS weak evidence that path exists -
+# weak enough that it is recorded with `source=js`
+# (docs/INVENTORY-FORMAT.md), never `crawl`, so a consumer can always tell an
+# inferred route from one this run actually requested and got an answer from.
+#
+# THE SAFETY PROPERTY THIS SECTION MUST NEVER LOSE: nothing here is fetched.
+# A candidate becomes, at most, one row `crawl_add_endpoint` may write to
+# inventory/endpoints.json; the caller in `_crawl_static` below gates every
+# one of them through the identical `dast_endpoint_keep`/`_crawl_in_scope`
+# predicate a crawled `<a href>` or form action already goes through before
+# it is even enqueued (never a second, parallel notion of "in scope"), and
+# every later consumer of that inventory re-gates a row a second time before
+# ever composing a request from it (tension 19; tension 21's "a URL lifted
+# out of the inventory" pre-check `inject_inventory_load` and its siblings
+# already apply). A third-party absolute URL mined out of a bundle - an
+# analytics endpoint, an error-reporting SDK's ingest host, a CDN - is
+# therefore DISCARDED before it is ever written to disk, not
+# recorded-and-skipped-later: it fails the very first gate and never reaches
+# `_CRAWL_EP` at all.
+crawl_js_reset() {
+  declare -ga _CRAWL_JS_URLS=()
+  declare -gA _CRAWL_JS_URLS_SEEN=()
+}
+
+# Extensions that name a static asset rather than an application endpoint. A
+# webpack/Vite bundle is FULL of these - a dynamic `import('/chunks/x.js')`
+# code-split reference, a CSS-in-JS `url(/fonts/a.woff2)`, an imported
+# `/images/logo.svg` - and none of them is a thing an injection probe should
+# spend its budget on. `.json` is deliberately NOT here: an API frequently
+# really does answer on a `.json`-suffixed path, and excluding it would cost
+# exactly the endpoint this feature exists to find.
+_CRAWL_JS_STATIC_EXT_RE='\.(png|jpe?g|gif|svg|ico|bmp|webp|avif|woff2?|ttf|eot|otf|css|less|scss|sass|js|mjs|cjs|map|pdf|zip|gz|tgz|mp4|webm|mp3|wav|wasm|txt|md)([?#].*)?$'
+
+# `_crawl_js_literal_ok VALUE` - 0 when VALUE (the raw bytes between two
+# matching quotes in a JS/source-map body) is worth resolving as a URL at
+# all.
+#
+# A RESTRICTIVE PREFIX CHECK FIRST is what keeps this from mining every
+# quoted word in the bundle: a literal is a candidate only if it starts with
+# one of the four shapes a real reference actually takes - `http://`/
+# `https://` (absolute), `//host` (scheme-relative), `/path` (root-relative),
+# or `./path`/`../path` (explicitly relative, this feature's own
+# `./v2/items` worked example). "componentName" and "Loading..." are
+# indistinguishable from a bare relative path with no marker at all, so a
+# literal with none of the four markers is never a candidate, full stop -
+# admitting bare words is what would flood the inventory with prose instead
+# of the "precise small set" this is meant to be.
+#
+# A BACKTICK TEMPLATE LITERAL IS NEVER A CANDIDATE AT ALL - `crawl_js_scan_line`
+# below only recognises `"` and `'` as the opening/closing delimiter of a
+# string, so something like a templated `` `/api/${id}/orders` `` is never
+# even reached as a literal to check here.  This is a stated limitation, not
+# a bug: this scanner does not execute JavaScript, so it has no value to
+# substitute for `${id}`, and guessing at one is exactly the kind of guess
+# this feature refuses to make.  A plain quoted string built by concatenation
+# (`'/api/' + id + '/orders'`) is caught only for its static `/api/` half,
+# for the identical reason.
+#
+# SC1003: `'\'` below is a literal single backslash, the same
+# not-a-botched-quote-escape shape `crawl_json_unescape` above already
+# documents - not a mistake to fix.
+# shellcheck disable=SC1003
+_crawl_js_literal_ok() {
+  local v=$1
+  case $v in
+    http://* | https://* | //* | ./* | ../*) : ;;
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  # No whitespace, no backtick, no angle bracket - none of which a URL ever
+  # legitimately carries, and every one of which shows up in ordinary prose a
+  # bundle also quotes (an error message, a template's static text).
+  case $v in
+    *' '* | *$'\t'* | *$'\n'* | *$'\r'* | *'`'* | *'<'* | *'>'*) return 1 ;;
+  esac
+  # A REGEX LITERAL STORED AS A STRING is the false positive this exists to
+  # catch, and it is common: `"/^[a-z0-9_-]+$/"` starts with `/` exactly like
+  # a rooted path does. None of `^ $ [ ] | \ ( )` is ever RAW in a real URL
+  # path - a path that genuinely needed one of them would percent-encode it -
+  # so a candidate carrying any of them unencoded is regex/code, not a route.
+  # `(`/`)` are in this set for the identical reason: measured against a real
+  # Angular bundle, the router's own source calls
+  # `this.peekStartsWith("/(")` to recognise its aux-route syntax, and the
+  # plain string literal `"/("` passed every other check here and was mined
+  # as the inventory endpoint `/(` before this exclusion existed.
+  case $v in
+    *'^'* | *'$'* | *'['* | *']'* | *'|'* | *'\'* | *'('* | *')'*) return 1 ;;
+  esac
+  # A comment opener quoted as a literal - e.g. a templating engine's own
+  # delimiter stored as a string constant - is not a reference.
+  case $v in
+    /\**) return 1 ;;
+  esac
+  # Nothing past the marker itself.
+  case $v in
+    / | // | ./ | ../) return 1 ;;
+  esac
+  [[ $v =~ $_CRAWL_JS_STATIC_EXT_RE ]] && return 1
+  return 0
+}
+
+# `crawl_js_scan_line PAGEURL LINE` - the character walk. Every quoted
+# literal on LINE that passes `_crawl_js_literal_ok` is resolved against
+# PAGEURL through `crawl_url_resolve` - the SAME resolver every crawled link
+# and form action already uses, so a `../` climb, dot-segment normalisation
+# and a `?query` are all handled identically here and there is no second URL
+# resolution implementation to keep in step with it. A literal
+# `crawl_url_resolve` itself refuses (`javascript:`, `mailto:`, a bare
+# fragment) is dropped the identical way a rejected `<a href>` already is.
+#
+# Bounded the same way `leakage_engine.sh`'s own JS/text scanners are: a
+# minified bundle is one multi-hundred-KB line, so `_CRAWL_JS_MAX_LITERAL`
+# caps how far an unterminated quote is chased before this gives up on it,
+# and `_CRAWL_JS_MAX_URLS_PER_LINE` caps how many distinct candidates one
+# chunk can contribute. Both bounds can only cost a MISS, never a false
+# positive - the direction docs/DESIGN.md §15 accepts.
+: "${_CRAWL_JS_MAX_LITERAL:=2048}"
+: "${_CRAWL_JS_MAX_URLS_PER_LINE:=200}"
+
+crawl_js_scan_line() {
+  local pageurl=$1 line=$2
+  local i n=${#line} c q p val ch found=0 abs
+  for (( i = 0; i < n; i++ )); do
+    (( found < _CRAWL_JS_MAX_URLS_PER_LINE )) || break
+    c=${line:i:1}
+    [[ $c == '"' || $c == "'" ]] || continue
+    # A quote whose PRECEDING character is a bare `/` is never a real string
+    # opener - a valid quoted literal is never written immediately after a
+    # division operator in practice, and this exact shape is how a bare JS
+    # REGEX LITERAL whose pattern itself contains a quote character
+    # (`.replace(/"/g,"&quot;")`, escaping HTML entities - a real, common
+    # minifier output) gets misread: this walker has no concept of a regex
+    # literal, so it treats the pattern's own `/"/ ` delimiter as if it opened
+    # a string, and the run of flag letters plus trailing punctuation before
+    # the REAL closing quote (`/g,` here) then passes every check in
+    # `_crawl_js_literal_ok` and is mined as a bogus endpoint. Measured
+    # against a real Juice Shop bundle: this produced the inventory endpoint
+    # `/g,`. Skipping this quote (never treating it as an opener) costs at
+    # most a MISS on the vanishingly rare literal division-by-string-literal,
+    # the accepted direction to be wrong in.
+    if (( i > 0 )) && [[ ${line:i-1:1} == '/' ]]; then
+      continue
+    fi
+    q=$c
+    p=$(( i + 1 ))
+    val=''
+    while (( p < n )); do
+      ch=${line:p:1}
+      # shellcheck disable=SC1003
+      if [[ $ch == '\' ]]; then
+        val+=${line:p+1:1}
+        p=$(( p + 2 ))
+        continue
+      fi
+      [[ $ch == "$q" ]] && break
+      val+=$ch
+      p=$(( p + 1 ))
+      if (( ${#val} > _CRAWL_JS_MAX_LITERAL )); then
+        val=''
+        break
+      fi
+    done
+    if (( p < n )) && [[ -n $val ]] && _crawl_js_literal_ok "$val"; then
+      if abs=$(crawl_url_resolve "$pageurl" "$val"); then
+        if [[ -z ${_CRAWL_JS_URLS_SEEN[$abs]:-} ]]; then
+          _CRAWL_JS_URLS_SEEN[$abs]=1
+          _CRAWL_JS_URLS+=("$abs")
+          found=$(( found + 1 ))
+        fi
+      fi
+    fi
+    i=$p
+  done
+  return 0
+}
+
+# `crawl_js_scan_body FILE PAGEURL` - reads FILE (a fetched JS/source-map
+# response body), bounded to `_CRAWL_MAX_BODY_BYTES` (the identical bound
+# `crawl_html_extract`'s own caller applies) and populates `_CRAWL_JS_URLS`.
+#
+# A MINIFIED BUNDLE IS ONE LINE, AND CHUNKING IT IS NOT COSMETIC - the
+# identical lesson `leakage_engine.sh`'s own `leak_body_read` states for the
+# same reason: a webpack bundle is routinely one 900KB line, and running the
+# character walk above over the whole thing at once is what a bound exists to
+# prevent. `_CRAWL_JS_MAX_LINE_BYTES` splits it into fixed chunks first; a
+# candidate literal that straddles a chunk boundary is missed, the accepted,
+# stated direction to be wrong in.
+: "${_CRAWL_JS_MAX_LINE_BYTES:=4096}"
+
+crawl_js_scan_body() {
+  local file=$1 pageurl=$2
+  [[ -r $file && -s $file ]] || return 0
+  local bounded=$SCOURSH_SCRATCH/crawl-js-body.$BASHPID
+  head -c "$_CRAWL_MAX_BODY_BYTES" -- "$file" >"$bounded" 2>/dev/null || { rm -f "$bounded"; return 0; }
+  local line rest chunk
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    rest=$line
+    while [[ -n $rest ]]; do
+      chunk=${rest:0:_CRAWL_JS_MAX_LINE_BYTES}
+      rest=${rest:_CRAWL_JS_MAX_LINE_BYTES}
+      crawl_js_scan_line "$pageurl" "$chunk"
+    done
+  done <"$bounded"
+  rm -f "$bounded"
+  return 0
+}
+
+# `crawl_body_is_js CTYPE URL` - 0 when a fetched response's Content-Type or
+# URL extension says its body is JavaScript or a source map. Extension is a
+# fallback that applies REGARDLESS of Content-Type (never gated behind an
+# empty/generic one): a source map is routinely served as
+# `application/octet-stream` or with no Content-Type at all, and treating raw
+# bytes as text costs nothing when the guess is wrong - the same
+# no-Content-Type reasoning `crawl_body_looks_like_markup` already applies to
+# HTML, generalised to "trust the URL's own extension when the header is
+# silent or generic".
+crawl_body_is_js() {
+  local ctype=${1,,} url=$2
+  ctype=${ctype%%;*}
+  ctype=${ctype#"${ctype%%[![:space:]]*}"}
+  ctype=${ctype%"${ctype##*[![:space:]]}"}
+  case $ctype in
+    application/javascript | text/javascript | application/x-javascript | \
+      application/ecmascript | text/ecmascript | module)
+      return 0
+      ;;
+    # An EXPLICIT Content-Type that says otherwise always wins over a guess
+    # from the URL's own extension - a catch-all route that answers every
+    # path (including one that happens to end `.js`) with its HTML shell must
+    # still be parsed as HTML, not skipped as a false JS match.
+    text/html | application/xhtml+xml) return 1 ;;
+  esac
+  crawl_url_split "$url"
+  case ${_CRAWL_U_BASE,,} in
+    *.js | *.mjs | *.cjs | *.map) return 0 ;;
+  esac
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # 6. The inventory accumulator
 # ---------------------------------------------------------------------------
 # Endpoints and parameters accumulate in memory, deduped as they arrive, and
@@ -810,6 +1110,43 @@ crawl_inv_reset() {
   declare -gA _CRAWL_PARAM_SEEN=()
   declare -g _CRAWL_EP_TRUNCATED=0
   declare -g _CRAWL_PARAM_TRUNCATED=0
+  declare -g _CRAWL_PARAM_INVALID_LOCATION=0
+  declare -g _CRAWL_PARAM_INVALID_HEADER_NAME=0
+  declare -g _CRAWL_EP_CONTROL_BYTE=0
+  declare -g _CRAWL_PARAM_CONTROL_BYTE=0
+}
+
+# `crawl_has_control_byte TEXT` - true (exit 0) when TEXT contains a C0
+# control byte (0x01-0x1f) or DEL (0x7f), the identical class `crawl_safe_text`
+# already strips for report output (section 1 above).
+#
+# `crawl_add_endpoint`/`crawl_add_param` join their fields with US (0x1f) to
+# build one tuple string per row (sections 5/5a below), and that byte is the
+# ONLY thing separating one field from the next when the tuple is later
+# re-split with `IFS=$'\x1f' read`.  `crawl_json_unescape` (section 2 above)
+# will happily turn a JSON `` escape - or any other `\u00XX` C0 escape -
+# in an OpenAPI/HAR/Postman-supplied name, value, method or URL into that
+# exact raw byte, which then shifts every field after it onto the wrong
+# position once the row is re-split: a name meant for one column reappears as
+# a location, a source, or a header name the IMPORT-05 token guard (below)
+# never saw, because that guard runs against the PRE-corruption variable.
+# The result ranges from a forged inventory row to `http_request_header`
+# `die`-ing the whole run (exit 5) on a header name assembled from the
+# shifted fragments - a hostile spec turning scoursh's own internal
+# delimiter into denial-of-scan.
+#
+# Every field this function's two callers below receive from untrusted
+# specification/HAR/Postman input is checked against it BEFORE the tuple is
+# built, and a hit is REJECTED with a counted `coverage_reduction` rather
+# than silently stripped: a control byte in a real header/parameter/method
+# name or URL is never legitimate, so nothing real is lost, and rejecting
+# keeps the record format's own "skip malformed input and say so" posture
+# rather than quietly rewriting what a hostile document claimed.  This is
+# also what closes a CRLF (0x0d/0x0a, both in the same C0 range) smuggled
+# into a HAR entry's `request.method`.
+crawl_has_control_byte() {
+  local text=$1
+  [[ $text == *[$'\x01'-$'\x1f'$'\x7f']* ]]
 }
 
 # `crawl_id KEY` - the 12-hex join key an endpoint and its parameters share.
@@ -825,10 +1162,10 @@ crawl_id() {
   printf '%s' "${h:0:12}"
 }
 
-# `crawl_add_endpoint TARGET METHOD URL SOURCE DEPTH STATUS CONTENT_TYPE`
-# - records one endpoint, deduped on (method, url-without-query).  Sets
-# `_CRAWL_LAST_EP_ID` either way, so a caller can attach parameters to an
-# endpoint that a previous page already discovered.
+# `crawl_add_endpoint TARGET METHOD URL SOURCE DEPTH STATUS CONTENT_TYPE
+# [REQUEST_BODY_TYPE]` - records one endpoint, deduped on (method,
+# url-without-query).  Sets `_CRAWL_LAST_EP_ID` either way, so a caller can
+# attach parameters to an endpoint that a previous page already discovered.
 #
 # THE QUERY STRING IS NOT PART OF THE ENDPOINT.  `?id=1` and `?id=2` are one
 # endpoint with one parameter, not two endpoints: keeping them apart would make
@@ -836,9 +1173,25 @@ crawl_id() {
 # then re-test the identical handler fifty times against the same rate limit.
 # The names go to parameters.json, which is the artifact the probes iterate
 # (docs/DESIGN.md §7.3's closing paragraph).
+#
+# `REQUEST_BODY_TYPE` (IMPORT-02/03/04, docs/INVENTORY-FORMAT.md §2) is
+# OPTIONAL and additive; empty or anything other than the literal `json` reads
+# back as `form` at `inject_inventory_load` - so every caller before IMPORT-03
+# needed no change.  Like every other field, it is set only on the FIRST write
+# for a given (method, url) key: a dedup hit ignores it, matching `source`'s
+# own "never rewritten" rule.
 crawl_add_endpoint() {
   local target=$1 method=$2 url=$3 source=$4 depth=${5:-0} status=${6:-} ctype=${7:-}
+  local body_type=${8:-}
   local key id host path
+  if crawl_has_control_byte "$target" || crawl_has_control_byte "$method" ||
+     crawl_has_control_byte "$url" || crawl_has_control_byte "$source" ||
+     crawl_has_control_byte "$status" || crawl_has_control_byte "$ctype" ||
+     crawl_has_control_byte "$body_type"; then
+    _CRAWL_EP_CONTROL_BYTE=$(( _CRAWL_EP_CONTROL_BYTE + 1 ))
+    _CRAWL_LAST_EP_ID=''
+    return 0
+  fi
   crawl_url_split "$url"
   url=$_CRAWL_U_BASE
   method=${method^^}
@@ -859,8 +1212,19 @@ crawl_add_endpoint() {
     host=${BASH_REMATCH[1]}
     path=${BASH_REMATCH[2]:-/}
   fi
+  [[ $body_type == json ]] || body_type=''
   _CRAWL_EP_SEEN[$key]=$id
-  _CRAWL_EP+=("$id"$'\t'"$target"$'\t'"$method"$'\t'"$url"$'\t'"$host"$'\t'"$path"$'\t'"$source"$'\t'"$depth"$'\t'"$status"$'\t'"$ctype")
+  # US (0x1f), NEVER a tab: `status`/`content_type` are routinely BOTH empty
+  # for a spec-added endpoint, and `body_type` - the field after them - is
+  # routinely non-empty (`json`). A tab is an IFS-*whitespace* character, so
+  # `crawl_inv_write_endpoints`'s `IFS=$'\t' read` folds that run of empty
+  # fields into ONE delimiter and shifts `body_type`'s value left into
+  # `status`'s slot - the exact DAST-11 lesson this file's own AGENTS.md entry
+  # documents, reproduced here rather than avoided a second time. `cut -f`
+  # (this file's own `crawl_url_split`-adjacent test helpers) is unaffected -
+  # only `read`'s whitespace-folding is - but 0x1f sidesteps the question
+  # entirely for anything that walks this tuple later.
+  _CRAWL_EP+=("$id"$'\x1f'"$target"$'\x1f'"$method"$'\x1f'"$url"$'\x1f'"$host"$'\x1f'"$path"$'\x1f'"$source"$'\x1f'"$depth"$'\x1f'"$status"$'\x1f'"$ctype"$'\x1f'"$body_type")
   _CRAWL_LAST_EP_ID=$id
   return 0
 }
@@ -887,12 +1251,41 @@ crawl_add_endpoint() {
 # best available, and the residual gap - an unrecognised secret in an
 # unsuggestive parameter - is stated here rather than assumed away.
 _CRAWL_SECRETISH_NAME='^(pass|passwd|password|pwd|secret|token|api[-_]?key|apikey|auth|authorization|session|sessionid|sid|jwt|bearer|credential|creds|otp|mfa|totp|pin|private[-_]?key|client[-_]?secret|refresh[-_]?token|access[-_]?token|csrf|xsrf|signature|sig)$'
+
+# The frozen parameter-location vocabulary (docs/INVENTORY-FORMAT.md §3).
+# `inject_engine.sh`'s `inject_send` has no arm for anything outside this set;
+# admitting one anyway would let a hostile spec produce a row that later
+# reports as "tested" while nothing is ever sent (IMPORT-05, report §7b).
+_CRAWL_PARAM_LOCATIONS='^(query|body|path|header|cookie|formData|graphql)$'
+
+# The RFC 7230 header-field-name token - the exact character class
+# `lib/http.sh`'s `http_request_header` enforces at SEND time (and `die`s the
+# whole run, exit 5, on a mismatch). A `header`-location parameter name is
+# validated against the identical class HERE, at import time, so a hostile
+# spec's malformed field name is skipped with a counted reduction instead of
+# reaching that `die` and aborting the entire scan (IMPORT-05, report §7a).
+_CRAWL_HEADER_TOKEN_RE='^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$'
+
 crawl_add_param() {
   local epid=$1 target=$2 method=$3 url=$4 name=$5 location=$6 source=$7 example=${8:-}
   local key id lname
   method=${method^^}
-  key="$epid|$location|$name"
   [[ -n $name ]] || return 0
+  if crawl_has_control_byte "$target" || crawl_has_control_byte "$method" ||
+     crawl_has_control_byte "$url" || crawl_has_control_byte "$name" ||
+     crawl_has_control_byte "$source" || crawl_has_control_byte "$example"; then
+    _CRAWL_PARAM_CONTROL_BYTE=$(( _CRAWL_PARAM_CONTROL_BYTE + 1 ))
+    return 0
+  fi
+  if [[ ! $location =~ $_CRAWL_PARAM_LOCATIONS ]]; then
+    _CRAWL_PARAM_INVALID_LOCATION=$(( _CRAWL_PARAM_INVALID_LOCATION + 1 ))
+    return 0
+  fi
+  if [[ $location == header && ! $name =~ $_CRAWL_HEADER_TOKEN_RE ]]; then
+    _CRAWL_PARAM_INVALID_HEADER_NAME=$(( _CRAWL_PARAM_INVALID_HEADER_NAME + 1 ))
+    return 0
+  fi
+  key="$epid|$location|$name"
   [[ -z ${_CRAWL_PARAM_SEEN[$key]:-} ]] || return 0
   if (( ${#_CRAWL_PARAM[@]} >= _CRAWL_MAX_PARAMS )); then
     _CRAWL_PARAM_TRUNCATED=$(( _CRAWL_PARAM_TRUNCATED + 1 ))
@@ -900,6 +1293,15 @@ crawl_add_param() {
   fi
   if [[ -n $example ]]; then
     lname=${name,,}
+    # A `body`-location NAME on a `json` endpoint (docs/INVENTORY-FORMAT.md
+    # §3a, IMPORT-02) is an RFC 6901 POINTER, not a bare field name - `/token`
+    # and `/user/token` both name a field a human would call "token", but the
+    # pointer's own leading `/` makes it fail `_CRAWL_SECRETISH_NAME`'s
+    # anchored `^(...)$` match outright.  Testing the pointer's LAST segment
+    # instead is what keeps a JSON-body credential covered by the same control
+    # a flat form field already gets; every other location's name never starts
+    # with `/`, so this narrows nothing for them.
+    [[ $lname == /* ]] && lname=${lname##*/}
     if [[ $lname =~ $_CRAWL_SECRETISH_NAME ]]; then
       example=''
     else
@@ -909,8 +1311,51 @@ crawl_add_param() {
   fi
   id=$(crawl_id "$key")
   _CRAWL_PARAM_SEEN[$key]=$id
-  _CRAWL_PARAM+=("$id"$'\t'"$epid"$'\t'"$target"$'\t'"$method"$'\t'"$url"$'\t'"$name"$'\t'"$location"$'\t'"$source"$'\t'"$example")
+  # US (0x1f), matching `_CRAWL_EP` above (and for the identical reason): a
+  # tab is an IFS-*whitespace* character, so any empty field ahead of another
+  # non-empty one is unsafe with `IFS=$'\t' read`, whatever field order this
+  # tuple happens to have today.
+  _CRAWL_PARAM+=("$id"$'\x1f'"$epid"$'\x1f'"$target"$'\x1f'"$method"$'\x1f'"$url"$'\x1f'"$name"$'\x1f'"$location"$'\x1f'"$source"$'\x1f'"$example")
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# 6a. RFC 6901 JSON pointers, shared by every `json`-body producer
+#     (docs/INVENTORY-FORMAT.md §3a; IMPORT-03's requestBody schema walk and
+#     IMPORT-04's HAR `postData.text` flattening both name a `body`-location
+#     parameter this way, so the escaping lives once here rather than twice)
+# ---------------------------------------------------------------------------
+
+# `_crawl_json_pointer_escape_seg RAW_SEGMENT` - the RFC 6901 ENCODE direction:
+# `~` first, then `/`, so a key containing a literal `~1` is never produced by
+# accident.  The DECODE direction (`inject_engine.sh`'s
+# `_inject_json_pointer_split`) applies the two substitutions in the opposite
+# order for the identical reason.
+_crawl_json_pointer_escape_seg() {
+  local s=$1
+  s=${s//\~/\~0}
+  s=${s//\//\~1}
+  printf '%s' "$s"
+}
+
+# `_crawl_json_path_to_pointer PATH` - PATH is a `crawl_json_flatten`-style
+# leaf path (segments still JSON-escaped, joined by US 0x1f); the result is
+# the RFC 6901 pointer naming the same leaf (`/orderLines/0/productId`). An
+# array index segment is already a bare decimal number, which is also a valid
+# (and here, unescaped) pointer segment, so no special-casing is needed for it.
+_crawl_json_path_to_pointer() {
+  local path=$1 sep=$'\x1f' rest seg out=''
+  rest=$path
+  while :; do
+    seg=${rest%%"$sep"*}
+    out+="/$(_crawl_json_pointer_escape_seg "$(crawl_json_unescape "$seg")")"
+    if [[ $rest == *"$sep"* ]]; then
+      rest=${rest#*"$sep"}
+    else
+      break
+    fi
+  done
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -922,7 +1367,7 @@ crawl_add_param() {
 # repository (tension 10).
 crawl_inv_write_endpoints() {
   local out=$1 rec first=1
-  local id target method url host path source depth status ctype
+  local id target method url host path source depth status ctype body_type
   {
     printf '{\n'
     printf '  "schema": %s,\n' "$(json_string "$CRAWL_INV_ENDPOINTS_SCHEMA")"
@@ -930,14 +1375,14 @@ crawl_inv_write_endpoints() {
     printf '  "generated_by": %s,\n' "$(json_string 'modules/dast/crawl.sh')"
     printf '  "endpoints": ['
     for rec in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do
-      IFS=$'\t' read -r id target method url host path source depth status ctype <<<"$rec"
+      IFS=$'\x1f' read -r id target method url host path source depth status ctype body_type <<<"$rec"
       (( first )) && printf '\n' || printf ',\n'
       first=0
-      printf '    {"id": %s, "target": %s, "method": %s, "url": %s, "host": %s, "path": %s, "source": %s, "depth": %s, "status": %s, "content_type": %s}' \
+      printf '    {"id": %s, "target": %s, "method": %s, "url": %s, "host": %s, "path": %s, "source": %s, "depth": %s, "status": %s, "content_type": %s, "request_body_type": %s}' \
         "$(json_string "$id")" "$(json_string "$target")" "$(json_string "$method")" \
         "$(json_string "$url")" "$(json_string "$host")" "$(json_string "$path")" \
         "$(json_string "$source")" "$(json_number "$depth")" \
-        "$(json_string "$status")" "$(json_string "$ctype")"
+        "$(json_string "$status")" "$(json_string "$ctype")" "$(json_string "$body_type")"
     done
     (( first )) || printf '\n  '
     printf ']\n}\n'
@@ -954,7 +1399,7 @@ crawl_inv_write_parameters() {
     printf '  "generated_by": %s,\n' "$(json_string 'modules/dast/crawl.sh')"
     printf '  "parameters": ['
     for rec in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do
-      IFS=$'\t' read -r id epid target method url name location source example <<<"$rec"
+      IFS=$'\x1f' read -r id epid target method url name location source example <<<"$rec"
       (( first )) && printf '\n' || printf ',\n'
       first=0
       printf '    {"id": %s, "endpoint_id": %s, "target": %s, "method": %s, "url": %s, "name": %s, "location": %s, "source": %s, "example": %s}' \
@@ -1066,6 +1511,10 @@ crawl_spec_openapi() {
   local prefix='' server=''
   _CRAWL_SPEC_COUNT=0
   _CRAWL_SPEC_ERROR=''
+  # IMPORT-03: reset per call, exactly like `_CRAWL_SPEC_COUNT` above - these
+  # describe THIS document's requestBody resolution, not a running total.
+  _CRAWL_SPEC_REF_UNRESOLVED=0
+  _CRAWL_SPEC_POLY_UNSUPPORTED=0
 
   local flat=$SCOURSH_SCRATCH/crawl-openapi.$BASHPID
   if ! crawl_spec_flatten "$file" >"$flat" 2>/dev/null; then
@@ -1074,6 +1523,20 @@ crawl_spec_openapi() {
     rm -f "$flat"
     return 1
   fi
+
+  # Loaded ONCE, whole-document, so `_crawl_openapi_schema_walk` (IMPORT-03)
+  # and its helpers can answer "does this schema node exist / have these
+  # children" without re-reading the file per node.  `declare -g`: these
+  # helpers are separate functions, and bash 4.2 has no namerefs to pass a
+  # local array by reference (tension 24's frozen minimum).
+  declare -ga _CRAWL_OA_PATH=() _CRAWL_OA_TYPE=() _CRAWL_OA_VAL=()
+  declare -g _CRAWL_OA_N=0
+  while IFS=$'\t' read -r p type v; do
+    _CRAWL_OA_PATH[_CRAWL_OA_N]=$p
+    _CRAWL_OA_TYPE[_CRAWL_OA_N]=$type
+    _CRAWL_OA_VAL[_CRAWL_OA_N]=$v
+    _CRAWL_OA_N=$(( _CRAWL_OA_N + 1 ))
+  done <"$flat"
 
   # Pass 1: the server prefix.  `servers/0/url` (OpenAPI 3) or `basePath`
   # (Swagger 2).  Both are looked for rather than branching on the declared
@@ -1145,27 +1608,79 @@ crawl_spec_openapi() {
     esac
   done <"$flat"
 
+  # Pass 2b (IMPORT-03): Swagger 2.0's `in: body` is a PARAMETER object, not a
+  # `requestBody` - `pin[$pkey]` already says which parameter objects are one,
+  # from Pass 2 above. Map each operation to its own body parameter object's
+  # path prefix, so Pass 3 can resolve `<pkey>/schema` the same way it resolves
+  # an OpenAPI 3 `requestBody`'s schema. Swagger 2.0 allows at most one `body`
+  # parameter per operation, so a plain map (not a list) is the right shape.
+  local -A body_pkey_for_op=()
+  local bk bkapath bkseg2 bkopkey
+  for bk in "${!pin[@]}"; do
+    [[ ${pin[$bk]} == body ]] || continue
+    rest=${bk#"paths${sep}"}
+    bkapath=$(crawl_json_unescape "${rest%%"$sep"*}")
+    bkseg2=${rest#*"$sep"}
+    bkseg2=${bkseg2%%"$sep"*}
+    if [[ $bkseg2 == parameters ]]; then
+      for bkopkey in "${!op_seen[@]}"; do
+        [[ ${bkopkey%%$'\t'*} == "$bkapath" ]] || continue
+        body_pkey_for_op[$bkopkey]=$bk
+      done
+    else
+      bkopkey="$bkapath"$'\t'"${bkseg2^^}"
+      [[ -n ${op_seen[$bkopkey]:-} ]] || continue
+      body_pkey_for_op[$bkopkey]=$bk
+    fi
+  done
+
   # Pass 3: emit the endpoints, remembering each one's id so the parameters
-  # below can join to it.
+  # below can join to it. IMPORT-03: an operation whose `requestBody` declares
+  # an `application/json` media type, OR whose Swagger 2 `in: body` parameter
+  # exists (Pass 2b), gets `request_body_type=json` at CREATION time - the
+  # field lives on the endpoint (docs/INVENTORY-FORMAT.md §2), so it has to be
+  # known before `crawl_add_endpoint` runs, not patched in afterwards.
   local -A epof=()
-  local k url added=0
+  local k url added=0 methl rb_schema bt
   for k in "${!op_seen[@]}"; do
     IFS=$'\t' read -r apath meth <<<"$k"
     url="$base$prefix$apath"
-    crawl_add_endpoint "$target" "$meth" "$url" openapi 0 '' '' || continue
+    methl=${meth,,}
+    rb_schema="paths${sep}${apath}${sep}${methl}${sep}requestBody${sep}content${sep}application/json${sep}schema"
+    bt=''
+    if _crawl_openapi_node_exists "$rb_schema"; then
+      bt=json
+    elif [[ -n ${body_pkey_for_op[$k]:-} ]]; then
+      bt=json
+    fi
+    crawl_add_endpoint "$target" "$meth" "$url" openapi 0 '' '' "$bt" || continue
     epof[$k]=$_CRAWL_LAST_EP_ID
     added=$(( added + 1 ))
+    if [[ $bt == json ]]; then
+      if [[ -n ${body_pkey_for_op[$k]:-} ]]; then
+        _crawl_openapi_schema_walk "${body_pkey_for_op[$k]}${sep}schema" '' '' 1 \
+          "${epof[$k]}" "$target" "$meth" "$url"
+      else
+        _crawl_openapi_schema_walk "$rb_schema" '' '' 1 "${epof[$k]}" "$target" "$meth" "$url"
+      fi
+    fi
   done
 
   # Pass 4: attach the parameters.  An operation-level array joins to one
   # endpoint; a path-level array joins to every operation on that path.
+  # `body` is excluded here (IMPORT-03): a Swagger 2 `in: body` parameter's own
+  # `name` (typically "body" or "payload") is a human label, not a field name,
+  # and Pass 3 above already resolved its `schema` into real body parameters -
+  # calling crawl_add_param with the label itself would add a bogus one beside
+  # them.
   local seg2 loc name opkey
   for k in "${!pname[@]}"; do
     name=${pname[$k]}
     [[ -n $name ]] || continue
     loc=${pin[$k]:-query}
     case $loc in
-      query | path | header | cookie | body | formData) ;;
+      query | path | header | cookie | formData) ;;
+      body) continue ;;
       *) loc=query ;;
     esac
     rest=${k#"paths${sep}"}
@@ -1190,6 +1705,188 @@ crawl_spec_openapi() {
   _CRAWL_SPEC_COUNT=$added
   (( added )) || { _CRAWL_SPEC_ERROR='the document parsed but declared no paths'; return 1; }
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# 8a. OpenAPI `requestBody`/`in: body` schema resolution (IMPORT-03)
+# ---------------------------------------------------------------------------
+# `_crawl_openapi_schema_walk` (below) reads `_CRAWL_OA_PATH`/`_CRAWL_OA_TYPE`/
+# `_CRAWL_OA_VAL` - the whole document, loaded once per `crawl_spec_openapi`
+# call, above - to answer three structural questions a JSON Schema node can
+# ask without ever building a real tree: does an exact leaf exist here, does
+# ANY leaf exist under here, and what are the immediate child keys under here.
+# The technique is `modules/dast/active/inject_engine.sh`'s own
+# `_inject_json_node` (built for the identical reason: reconstructing a JSON
+# document from a flat leaf list with no recursive-descent parser), applied to
+# READING a schema instead of building a body.
+
+# `_crawl_openapi_leaf_value WANT` - sets `_CRAWL_OA_FOUND` (0/1) and, when
+# found, `_CRAWL_OA_VALUE` to the leaf's value (unescaped for a string, the
+# literal token otherwise) at the EXACT path WANT.
+_crawl_openapi_leaf_value() {
+  local want=$1 i
+  _CRAWL_OA_FOUND=0
+  _CRAWL_OA_VALUE=''
+  for (( i = 0; i < _CRAWL_OA_N; i++ )); do
+    if [[ ${_CRAWL_OA_PATH[$i]} == "$want" ]]; then
+      _CRAWL_OA_FOUND=1
+      if [[ ${_CRAWL_OA_TYPE[$i]} == s ]]; then
+        _CRAWL_OA_VALUE=$(crawl_json_unescape "${_CRAWL_OA_VAL[$i]}")
+      else
+        _CRAWL_OA_VALUE=${_CRAWL_OA_VAL[$i]}
+      fi
+      return 0
+    fi
+  done
+  return 0
+}
+
+# `_crawl_openapi_has_prefix PREFIX` - true iff some leaf's path is PREFIX
+# itself or begins with PREFIX followed by a path separator, i.e. PREFIX names
+# a node (object or array) with at least one descendant leaf.  An object or
+# array that is genuinely EMPTY in the source document (`{}`, `[]`) produces no
+# leaf at all - `crawl_json_flatten`'s own documented limitation - so it reads
+# as absent here too; a schema with no content is not one this can describe
+# anyway.
+_crawl_openapi_has_prefix() {
+  local prefix=$1 sep=$'\x1f' i
+  for (( i = 0; i < _CRAWL_OA_N; i++ )); do
+    case ${_CRAWL_OA_PATH[$i]} in
+      "$prefix" | "$prefix$sep"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# `_crawl_openapi_node_exists PATH` - PATH names a node worth resolving,
+# whether it is itself a scalar leaf (rare for a schema, but not impossible)
+# or an object/array with descendants.
+_crawl_openapi_node_exists() {
+  local want=$1
+  _crawl_openapi_leaf_value "$want"
+  (( _CRAWL_OA_FOUND )) && return 0
+  _crawl_openapi_has_prefix "$want"
+}
+
+# `_crawl_openapi_child_keys PREFIX` - sets `_CRAWL_OA_CHILDREN` to the
+# distinct set of immediate child keys of the object/array at PREFIX, in
+# first-seen order (order is irrelevant to the caller, which only iterates).
+_crawl_openapi_child_keys() {
+  local prefix=$1 sep=$'\x1f' i path rel first
+  local -A seen=()
+  _CRAWL_OA_CHILDREN=()
+  for (( i = 0; i < _CRAWL_OA_N; i++ )); do
+    path=${_CRAWL_OA_PATH[$i]}
+    case $path in
+      "$prefix$sep"*) rel=${path#"$prefix$sep"} ;;
+      *) continue ;;
+    esac
+    first=${rel%%"$sep"*}
+    [[ -n ${seen[$first]+x} ]] && continue
+    seen[$first]=1
+    _CRAWL_OA_CHILDREN+=("$first")
+  done
+}
+
+# The `$ref` cycle/depth guard (docs/FOUNDATION.md tension-style bound): a
+# chain longer than this is dropped with a counted `coverage_reduction`,
+# exactly as a genuine cycle is - both are "this document asks for more
+# resolution than a bounded engine will do", and only one of the two needs a
+# repeated component name to detect.
+: "${_CRAWL_OPENAPI_REF_MAX_DEPTH:=8}"
+
+# `_crawl_openapi_schema_walk SCHEMA_PATH POINTER VISITED DEPTH EPID TARGET
+# METHOD URL` - resolves ONE schema node (SCHEMA_PATH, a path into the
+# whole-document leaf arrays above) and every node it structurally implies,
+# emitting one `body` parameter per leaf `properties` field reached, named by
+# its RFC 6901 pointer (POINTER, built up one segment per recursive call).
+# VISTED is the SEP-joined chain of `components.schemas.<Name>` already
+# followed on THIS pointer's own branch - passed by value, since bash 4.2 has
+# no namerefs and each branch's cycle history is independent of its siblings'.
+#
+# Resolution order, each case handled once and returning immediately: (1) a
+# depth bound, checked first so a cycle that never gets caught by name
+# (shouldn't happen, but a defence-in-depth backstop) still terminates; (2)
+# `$ref`, resolved against `#/components/schemas/<Name>` only - any other
+# target (an external file, a fragment into a different root) is out of scope
+# and costs the same reduction as an unresolved one; (3) a 3.1 `oneOf`/`anyOf`,
+# which picks the FIRST subschema and counts a reduction, per the ticket's own
+# "state the construct unsupported rather than silently drop it"; (4) an array
+# (`type: array` or a bare `items`), which recurses into `items` with one `/0`
+# segment appended to the pointer, exactly as docs/INVENTORY-FORMAT.md §3a's
+# own `orderLines/0/productId` example describes; (5) an object (`properties`
+# present), which recurses into every property with its own escaped segment
+# appended; (6) otherwise, this node IS a leaf - a `body` parameter is emitted
+# at POINTER, with `example` when the schema declares one. `allOf` is not
+# case (5) - a schema with only `allOf` and no direct `properties` falls
+# through to (6) and is read as one opaque leaf, a stated gap rather than a
+# silent drop (see this file's own header).
+_crawl_openapi_schema_walk() {
+  local spath=$1 ptr=$2 visited=$3 depth=$4 epid=$5 target=$6 method=$7 url=$8
+  local sep=$'\x1f' refkey='$ref'
+
+  if (( depth > _CRAWL_OPENAPI_REF_MAX_DEPTH )); then
+    _CRAWL_SPEC_REF_UNRESOLVED=$(( _CRAWL_SPEC_REF_UNRESOLVED + 1 ))
+    return 0
+  fi
+
+  _crawl_openapi_leaf_value "${spath}${sep}${refkey}"
+  if (( _CRAWL_OA_FOUND )); then
+    local refv=$_CRAWL_OA_VALUE cname
+    if [[ $refv =~ ^#/components/schemas/([^/]+)$ ]]; then
+      cname=${BASH_REMATCH[1]}
+      if [[ "$sep$visited$sep" == *"$sep$cname$sep"* ]]; then
+        _CRAWL_SPEC_REF_UNRESOLVED=$(( _CRAWL_SPEC_REF_UNRESOLVED + 1 ))
+        return 0
+      fi
+      _crawl_openapi_schema_walk "components${sep}schemas${sep}${cname}" "$ptr" \
+        "$visited$sep$cname" $(( depth + 1 )) "$epid" "$target" "$method" "$url"
+      return 0
+    fi
+    # An external ($ref to another file) or root-relative ref this resolver
+    # does not follow - the same "costs that field, recorded" treatment.
+    _CRAWL_SPEC_REF_UNRESOLVED=$(( _CRAWL_SPEC_REF_UNRESOLVED + 1 ))
+    return 0
+  fi
+
+  local poly
+  for poly in oneOf anyOf; do
+    if _crawl_openapi_has_prefix "${spath}${sep}${poly}${sep}0"; then
+      _CRAWL_SPEC_POLY_UNSUPPORTED=$(( _CRAWL_SPEC_POLY_UNSUPPORTED + 1 ))
+      _crawl_openapi_schema_walk "${spath}${sep}${poly}${sep}0" "$ptr" "$visited" \
+        $(( depth + 1 )) "$epid" "$target" "$method" "$url"
+      return 0
+    fi
+  done
+
+  _crawl_openapi_leaf_value "${spath}${sep}type"
+  local styp=$_CRAWL_OA_VALUE
+  if [[ $styp == array ]] || _crawl_openapi_has_prefix "${spath}${sep}items"; then
+    _crawl_openapi_schema_walk "${spath}${sep}items" "${ptr}/0" "$visited" \
+      $(( depth + 1 )) "$epid" "$target" "$method" "$url"
+    return 0
+  fi
+
+  if _crawl_openapi_has_prefix "${spath}${sep}properties"; then
+    _crawl_openapi_child_keys "${spath}${sep}properties"
+    local k kdec kesc
+    for k in "${_CRAWL_OA_CHILDREN[@]+"${_CRAWL_OA_CHILDREN[@]}"}"; do
+      kdec=$(crawl_json_unescape "$k")
+      kesc=$(_crawl_json_pointer_escape_seg "$kdec")
+      _crawl_openapi_schema_walk "${spath}${sep}properties${sep}${k}" "${ptr}/${kesc}" \
+        "$visited" $(( depth + 1 )) "$epid" "$target" "$method" "$url"
+    done
+    return 0
+  fi
+
+  # Terminal: a scalar (or otherwise unresolved) schema node.  An empty
+  # POINTER means the walk never descended into any property at all (the
+  # whole requestBody schema is itself opaque) - nothing nameable to emit.
+  [[ -n $ptr ]] || return 0
+  _crawl_openapi_leaf_value "${spath}${sep}example"
+  local example=''
+  (( _CRAWL_OA_FOUND )) && example=$_CRAWL_OA_VALUE
+  crawl_add_param "$epid" "$target" "$method" "$url" "$ptr" body openapi "$example" || true
 }
 
 # `crawl_spec_postman FILE TARGET BASE_URL` - a Postman collection (v2.x).
@@ -1279,6 +1976,17 @@ crawl_spec_postman() {
   return 0
 }
 
+# The bounded allowlist of HAR request-header names worth inventorying
+# (IMPORT-04) - "interesting" meaning auth/session-carrying, the shape the
+# report's own reproduction (`Authorization: Bearer ...`) names.  Everything
+# else a browser sends on every request - `Accept*`, `User-Agent`, `Host`,
+# `Referer`, `Origin`, `Cookie` (a distinct HAR array and a distinct §3
+# location, not this one), caching and `Sec-*`/hop-by-hop headers - carries no
+# injection-worthy signal and would otherwise bloat every endpoint's parameter
+# set with the same handful of boilerplate names.  Matched case-insensitively
+# against the whole header name.
+_CRAWL_HAR_HEADER_ALLOW='^(authorization|x-api-key|apikey|api-key|x-auth-token|x-access-token|x-csrf-token|x-xsrf-token|x-session-id|x-client-id|x-client-secret)$'
+
 # `crawl_spec_har FILE TARGET BASE_URL` - a HAR capture.
 #
 # A HAR is the single highest-signal input this module accepts: it is a record
@@ -1287,12 +1995,18 @@ crawl_spec_postman() {
 # (docs/DESIGN.md §7.5's mitigation 1).  Query and posted form parameters are
 # taken from HAR's own parsed `queryString`/`params` arrays rather than
 # re-parsed out of the URL, because the capturing tool already did that work
-# against the real request.
+# against the real request.  IMPORT-04 adds three things a Chrome-shaped
+# capture of a JSON API needs: `postData.text` (a JSON body, as opposed to
+# `postData.params`'s classic HTML-form post), `request.headers[]` (the
+# allowlist above), and path-template dedup, so `/api/BasketItems/1` and
+# `.../2` land as one endpoint rather than two.
 crawl_spec_har() {
   local file=$1 target=$2 base=$3
   local sep=$'\x1f' p type v
   _CRAWL_SPEC_COUNT=0
   _CRAWL_SPEC_ERROR=''
+  # IMPORT-04: reset per call, like `_CRAWL_SPEC_COUNT` above.
+  _CRAWL_HAR_DROPPED=0
   local flat=$SCOURSH_SCRATCH/crawl-har.$BASHPID
   if ! crawl_spec_flatten "$file" >"$flat" 2>/dev/null; then
     _CRAWL_SPEC_ERROR=$(head -n 1 -- "$flat" 2>/dev/null || true)
@@ -1303,6 +2017,7 @@ crawl_spec_har() {
 
   local -A hmeth=() hurl=()
   local -A qn=() qv=() bn=() bv=()
+  local -A pmime=() ptext=() hn=() hv=()
   while IFS=$'\t' read -r p type v; do
     case $p in
       "log${sep}entries${sep}"*"${sep}request${sep}method")
@@ -1317,32 +2032,68 @@ crawl_spec_har() {
         bn[${p%"${sep}name"}]=$(crawl_json_unescape "$v") ;;
       "log${sep}entries${sep}"*"${sep}request${sep}postData${sep}params${sep}"*"${sep}value")
         bv[${p%"${sep}value"}]=$(crawl_json_unescape "$v") ;;
+      "log${sep}entries${sep}"*"${sep}request${sep}postData${sep}mimeType")
+        pmime[${p%"${sep}request${sep}postData${sep}mimeType"}]=$(crawl_json_unescape "$v") ;;
+      "log${sep}entries${sep}"*"${sep}request${sep}postData${sep}text")
+        # Left still-escaped (matching every other value collected here) - it
+        # is unescaped ONCE, below, only for an entry whose mimeType is JSON,
+        # and only after its own endpoint has survived the scope re-base.
+        ptext[${p%"${sep}request${sep}postData${sep}text"}]=$v ;;
+      "log${sep}entries${sep}"*"${sep}request${sep}headers${sep}"*"${sep}name")
+        hn[${p%"${sep}name"}]=$(crawl_json_unescape "$v") ;;
+      "log${sep}entries${sep}"*"${sep}request${sep}headers${sep}"*"${sep}value")
+        hv[${p%"${sep}value"}]=$(crawl_json_unescape "$v") ;;
     esac
   done <"$flat"
 
-  local key url m ep added=0
+  local key url m ep added=0 path_part bt
   local -A epof=() urlof=()
   for key in "${!hurl[@]}"; do
     url=${hurl[$key]}
     m=${hmeth[$key]:-GET}
-    [[ $url =~ ^[Hh][Tt][Tt][Pp][Ss]?:// ]] || continue
+    if [[ ! $url =~ ^[Hh][Tt][Tt][Pp][Ss]?:// ]]; then
+      # A non-http(s) scheme (`chrome-extension://`, `data:`, `ws://`, ...) -
+      # this run has nowhere authorised to re-base it onto, and never did.
+      _CRAWL_HAR_DROPPED=$(( _CRAWL_HAR_DROPPED + 1 ))
+      continue
+    fi
     crawl_url_split "$url"
     # HAR entries are recorded against whatever host the client talked to,
     # which is routinely a CDN or a third party.  Only the PATH is reused,
     # against this run's own authorised base.
     if [[ $_CRAWL_U_BASE =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$ ]]; then
-      url="$base${BASH_REMATCH[1]:-/}"
+      path_part=${BASH_REMATCH[1]:-/}
+      # IMPORT-04: a numbered listing (`/api/BasketItems/1`, `.../2`) is one
+      # ENDPOINT with one path template, not two - the same tension-5 rule
+      # `path_template_of` (lib/findings.sh) applies to a finding's location,
+      # duplicated locally rather than sourced: this file has no existing edge
+      # to lib/findings.sh, and CLAUDE.md's own shellcheck -x measurements
+      # ("the shared response reader") are why a new one is not opened for one
+      # small, pure function - `modules/dast/active/hosthdr_engine.sh`
+      # duplicating `openredirect.sh`'s URL-authority parser is the same
+      # precedent. Templating happens on the PATH, before it is glued back
+      # onto `$base`, so the dedup key `crawl_add_endpoint` builds
+      # (method + url-without-query) collapses both numbered requests onto
+      # the SAME endpoint.
+      path_part=$(_crawl_har_templatize_path "$path_part")
+      url="$base$path_part"
     else
+      # `_CRAWL_U_BASE` failed to re-parse as an authority - unreachable via
+      # the guard just above for a well-formed http(s) URL in practice, but a
+      # defensive drop rather than a request built from whatever survived.
+      _CRAWL_HAR_DROPPED=$(( _CRAWL_HAR_DROPPED + 1 ))
       continue
     fi
-    crawl_add_endpoint "$target" "$m" "$url" har 0 '' '' || continue
+    bt=''
+    [[ ${pmime[$key]:-} == *[Jj][Ss][Oo][Nn]* ]] && bt=json
+    crawl_add_endpoint "$target" "$m" "$url" har 0 '' '' "$bt" || continue
     ep=$_CRAWL_LAST_EP_ID
     epof[$key]=$ep
     urlof[$key]=$url
     added=$(( added + 1 ))
   done
 
-  local pk entrykey nm
+  local pk entrykey nm lname
   for pk in "${!qn[@]}"; do
     entrykey=${pk%"${sep}request${sep}queryString${sep}"*}
     [[ -n ${epof[$entrykey]:-} ]] || continue
@@ -1358,10 +2109,68 @@ crawl_spec_har() {
       "${urlof[$entrykey]}" "$nm" body har "${bv[$pk]:-}" || true
   done
 
+  # IMPORT-04: `postData.text`, for an entry whose `mimeType` says JSON. The
+  # text is a JSON STRING inside the HAR's own JSON, so it is unescaped once
+  # to recover the raw body, then re-flattened on its OWN terms - a second,
+  # independent `crawl_json_flatten` call over the decoded bytes, not a
+  # continuation of the outer parse.
+  local decoded jp jt jv ptr val
+  for entrykey in "${!ptext[@]}"; do
+    [[ -n ${epof[$entrykey]:-} ]] || continue
+    [[ ${pmime[$entrykey]:-} == *[Jj][Ss][Oo][Nn]* ]] || continue
+    decoded=$(crawl_json_unescape "${ptext[$entrykey]}")
+    while IFS=$'\t' read -r jp jt jv; do
+      [[ -n $jp ]] || continue
+      ptr=$(_crawl_json_path_to_pointer "$jp")
+      if [[ $jt == s ]]; then val=$(crawl_json_unescape "$jv"); else val=$jv; fi
+      crawl_add_param "${epof[$entrykey]}" "$target" "${hmeth[$entrykey]:-POST}" \
+        "${urlof[$entrykey]}" "$ptr" body har "$val" || true
+    done < <(printf '%s' "$decoded" | crawl_json_flatten 2>/dev/null)
+  done
+
+  # IMPORT-04: `request.headers[]`, filtered through the bounded allowlist
+  # above.  `crawl_add_param` applies the same RFC 7230 token validation
+  # (IMPORT-05) and the same two-control redaction (§8) a query or form
+  # parameter already gets - `Authorization`'s name already matches
+  # `_CRAWL_SECRETISH_NAME`, so its example is dropped outright, never merely
+  # redacted.
+  for pk in "${!hn[@]}"; do
+    entrykey=${pk%"${sep}request${sep}headers${sep}"*}
+    [[ -n ${epof[$entrykey]:-} ]] || continue
+    nm=${hn[$pk]}
+    lname=${nm,,}
+    [[ $lname =~ $_CRAWL_HAR_HEADER_ALLOW ]] || continue
+    crawl_add_param "${epof[$entrykey]}" "$target" "${hmeth[$entrykey]:-GET}" \
+      "${urlof[$entrykey]}" "$nm" header har "${hv[$pk]:-}" || true
+  done
+
   rm -f "$flat"
   _CRAWL_SPEC_COUNT=$added
   (( added )) || { _CRAWL_SPEC_ERROR='the HAR parsed but held no http(s) request entry'; return 1; }
   return 0
+}
+
+# `_crawl_har_templatize_path PATH` - the local port of `path_template_of`
+# (lib/findings.sh) this file's own header explains: a segment that is
+# entirely digits, a UUID, a ULID, or 16+ hex characters becomes `{id}`.
+_crawl_har_templatize_path() {
+  local p=$1 out='' seg rest first=1
+  [[ ${p:0:1} == '/' ]] && p=${p#/}
+  rest=$p
+  while [[ -n $rest || $first == 1 ]]; do
+    seg=${rest%%/*}
+    if [[ $rest == */* ]]; then rest=${rest#*/}; else rest=''; fi
+    first=0
+    if [[ $seg =~ ^[0-9]+$ ]] \
+      || [[ $seg =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+      || [[ $seg =~ ^[0-7][0-9A-HJKMNP-TV-Z]{25}$ ]] \
+      || [[ $seg =~ ^[0-9a-fA-F]{16,}$ ]]; then
+      seg='{id}'
+    fi
+    out="$out/$seg"
+    [[ -n $rest ]] || break
+  done
+  printf '%s' "$out"
 }
 
 # `crawl_spec_graphql FILE TARGET URL` - a GraphQL schema.

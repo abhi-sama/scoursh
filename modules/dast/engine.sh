@@ -319,6 +319,157 @@ dast_check_selected() {
   [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
 }
 
+# `dast_selected_narrow VAR` - narrows the space-separated check-id list already
+# in VAR down to the ids this run actually SELECTED, in place.
+#
+# IT EXISTS SO THE DESELECTION RULE LIVES IN ONE PLACE RATHER THAN SEVENTEEN,
+# AND BECAUSE GETTING IT WRONG CORRUPTS THE COVERAGE REPORT RATHER THAN MERELY
+# ADDING NOISE.  A phase that skips at runtime now declares its own ids in a
+# `checks=[...]` list so `lib/report.sh`'s coverage report can attribute the
+# reason.  But an id the filter chain already dropped was declared once by
+# `lib/checks.sh:353` as `check=<id> skipped_by=<reason>` and is absent from
+# `checks_selected`, and that report's arithmetic is `reg = selected + skipped`
+# with `notrun = skipped + named-in-checks[]`.  Naming such an id a SECOND time
+# counts it twice in `notrun`, drives `unacc = reg - ran - notrun` negative, and
+# lands on that function's own `(( unacc < 0 )) && unacc=0` clamp - which
+# silently absorbs a genuinely unaccounted check elsewhere in the same category.
+# A phase declaring a reason must therefore name only what it was given to run.
+#
+# NARROWS IN PLACE rather than taking the ids as arguments, so a call site
+# spells its list exactly once; and SETS rather than prints, the reason
+# `occurrence_next` and `worker_id_set` in lib/core.sh do - `$(...)` is a
+# subshell and a caller building a reduction string wants no fork for it.
+#
+# THE CALL SITE'S `declare -F` GUARD IS PERMISSIVE WHEN THIS IS ABSENT, AND
+# THAT IS THE CORRECT DEFAULT, not laziness: no phase script sources engine.sh
+# (engine.sh sources THEM), so every direct-engine suite runs with this
+# undefined - and with no filter chain in the process there is nothing to narrow
+# BY.  Leaving VAR at its full list there is the same permissive reading
+# `dast_check_selected` itself documents at length above.  The internal
+# `declare -F dast_check_selected` guard is the same rule one level down, for a
+# caller that has engine.sh but no scan.sh.
+#
+# `read -a` rather than an unquoted `for id in $list`: word splitting is wanted,
+# PATHNAME EXPANSION is not, and the two are one switch (AGENTS.md's
+# `markup_tokens_have` lesson).
+dast_selected_narrow() {
+  local __var=$1
+  local list=${!__var-}
+  [[ -n $list ]] || return 0
+  declare -F dast_check_selected >/dev/null 2>&1 || return 0
+  local id out=''
+  local -a ids=()
+  IFS=' ' read -r -a ids <<<"$list"
+  for id in "${ids[@]+"${ids[@]}"}"; do
+    [[ -n $id ]] || continue
+    dast_check_selected "$id" || continue
+    out+="${out:+ }$id"
+  done
+  printf -v "$__var" '%s' "$out"
+}
+
+# dast_record_unaccounted TARGET - the DAST equivalent of
+# modules/sast/engine.sh's `sast_record_checks_run`, and what makes that
+# function's own two-bucket promise ("never silently dropped into the
+# unaccounted residual: a reason is always recorded for a selected-but-
+# unevaluated check") true for this module as well.
+#
+# SAST and IaC get that promise from ONE function every selected id passes
+# through, because one tree walk decides every check's fate.  DAST cannot be
+# shaped that way: ~20 phase scripts each decide at RUNTIME whether their own
+# checks had anything to act on - no injectable parameter, no TLS listener, no
+# session, no vendored version list - and each records its own reason.  That
+# division is right, since a phase knows why it skipped and this file does not.
+# What it is NOT is a guarantee: it makes "say why" a convention, and a
+# convention is what the next phase script forgets.
+#
+# Measured on a real `--intensity active` run against a live target before this
+# existed: 92 DAST checks registered, 34 ran, 10 declared by id, and 48 left in
+# the residual `lib/report.sh`'s coverage report renders as `unaccounted`.  45 of
+# those 48 DID have an honest `coverage_reduction` behind them that simply never
+# named an id - invisible to every machine reader, because
+# `_report_coverage_state` credits only a `checks=[...]` list - and 3 had no
+# record of any kind.
+#
+# So this is the backstop, in the same shape and for the same reason
+# `lib/findings.sh`'s `_finding_secret_backstop` is one: a last chokepoint that
+# makes the bad state unreachable however an individual caller behaves.  A phase
+# that names its ids is unaffected and this function stays silent for them; a
+# phase that forgets produces a generic-but-declared reason here instead of
+# silence.  The two are not interchangeable and the per-phase reason is still
+# worth writing - "no injectable parameter was discovered" tells an operator
+# what to do next and this record cannot - which is why this is a NET, not a
+# replacement.
+#
+# The reason string says the gap belongs to scoursh rather than to the target,
+# because it does: an unaccounted check is a defect in this module, never a
+# fact about what was scanned, and docs/DESIGN.md §15 forbids letting it read as
+# though the target had been cleared.
+#
+# One deliberate conservatism, for the day `targets` holds more than one entry:
+# `checks_run` and `coverage_reduction` are run-wide facts, so on a two-target
+# run this reads a check the FIRST target covered as accounted for the second.
+# That under-reports the residual rather than over-reporting it, which is the
+# right direction for a net - claiming a check was unaccounted when some phase
+# did run it would be a false accusation against the module, and the per-target
+# truth already lives in `_dast_record_coverage`'s own `since` window.
+dast_record_unaccounted() {
+  local target=$1
+  local line rest ids id
+  local -A accounted=() selected=()
+  local -a idlist=()
+
+  while IFS= read -r line; do
+    [[ -n $line && $line == DAST-* ]] || continue
+    accounted[$line]=1
+  done < <(run_facts checks_run)
+
+  # `checks=[A B C]` - the machine-readable "declared not applicable" list
+  # lib/report.sh's `_report_coverage_state` reads, and the only shape it reads.  Parsed with
+  # `read -a` rather than an unquoted `for id in $ids`: word splitting is
+  # wanted here, PATHNAME EXPANSION is not, and the two are one switch (the
+  # `markup_tokens_have` lesson in AGENTS.md, applied to a line that can carry
+  # target-derived text in a neighbouring field).
+  while IFS= read -r line; do
+    [[ $line == *"checks=["* ]] || continue
+    rest=${line#*checks=[}
+    ids=${rest%%]*}
+    [[ -n $ids ]] || continue
+    IFS=' ' read -r -a idlist <<<"$ids"
+    for id in "${idlist[@]+"${idlist[@]}"}"; do
+      [[ -n $id ]] && accounted[$id]=1
+    done
+  done < <(run_facts coverage_reduction)
+
+  # `check=<id> skipped_by=<reason>` (lib/checks.sh:353) - the pre-dispatch
+  # profile/intensity filter.  Every id it dropped is already accounted for, and
+  # is also absent from `checks_selected`, so this loop is belt-and-braces
+  # rather than load-bearing - kept because it costs one pass and because a
+  # future selection mechanism that records a skip WITHOUT removing the id from
+  # `checks_selected` would otherwise be reported here as a scoursh defect.
+  while IFS= read -r line; do
+    [[ $line == check=* ]] || continue
+    rest=${line#check=}
+    id=${rest%% *}
+    [[ -n $id ]] && accounted[$id]=1
+  done < <(run_facts skipped_checks)
+
+  while IFS= read -r line; do
+    [[ -n $line && $line == DAST-* ]] || continue
+    [[ -n ${accounted[$line]:-} ]] && continue
+    selected[$line]=1
+  done < <(run_facts checks_selected)
+
+  (( ${#selected[@]} > 0 )) || return 0
+
+  local residual
+  residual=$(printf '%s\n' "${!selected[@]}" | LC_ALL=C sort | tr '\n' ' ')
+  residual=${residual% }
+  run_record coverage_reduction "module=dast reason=check_not_executed_no_reason_recorded target=$target checks=[$residual] - these checks were selected for this run and no phase reported either running them or why they did not. That is a defect in modules/dast/, not a property of this target: it is recorded here rather than left silent so the coverage report cannot round it up to a clean result (docs/DESIGN.md §15). Whichever phase owns each id should record its own, specific reason instead - this record is the net that catches one that did not."
+  run_record coverage_gap "dast: ${#selected[@]} check(s) on target '$target' were selected but neither ran nor recorded why - see the check_not_executed_no_reason_recorded reduction for the list. Their absence from the findings below is unexplained, which means it is not evidence of anything about this target."
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 3b. The inventory scope pre-check (docs/FOUNDATION.md tensions 19 and 21)
 # ---------------------------------------------------------------------------

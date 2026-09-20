@@ -1,0 +1,16 @@
+{
+    "trailList": [
+        {
+            "Name": "broken-trail",
+            "S3BucketName": "scoursh-fixture-broken-bucket",
+            "IncludeGlobalServiceEvents": false,
+            "IsMultiRegionTrail": false,
+            "HomeRegion": "eu-west-2",
+            "TrailARN": "arn:aws:cloudtrail:eu-west-2:123456789012:trail/broken-trail",
+            "LogFileValidationEnabled": false,
+            "HasCustomEventSelectors": false,
+            "HasInsightSelectors": false,
+            "IsOrganizationTrail": false
+        }
+    ]
+}

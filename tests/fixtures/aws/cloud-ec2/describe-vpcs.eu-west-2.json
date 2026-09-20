@@ -1,0 +1,5 @@
+{
+    "Vpcs": [
+        {"VpcId": "vpc-hard1", "IsDefault": false}
+    ]
+}

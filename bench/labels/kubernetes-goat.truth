@@ -1,0 +1,340 @@
+# bench/labels/kubernetes-goat.truth - the HAND-AUTHORED ground truth for the
+# kubernetes-goat `scenarios/` slice, pinned at bench/corpus.lock's
+# `kubernetes-goat` commit.
+#
+# THIS FILE IS THE CORPUS.  kubernetes-goat's own ground truth is a prose
+# walkthrough under `guide/`, one page per scenario, describing an ATTACK PATH
+# rather than labelling the manifests - so it cannot be scored against
+# directly, and the labels below were authored by reading the manifests.  They
+# are committed, with a rationale beside every case, because a benchmark whose
+# ground truth nobody can inspect is not a benchmark.
+#
+# NO TOOL OUTPUT OF ANY KIND WAS CONSULTED TO PRODUCE THEM (methodology rule
+# R2).  The two labelling rules and the attribution rule are stated below so
+# every call can be re-derived independently.
+#
+# ---------------------------------------------------------------------------
+# THE UNIT IS THE KUBERNETES DOCUMENT
+# ---------------------------------------------------------------------------
+# One case per `---`-separated document that declares a `kind:`, which is the
+# same object a Kubernetes API server would create and the same object Checkov,
+# KICS and Trivy each name in their own `resource` field.  Every document in
+# the slice is labelled - none skipped - so a reader can check the set is
+# complete rather than curated.  `line` is the document's real extent,
+# computed from the file rather than transcribed.
+#
+# What the unit CANNOT express, and it bounds every number derived from here:
+# a tool that flags a genuinely-misconfigured document for the WRONG REASON
+# still scores a true positive.  Distinguishing "found the privileged
+# container" from "found something else in the same Deployment" would need a
+# defect vocabulary shared across scoursh, Checkov, KICS and Trivy; no such
+# vocabulary exists, and inventing one here would put an unauditable dial
+# between the corpus and the result.  The document-level unit has no dial.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS EXCLUDED, and why
+# ---------------------------------------------------------------------------
+# `scenarios/metadata-db/` is a Helm chart.  Its `templates/*.yaml` are Go
+# templates whose `metadata.name` is `{{ include ... }}` rather than a name, so
+# they are not Kubernetes manifests until `helm template` has rendered them.
+# Scoring a plain-manifest scanner on them measures which tool guesses hardest
+# at unrendered template syntax, which is not detection.  The exclusion is
+# stated in bench/corpus.lock's own note as well, so it cannot be discovered
+# only by reading this file.
+#
+# ---------------------------------------------------------------------------
+# THE RULES, applied to every case below - identical to the ones
+# bench/labels/terragoat-aws.truth states, deliberately, so the two IaC
+# corpora are labelled to one standard rather than two.
+# ---------------------------------------------------------------------------
+# R-REAL  `true` when a competent reviewer would REQUIRE this changed before
+#         production.
+# R-CLEAN `false` when the configuration as written is a defensible production
+#         choice, EVEN IF a best-practice linter would comment on it.  A tool
+#         flagging such a document is counted as a false positive, which is the
+#         whole reason the clean cases are here.
+# R-ATTR  A defect is attributed to the document whose OWN fields express it.
+#         A document that is dangerous only because of what it references is
+#         `false`, and the referenced document carries the label.
+#
+# Cases where the call is genuinely arguable are marked BORDERLINE in their own
+# rationale and re-scored both ways in the leg README's sensitivity table.
+#
+# ---------------------------------------------------------------------------
+# FORMAT: bench/lib/truth.sh records - five 0x1f-separated fields plus a sixth.
+#
+#     <case><US><file><US><category><US><cwe><US><real><US><line-range>
+#
+# The sixth field is the document's line range and is what `bench/score.sh
+# --match line` scores against.  `cwe` is EMPTY for every case here - see
+# "what the unit cannot express" above - and the scorer renders the strict-CWE
+# column for such a category as an explicit `no CWE in truth` cell rather than
+# as a row of zeros.
+#
+# 35 cases: 19 genuinely misconfigured, 16 correctly configured.
+
+# ==========================================================================
+# batch-check/job.yaml
+# ==========================================================================
+
+# Job/batch-check-job  (lines 1-17)
+#   `image: madhuakula/k8s-goat-batch-check` carries no tag, so it resolves
+#   to the mutable `latest` and what runs is whatever the registry points at
+#   that minute. The pod spec sets no securityContext at all, so the
+#   container runs as root with an unrestricted capability set and a
+#   writable root filesystem, and no resource limits, so one job can starve
+#   the node.
+batch-check/job.yaml:Job/batch-check-jobbatch-check/job.yamlkubernetestrue1-17
+
+# ==========================================================================
+# build-code/deployment.yaml
+# ==========================================================================
+
+# Deployment/build-code-deployment  (lines 1-24)
+#   Untagged image, and no securityContext anywhere in the pod spec - root,
+#   no dropped capabilities, allowPrivilegeEscalation left at its permissive
+#   default. Resource limits are present but requests are not.
+build-code/deployment.yaml:Deployment/build-code-deploymentbuild-code/deployment.yamlkubernetestrue1-24
+
+# Service/build-code-service  (lines 25-36)
+#   A ClusterIP service forwarding 3000 to 3000 inside the cluster. It
+#   exposes nothing outside it and has no attribute that could be set
+#   insecurely.
+build-code/deployment.yaml:Service/build-code-servicebuild-code/deployment.yamlkubernetesfalse25-36
+
+# ==========================================================================
+# cache-store/deployment.yaml
+# ==========================================================================
+
+# Namespace/secure-middleware  (lines 1-5)
+#   A bare namespace. It carries no pod-security-admission labels, which a
+#   hardened cluster would add - but an unlabelled namespace is the
+#   Kubernetes default and is a defensible production choice.
+cache-store/deployment.yaml:Namespace/secure-middlewarecache-store/deployment.yamlkubernetesfalse1-5
+
+# Service/cache-store-service  (lines 6-18)
+#   ClusterIP on 6379. In-cluster only.
+cache-store/deployment.yaml:Service/cache-store-servicecache-store/deployment.yamlkubernetesfalse6-18
+
+# Deployment/cache-store-deployment  (lines 19-39)
+#   A Redis-shaped cache with an untagged image, no securityContext and no
+#   resource limits. Root by default, on the pod that holds the cache.
+cache-store/deployment.yaml:Deployment/cache-store-deploymentcache-store/deployment.yamlkubernetestrue19-39
+
+# ==========================================================================
+# docker-bench-security/deployment.yaml
+# ==========================================================================
+
+# DaemonSet/docker-bench-security  (lines 1-138)
+#   hostPID, hostIPC and hostNetwork all true, runAsUser 0, `privileged:
+#   true` on both the init container and the main container,
+#   CAP_AUDIT_CONTROL added, and the host root filesystem plus the container
+#   runtime socket mounted in. A privileged container with the docker socket
+#   is a full node takeover by design; this is the least arguable case in
+#   the corpus.
+docker-bench-security/deployment.yaml:DaemonSet/docker-bench-securitydocker-bench-security/deployment.yamlkubernetestrue1-138
+
+# ==========================================================================
+# health-check/deployment-simple-alternative.yaml
+# ==========================================================================
+
+# Deployment/health-check-deployment-simple  (lines 1-63)
+#   `privileged: true` and three hostPath mounts of the container runtime
+#   socket. Write access to the runtime socket is equivalent to root on the
+#   node, `readOnly: true` on the mount notwithstanding - the volume itself
+#   is a hostPath with no read-only enforcement at the volume level.
+health-check/deployment-simple-alternative.yaml:Deployment/health-check-deployment-simplehealth-check/deployment-simple-alternative.yamlkubernetestrue1-63
+
+# Service/health-check-service  (lines 64-74)
+#   ClusterIP on 80. In-cluster only.
+health-check/deployment-simple-alternative.yaml:Service/health-check-servicehealth-check/deployment-simple-alternative.yamlkubernetesfalse64-74
+
+# ==========================================================================
+# health-check/deployment.yaml
+# ==========================================================================
+
+# Deployment/health-check-deployment  (lines 1-99)
+#   The init container is `privileged: true` and mounts the host root
+#   filesystem at /host-root; the application container is `privileged:
+#   true` and receives the container runtime socket the init container
+#   linked. Two separate privileged containers in one pod spec.
+health-check/deployment.yaml:Deployment/health-check-deploymenthealth-check/deployment.yamlkubernetestrue1-99
+
+# Service/health-check-service  (lines 100-110)
+#   ClusterIP on 80. In-cluster only.
+health-check/deployment.yaml:Service/health-check-servicehealth-check/deployment.yamlkubernetesfalse100-110
+
+# ==========================================================================
+# hidden-in-layers/deployment.yaml
+# ==========================================================================
+
+# Job/hidden-in-layers  (lines 1-17)
+#   Untagged image and no securityContext - root, unrestricted capabilities,
+#   writable root filesystem - and no resource limits.
+hidden-in-layers/deployment.yaml:Job/hidden-in-layershidden-in-layers/deployment.yamlkubernetestrue1-17
+
+# ==========================================================================
+# hunger-check/deployment.yaml
+# ==========================================================================
+
+# Namespace/big-monolith  (lines 2-6)
+#   A bare namespace. Same reasoning as Namespace/secure-middleware.
+hunger-check/deployment.yaml:Namespace/big-monolithhunger-check/deployment.yamlkubernetesfalse2-6
+
+# Role/secret-reader  (lines 7-16)
+#   `resources: ["*"]` with get, watch and list on the core API group. The
+#   wildcard includes Secrets, so this role reads every credential in the
+#   namespace - which is exactly what the two Secrets below it hold.
+hunger-check/deployment.yaml:Role/secret-readerhunger-check/deployment.yamlkubernetestrue7-16
+
+# RoleBinding/secret-reader-binding  (lines 17-30)
+#   ATTRIBUTION. It binds the role above to the service account below; the
+#   wildcard that makes the grant dangerous is written in the Role and is
+#   labelled there. Crediting a tool for both would double-count one
+#   mistake.
+hunger-check/deployment.yaml:RoleBinding/secret-reader-bindinghunger-check/deployment.yamlkubernetesfalse17-30
+
+# ServiceAccount/big-monolith-sa  (lines 31-36)
+#   A service account. A service account holds no permissions of its own -
+#   what it can do is decided by the bindings that name it.
+hunger-check/deployment.yaml:ServiceAccount/big-monolith-sahunger-check/deployment.yamlkubernetesfalse31-36
+
+# Secret/vaultapikey  (lines 37-45)
+#   An API key committed to the repository. `data:` is base64, which is an
+#   encoding and not encryption - the value decodes with one command, and it
+#   is in version control forever.
+hunger-check/deployment.yaml:Secret/vaultapikeyhunger-check/deployment.yamlkubernetestrue37-45
+
+# Secret/webhookapikey  (lines 46-54)
+#   A second committed API key, same shape as vaultapikey.
+hunger-check/deployment.yaml:Secret/webhookapikeyhunger-check/deployment.yamlkubernetestrue46-54
+
+# Deployment/hunger-check-deployment  (lines 55-82)
+#   Untagged image, no securityContext, resource limits commented out, and
+#   it runs under big-monolith-sa - the service account the Role above lets
+#   read every Secret in the namespace.
+hunger-check/deployment.yaml:Deployment/hunger-check-deploymenthunger-check/deployment.yamlkubernetestrue55-82
+
+# Service/hunger-check-service  (lines 83-94)
+#   ClusterIP on 8080. In-cluster only.
+hunger-check/deployment.yaml:Service/hunger-check-servicehunger-check/deployment.yamlkubernetesfalse83-94
+
+# ==========================================================================
+# insecure-rbac/setup.yaml
+# ==========================================================================
+
+# ServiceAccount/superadmin  (lines 1-6)
+#   A service account in kube-system. It holds nothing until something binds
+#   a role to it, which the next document does and is labelled for.
+insecure-rbac/setup.yaml:ServiceAccount/superadmininsecure-rbac/setup.yamlkubernetesfalse1-6
+
+# ClusterRoleBinding/superadmin  (lines 7-18)
+#   Binds the built-in `cluster-admin` ClusterRole to a service account.
+#   Anything that obtains that token owns the cluster. Attributed here
+#   rather than to the ServiceAccount because this document is where the
+#   grant is written - `cluster-admin` itself is a built-in and is not
+#   declared in this corpus.
+insecure-rbac/setup.yaml:ClusterRoleBinding/superadmininsecure-rbac/setup.yamlkubernetestrue7-18
+
+# ==========================================================================
+# internal-proxy/deployment.yaml
+# ==========================================================================
+
+# Deployment/internal-proxy-deployment  (lines 1-40)
+#   Two containers, both with untagged images and neither with a
+#   securityContext. Resource limits and requests ARE set on both, which is
+#   the one thing this workload gets right.
+internal-proxy/deployment.yaml:Deployment/internal-proxy-deploymentinternal-proxy/deployment.yamlkubernetestrue1-40
+
+# Service/internal-proxy-api-service  (lines 41-53)
+#   ClusterIP on 3000. In-cluster only.
+internal-proxy/deployment.yaml:Service/internal-proxy-api-serviceinternal-proxy/deployment.yamlkubernetesfalse41-53
+
+# Service/internal-proxy-info-app-service  (lines 54-67)
+#   BORDERLINE, resolved against flagging. A NodePort on 30003. NodePort
+#   exposes the service on every node's address, which is a real increase in
+#   reachable surface - but it is also the standard way to expose a service
+#   on a cluster with no load-balancer integration, and whether it is safe
+#   is decided by the node firewall rather than by this document. A
+#   defensible production choice under R-CLEAN. See the leg README's
+#   sensitivity table.
+internal-proxy/deployment.yaml:Service/internal-proxy-info-app-serviceinternal-proxy/deployment.yamlkubernetesfalse54-67
+
+# ==========================================================================
+# kube-bench-security/master-job.yaml
+# ==========================================================================
+
+# Job/kube-bench-master  (lines 2-113)
+#   BORDERLINE, resolved toward flagging. `image: aquasec/kube-bench:latest`
+#   is a mutable tag on a workload that reads the control plane's own
+#   configuration, and `hostPID: true` is broader than the read-only file
+#   mounts it actually uses. Running a CIS benchmark as a Job is legitimate;
+#   running it from an unpinned image with the host process namespace is
+#   not. See the leg README's sensitivity table.
+kube-bench-security/master-job.yaml:Job/kube-bench-masterkube-bench-security/master-job.yamlkubernetestrue2-113
+
+# ==========================================================================
+# kube-bench-security/node-job.yaml
+# ==========================================================================
+
+# Job/kube-bench-node  (lines 2-84)
+#   BORDERLINE, resolved toward flagging. Same shape as the master job -
+#   `:latest` and `hostPID: true` - applied to every node.
+kube-bench-security/node-job.yaml:Job/kube-bench-nodekube-bench-security/node-job.yamlkubernetestrue2-84
+
+# ==========================================================================
+# kubernetes-goat-home/deployment.yaml
+# ==========================================================================
+
+# Deployment/kubernetes-goat-home-deployment  (lines 1-24)
+#   Untagged image and no securityContext. Resource limits are set.
+kubernetes-goat-home/deployment.yaml:Deployment/kubernetes-goat-home-deploymentkubernetes-goat-home/deployment.yamlkubernetestrue1-24
+
+# Service/kubernetes-goat-home-service  (lines 25-36)
+#   ClusterIP on 80. In-cluster only.
+kubernetes-goat-home/deployment.yaml:Service/kubernetes-goat-home-servicekubernetes-goat-home/deployment.yamlkubernetesfalse25-36
+
+# ==========================================================================
+# kyverno-namespace-exec-block/kyverno-block-pod-exec-by-namespace.yaml
+# ==========================================================================
+
+# ClusterPolicy/deny-exec-in-vault-namespace  (lines 1-36)
+#   A Kyverno ClusterPolicy that DENIES pod exec into the vault namespace,
+#   with validationFailureAction: Enforce. This document is a security
+#   control, not a workload - there is nothing here to misconfigure in the
+#   direction the corpus is about, and it is the negative control for `an
+#   admission policy is not a vulnerable resource`.
+kyverno-namespace-exec-block/kyverno-block-pod-exec-by-namespace.yaml:ClusterPolicy/deny-exec-in-vault-namespacekyverno-namespace-exec-block/kyverno-block-pod-exec-by-namespace.yamlkubernetesfalse1-36
+
+# ==========================================================================
+# poor-registry/deployment.yaml
+# ==========================================================================
+
+# Deployment/poor-registry-deployment  (lines 1-24)
+#   A container registry with an untagged image and no securityContext,
+#   serving 5000 with no authentication configured anywhere in the manifest.
+poor-registry/deployment.yaml:Deployment/poor-registry-deploymentpoor-registry/deployment.yamlkubernetestrue1-24
+
+# Service/poor-registry-service  (lines 25-36)
+#   ClusterIP on 5000. In-cluster only.
+poor-registry/deployment.yaml:Service/poor-registry-servicepoor-registry/deployment.yamlkubernetesfalse25-36
+
+# ==========================================================================
+# system-monitor/deployment.yaml
+# ==========================================================================
+
+# Secret/goatvault  (lines 1-10)
+#   A vault key committed to the repository as base64 `data:`. Same
+#   reasoning as the two hunger-check Secrets.
+system-monitor/deployment.yaml:Secret/goatvaultsystem-monitor/deployment.yamlkubernetestrue1-10
+
+# Deployment/system-monitor-deployment  (lines 11-53)
+#   hostPID and hostIPC true, `privileged: true` AND
+#   `allowPrivilegeEscalation: true` written out explicitly, and a hostPath
+#   mount of `/` - the entire node filesystem - at /host-system. It also
+#   projects the goatvault Secret into an environment variable.
+system-monitor/deployment.yaml:Deployment/system-monitor-deploymentsystem-monitor/deployment.yamlkubernetestrue11-53
+
+# Service/system-monitor-service  (lines 54-65)
+#   ClusterIP on 8080. In-cluster only.
+system-monitor/deployment.yaml:Service/system-monitor-servicesystem-monitor/deployment.yamlkubernetesfalse54-65

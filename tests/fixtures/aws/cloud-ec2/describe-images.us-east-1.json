@@ -1,0 +1,5 @@
+{
+    "Images": [
+        {"ImageId": "ami-badpublic1", "Name": "bad-image"}
+    ]
+}

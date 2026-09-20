@@ -1,0 +1,28 @@
+{
+    "Parameters": [
+        {
+            "Name": "/app/prod/db-password",
+            "Type": "SecureString",
+            "Version": 1,
+            "Tier": "Standard"
+        },
+        {
+            "Name": "/app/prod/api-token",
+            "Type": "String",
+            "Version": 1,
+            "Tier": "Standard"
+        },
+        {
+            "Name": "/app/prod/feature-flags",
+            "Type": "String",
+            "Version": 1,
+            "Tier": "Standard"
+        },
+        {
+            "Name": "/app/prod/deny-secret",
+            "Type": "SecureString",
+            "Version": 1,
+            "Tier": "Standard"
+        }
+    ]
+}

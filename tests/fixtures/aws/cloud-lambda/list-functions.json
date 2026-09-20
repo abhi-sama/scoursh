@@ -1,0 +1,44 @@
+{
+    "Functions": [
+        {
+            "FunctionName": "scoursh-fixture-public-lambda",
+            "FunctionArn": "arn:aws:lambda:eu-west-2:123456789012:function:scoursh-fixture-public-lambda",
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/scoursh-fixture-lambda-admin-role",
+            "Handler": "index.handler",
+            "Environment": {
+                "Variables": {
+                    "STAGE": "prod",
+                    "DB_PASSWORD": "hunter2",
+                    "AWS_KEY": "AKIAABCDEFGHIJKLMNOP"
+                }
+            }
+        },
+        {
+            "FunctionName": "scoursh-fixture-hardened-lambda",
+            "FunctionArn": "arn:aws:lambda:eu-west-2:123456789012:function:scoursh-fixture-hardened-lambda",
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/scoursh-fixture-lambda-scoped-role",
+            "Handler": "index.handler",
+            "KMSKeyArn": "arn:aws:kms:eu-west-2:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+            "Environment": {
+                "Variables": {
+                    "STAGE": "prod"
+                }
+            }
+        },
+        {
+            "FunctionName": "scoursh-fixture-denied-lambda",
+            "FunctionArn": "arn:aws:lambda:eu-west-2:123456789012:function:scoursh-fixture-denied-lambda",
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/scoursh-fixture-lambda-deny-role",
+            "Handler": "index.handler",
+            "Environment": {
+                "Error": {
+                    "ErrorCode": "KMSAccessDeniedException",
+                    "Message": "Lambda was unable to decrypt the environment variables because KMS access was denied."
+                }
+            }
+        }
+    ]
+}

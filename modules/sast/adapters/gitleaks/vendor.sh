@@ -67,6 +67,7 @@ gitleaks_vendor() {
   veng_fetch "$rules_url" "$rules_dir/gitleaks.toml" "$rules_sha256"
 
   log_info "vendor-engines: gitleaks $version vendored into ${adapter_dir#"$SCOURSH_INSTALL_ROOT"/}"
-  log_info '  commit modules/sast/adapters/gitleaks/bin and .../rules to git; every real scan'
-  log_info '  from here on runs fully offline against exactly these bytes.'
+  log_info '  do NOT commit bin/ or rules/ - both are gitignored by design. Every real scan'
+  log_info '  from here on runs fully offline against exactly these bytes; the version + sha256'
+  log_info '  pin above is what reproduces them, not a git commit of the bytes.'
 }

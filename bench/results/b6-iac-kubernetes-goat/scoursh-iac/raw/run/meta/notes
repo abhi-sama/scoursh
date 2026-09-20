@@ -1,0 +1,2 @@
+command=iac
+module=iac parallel scan: 4 workers over 16 files

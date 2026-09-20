@@ -51,7 +51,9 @@ _schema_def() {
         'context-window:opt:single:sl' 'remediation:req:single:ml' \
         'references:opt:repeatable:sl' 'cis:opt:repeatable:sl' \
         'tags:opt:repeatable:sl' 'severity-floor:opt:single:sl' \
-        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl'
+        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl' \
+        'fix-kind:opt:single:sl' 'fix-find:opt:single:sl' \
+        'fix-replace:opt:single:sl' 'fix-snippet:opt:single:ml'
       ;;
     derived)
       printf '%s\n' \
@@ -84,13 +86,15 @@ _schema_def() {
         'requires-cmd:opt:repeatable:sl' 'requires-identities:opt:single:sl' \
         'remediation:req:single:ml' 'references:opt:repeatable:sl' \
         'cis:opt:repeatable:sl' 'severity-floor:opt:single:sl' \
-        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl'
+        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl' \
+        'fix-cli:opt:single:sl'
       ;;
     scanner-config)
       printf '%s\n' \
         'id:req:single:sl' 'requests-per-second:opt:single:sl' 'jobs:opt:single:sl' \
         'http-timeout:opt:single:sl' 'max-redirects:opt:single:sl' \
         'request-budget:opt:single:sl' 'circuit-breaker-failures:opt:single:sl' \
+        'circuit-breaker-5xx-failures:opt:single:sl' \
         'circuit-breaker-window:opt:single:sl' 'fail-on:opt:single:sl' \
         'min-confidence:opt:single:sl' 'redact-secrets:opt:single:sl' \
         'formats:opt:repeatable:sl' 'max-matches-per-file:opt:single:sl' \
@@ -115,6 +119,7 @@ _schema_def() {
         'id:req:single:sl' 'openapi-path:opt:single:sl' 'graphql-schema-path:opt:single:sl' \
         'postman-path:opt:single:sl' 'har-path:opt:single:sl' 'crawl-depth:opt:single:sl' \
         'include-path:opt:repeatable:sl' 'exclude-path:opt:repeatable:sl' \
+        'js-endpoint-discovery:opt:single:sl' \
         'notes:opt:single:ml' 'format-version:opt:single:sl'
       ;;
     posture-expectation)
@@ -123,10 +128,25 @@ _schema_def() {
         'expect:req:single:sl' 'value:opt:single:sl' 'notes:opt:single:ml' \
         'format-version:opt:single:sl'
       ;;
+    image-source)
+      printf '%s\n' \
+        'id:req:single:sl' 'source:req:single:sl' 'path:req:single:sl' \
+        'reference:opt:single:sl' 'dockerfile:opt:single:sl' 'notes:opt:single:ml' \
+        'format-version:opt:single:sl'
+      ;;
     severity-modifier)
       printf '%s\n' \
         'id:req:single:sl' 'fact:req:single:sl' 'equals:req:single:sl' \
         'modifier:req:single:sl' 'format-version:opt:single:sl'
+      ;;
+    owasp-category)
+      printf '%s\n' \
+        'id:req:single:sl' 'category:req:single:sl' 'format-version:opt:single:sl'
+      ;;
+    cis-mapping)
+      printf '%s\n' \
+        'id:req:single:sl' 'title:req:single:sl' 'benchmark:opt:single:sl' \
+        'benchmark-version:opt:single:sl' 'format-version:opt:single:sl'
       ;;
     *)
       return 1
@@ -136,7 +156,8 @@ _schema_def() {
 
 records_schema_names() {
   printf '%s\n' pattern-rule derived redaction scope-target script-check \
-    scanner-config auth-identity discovery-input posture-expectation severity-modifier
+    scanner-config auth-identity discovery-input posture-expectation image-source \
+    severity-modifier owasp-category cis-mapping
 }
 
 # Schemas holding exactly one record, whose `id` is a frozen literal
@@ -216,7 +237,10 @@ records_schema_for_path() {
     config/auth.conf) printf '%s' auth-identity ;;
     config/discovery.conf) printf '%s' discovery-input ;;
     config/posture.conf) printf '%s' posture-expectation ;;
+    config/images.conf) printf '%s' image-source ;;
     data/severity-rubric.conf) printf '%s' severity-modifier ;;
+    data/owasp-categories.conf) printf '%s' owasp-category ;;
+    data/cis-mappings) printf '%s' cis-mapping ;;
     *) return 1 ;;                                   # E070
   esac
 }
@@ -235,6 +259,8 @@ records_owning_module() {
     modules/sca/*) printf '%s' SCA ;;
     modules/iac/*) printf '%s' IAC ;;
     modules/dast/*) printf '%s' DAST ;;
+    modules/network/*) printf '%s' NET ;;
+    modules/image/*) printf '%s' IMAGE ;;
     rules/derived.rules) printf '%s' COMPOSITE ;;
     rules/redaction.rules) printf '%s' SAST ;;
     *) return 1 ;;
@@ -244,11 +270,27 @@ records_owning_module() {
 # ---------------------------------------------------------------------------
 # 2. Schema lookup helpers
 # ---------------------------------------------------------------------------
-declare -A _SCHEMA_LOADED=()
-declare -A _SCHEMA_REQ=()
-declare -A _SCHEMA_CARD=()
-declare -A _SCHEMA_ML=()
-declare -A _SCHEMA_KEYS=()
+# `declare -gA`, never a bare `declare -A`, for the reason
+# modules/dast/engine.sh's own `_DAST_PHASES` comment documents at length:
+# this file is normally sourced at a script's true top level (scan.sh does,
+# before scan_dispatch is ever called), where plain and `-g` are identical -
+# but tools/vendor-engines.sh's advisories bootstrap lazily sources this file
+# (via modules/sca/engine.sh -> lib/findings.sh) from INSIDE a short-lived
+# loader function, so a bare `declare -A` here becomes local to that
+# function and is gone the instant it returns.  Measured: every `log_info`/
+# `log_warn` call for the rest of that process then died with
+# "records.sh: line N: <schema>: unbound variable" from inside `redact()`'s
+# own `_schema_ensure` call, because `_SCHEMA_LOADED` no longer existed -
+# `SCOURSH_RECORDS_SOURCED` above (a plain assignment, always global) is
+# what let the sourced-once guard survive while these did not.  Every
+# top-level associative array in this file is genuine process-wide cache
+# state by design, so all of them carry `-g`, not just the ones this path
+# happened to touch first.
+declare -gA _SCHEMA_LOADED=()
+declare -gA _SCHEMA_REQ=()
+declare -gA _SCHEMA_CARD=()
+declare -gA _SCHEMA_ML=()
+declare -gA _SCHEMA_KEYS=()
 
 _schema_ensure() {
   local schema=$1 line key req card ml
@@ -285,6 +327,24 @@ records_key_is_required() { [[ ${_SCHEMA_REQ["$1|$2"]:-opt} == req ]]; }
 RECORDS_ERRORS=0
 RECORDS_DIAGNOSTICS=()
 
+# A rule pack's own *.rules file is re-parsed many times in one process - once
+# per module dispatch (lib/checks.sh's checks_registry_load, called from
+# _scan_apply_profile_filter) and then again, per module, inside every one of
+# report_all's OWASP/CIS/category/SARIF mapping builders (lib/report.sh) - so
+# under `scan.sh all` a handful of real W-class warnings (W033's
+# context-deny/context-window note, docs/FOUNDATION.md finding F4) were
+# reprinted dozens of times, filling an --verbose log with identical repeated
+# blocks (operator report, 2026-09-11: a real 3h03m run's log was mostly
+# this). This cache is PRINT-ONLY: it never touches RECORDS_DIAGNOSTICS above,
+# which still gets every occurrence on every load, unchanged, because
+# tests/lint-rules.sh reads that array directly and a reload genuinely is a
+# distinct parse to it. It only suppresses the SECOND and later stderr print
+# of the identical message (same path:line:col:code:id:text) within one
+# process, so an operator sees each real warning once, not once per reload -
+# never once per DIFFERENT warning, and never anything error-class, which is
+# never gated by SCOURSH_SHOW_RULE_WARNINGS at all.
+declare -gA _RECORDS_W_PRINTED=()
+
 records_diag() {
   local path=$1 line=$2 col=$3 code=$4 id=$5
   shift 5
@@ -299,9 +359,20 @@ records_diag() {
     # stderr, sees every one regardless), but only PRINTED here when
     # SCOURSH_SHOW_RULE_WARNINGS is set - scan.sh's --verbose flag - so a
     # normal scan run isn't opened with a wall of warnings nobody scanning
-    # their own code can act on.
+    # their own code can act on. And even then, printed at most once per
+    # process per distinct message - see _RECORDS_W_PRINTED's own comment
+    # above. "Once per process" needed a second fix once a process could
+    # legitimately run the registry walk in more than one SUBSHELL of
+    # itself: lib/core.sh's run_json_refresh_incomplete (the abort path)
+    # runs several report writers each in its own subshell, and a subshell
+    # can populate this map but can never write it back to the parent - see
+    # lib/report.sh's report_registries_dump, which now dumps and restores
+    # this map across exactly that boundary for the identical reason it
+    # already did for the OWASP/CIS registry state.
     W*)
       [[ ${SCOURSH_SHOW_RULE_WARNINGS:-} == true ]] || return 0
+      [[ -z ${_RECORDS_W_PRINTED["$msg"]:-} ]] || return 0
+      _RECORDS_W_PRINTED["$msg"]=1
       ;;
     *) RECORDS_ERRORS=$(( RECORDS_ERRORS + 1 )) ;;
   esac
@@ -419,15 +490,15 @@ _records_check_utf8() {
 # ---------------------------------------------------------------------------
 # Records live in a named SET so two files can be loaded at once (findings.sh
 # holds the redaction rules and the severity rubric simultaneously).
-declare -A _REC_S=()      # set|idx|key -> scalar value
-declare -A _REC_L=()      # set|idx|key -> LF-joined repeated values
-declare -A _REC_ORDER=()  # set|idx     -> LF-joined key order
-declare -A _REC_LINE=()   # set|idx     -> line number the record starts at
-declare -A _REC_N=()      # set         -> record count
-declare -A _REC_PATH=()   # set         -> source path
-declare -A _REC_SCHEMA=() # set         -> schema name
-declare -A _REC_BYID=()   # set|id      -> idx
-declare -A _REC_DIGEST=() # set|idx     -> rule_digest, computed lazily
+declare -gA _REC_S=()      # set|idx|key -> scalar value
+declare -gA _REC_L=()      # set|idx|key -> LF-joined repeated values
+declare -gA _REC_ORDER=()  # set|idx     -> LF-joined key order
+declare -gA _REC_LINE=()   # set|idx     -> line number the record starts at
+declare -gA _REC_N=()      # set         -> record count
+declare -gA _REC_PATH=()   # set         -> source path
+declare -gA _REC_SCHEMA=() # set         -> schema name
+declare -gA _REC_BYID=()   # set|id      -> idx
+declare -gA _REC_DIGEST=() # set|idx     -> rule_digest, computed lazily
 
 records_count() { printf '%s' "${_REC_N[$1]:-0}"; }
 records_path() { printf '%s' "${_REC_PATH[$1]:-}"; }
@@ -452,6 +523,44 @@ records_field_or() {
 records_list() {
   printf '%s' "${_REC_L["$1|$2|$3"]:-}"
 }
+
+# --- fork-free bulk reads --------------------------------------------------
+# `records_count`/`records_id`/`records_field_or`/`records_list` above each
+# print to stdout, so a caller capturing the result with `$(...)` pays a real
+# fork for every call - fine for a one-off read, ruinous for a loop over
+# every field of every record in the tool's whole check catalog (measured:
+# lib/report.sh's OWASP/CIS registry walk was paying ~1000+ such forks for a
+# ~300-record catalog). "Things measured on this codebase" in AGENTS.md
+# already states the fix this project uses elsewhere (`occurrence_next`,
+# `worker_id_set`): a side-effecting function SETS a variable rather than
+# printing one for `$(...)` to capture. Bash 4.2 - this project's frozen
+# minimum - has no nameref (`local -n` is 4.3+), so these write into a fixed
+# global the caller reads immediately after the call, exactly as
+# `finding_decode` populates `_DF` for its own callers, rather than a
+# caller-chosen name threaded through by reference.
+#
+# Global, not `local`: the caller reads each slot from its own scope right
+# after the call, the same contract `_DF` already has.
+_RECORDS_COUNT_V=0
+_RECORDS_ID_V=''
+_RECORDS_FIELD_V=''
+_RECORDS_LIST_V=''
+
+records_count_into() { _RECORDS_COUNT_V=${_REC_N[$1]:-0}; }
+records_id_into() { _RECORDS_ID_V=${_REC_S["$1|$2|id"]:-}; }
+
+# records_field_or_into SET IDX KEY DEFAULT - mirrors records_field_or's own
+# has-then-fall-back logic exactly (an unset key is not the same as one set
+# to an empty string), without the `records_has` sub-call's own extra work:
+# both read the identical `_REC_S` slot, so the presence test is inlined.
+records_field_or_into() {
+  if [[ -n ${_REC_S["$1|$2|$3"]+set} ]]; then
+    _RECORDS_FIELD_V=${_REC_S["$1|$2|$3"]}
+  else
+    _RECORDS_FIELD_V=$4
+  fi
+}
+records_list_into() { _RECORDS_LIST_V=${_REC_L["$1|$2|$3"]:-}; }
 
 records_index_of_id() {
   local idx=${_REC_BYID["$1|$2"]:-}
@@ -487,6 +596,30 @@ records_digest() {
   digest=$(_records_digest_stream "$set" "$idx" | sha256_of)
   _REC_DIGEST["$set|$idx"]=$digest
   printf '%s' "$digest"
+}
+
+# records_digest_into SET IDX - the fork-free sibling of records_digest above,
+# for the same reason the "fork-free bulk reads" section exists: a caller
+# looping over every record in the catalog (lib/report.sh's SARIF rules[]
+# builder is the one that needs it) pays one $(...) fork per call just to
+# capture an already-memoized value, on top of the one real fork this
+# function cannot avoid on a genuine cache miss (`_records_digest_stream |
+# sha256_of`, computing a NEW sha256 - there is no bash-builtin hash, so that
+# single pipe is the unavoidable cost of a digest this process has never
+# computed before). Mirrors records_digest's own cache check exactly rather
+# than calling it, so the cache-HIT path - the overwhelming majority of calls
+# once a check's digest has been computed anywhere in this process, whether
+# by a module emitting a finding for it or by an earlier call here - is a
+# plain array read with no fork at all.
+_RECORDS_DIGEST_V=''
+records_digest_into() {
+  local set=$1 idx=$2
+  if [[ -n ${_REC_DIGEST["$set|$idx"]:-} ]]; then
+    _RECORDS_DIGEST_V=${_REC_DIGEST["$set|$idx"]}
+    return 0
+  fi
+  _RECORDS_DIGEST_V=$(_records_digest_stream "$set" "$idx" | sha256_of)
+  _REC_DIGEST["$set|$idx"]=$_RECORDS_DIGEST_V
 }
 
 # _REC_ORDER records a key once per OCCURRENCE, so a repeatable key appears in it
@@ -818,6 +951,12 @@ _records_validate_record() {
   _records_check_enum "$set" "$i" "$path" "$line" "$id" correlate-on none target account account-region file
   _records_check_enum "$set" "$i" "$path" "$line" "$id" mode \
     bearer api-key form oauth2-password oauth2-client srp external
+  # `dep-upgrade` is legal here for schema-consistency with the value
+  # modules/sca/engine.sh mints directly onto a finding (SCA ships no
+  # `*.rules` at all, so no pattern-rule record will ever actually carry it) -
+  # docs/AGENT-FORMAT.md is the normative list of all four `fix_kind` values.
+  _records_check_enum "$set" "$i" "$path" "$line" "$id" fix-kind \
+    replace replace-tpl insert-near dep-upgrade
   case $schema in
     auth-identity)
       _records_check_auth_mode "$set" "$i" "$path" "$line" "$id"
@@ -833,6 +972,25 @@ _records_validate_record() {
       ;;
     script-check)
       _records_check_coverage_scope "$set" "$i" "$path" "$line" "$id"
+      ;;
+    image-source)
+      # rules/RULE-FORMAT.md §9.6.8.  The enum lives in this schema's own arm
+      # rather than beside the unconditional enums above for the reason the
+      # `auth-identity` arm one line up gives: `source` is a common English
+      # word and a later schema is free to spell a key that way meaning
+      # something else, which a tree-wide enum would then reject on a record
+      # this one never sees.
+      #
+      # The two values are exactly the two image-source shapes this module
+      # supports, and the
+      # SET IS CLOSED ON PURPOSE.  Shape C (`docker save` shelled out to a
+      # running runtime) is a convenience wrapper that PRODUCES a shape-A
+      # tarball and re-enters the shape-A path; giving it a `source` value of
+      # its own would make it a second acquisition code path - the second door
+      # docs/FOUNDATION.md tension 19 refuses for the network, applied to a
+      # container runtime.
+      _records_check_enum "$set" "$i" "$path" "$line" "$id" source \
+        docker-archive oci-layout
       ;;
   esac
 
@@ -855,6 +1013,15 @@ _records_validate_record() {
     ce=$(severity_rank "$(records_field "$set" "$i" severity-ceiling)")
     (( fl <= ce )) || records_diag "$path" "$line" 1 E029 "$id" \
       'severity-floor is above severity-ceiling'
+  fi
+
+  # E082 `fix-replace` requires `fix-find` - a replacement with nothing to
+  # anchor it to is not a patch, it is a value with no location
+  # (docs/AGENT-FORMAT.md's fix scaffold; `fix-find` alone is legal on its
+  # own, e.g. paired with `fix-snippet` for an `insert-near` anchor).
+  if records_has "$set" "$i" fix-replace && ! records_has "$set" "$i" fix-find; then
+    records_diag "$path" "$line" 1 E082 "$id" \
+      "fix-replace present without fix-find"
   fi
 
   # E045 format-version
@@ -936,7 +1103,7 @@ _records_validate_record() {
 
 _records_check_id_form() {
   local set=$1 i=$2 schema=$3 path=$4 line=$5 id=$6
-  local re_check='^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$'
+  local re_check='^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|IMAGE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$'
   local re_lower='^[a-z][a-z0-9-]*$'
   case $schema in
     derived)
@@ -960,6 +1127,14 @@ _records_check_id_form() {
         || records_diag "$path" "$line" 1 E027 "$id" 'id must be <target-id>.<label>'
       ;;
     scanner-config) ;;                       # frozen literal, checked by E071
+    owasp-category)
+      [[ $id =~ ^A[0-9]{2}:[0-9]{4}$ ]] \
+        || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^A[0-9]{2}:[0-9]{4}$ (rules/RULE-FORMAT.md §9.6.6)'
+      ;;
+    cis-mapping)
+      [[ $id =~ ^[0-9]+(\.[0-9]+)+$ ]] \
+        || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^[0-9]+(\.[0-9]+)+$ (rules/RULE-FORMAT.md §9.6.7)'
+      ;;
     *)
       [[ $id =~ $re_lower ]] \
         || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^[a-z][a-z0-9-]*$'
@@ -1035,6 +1210,8 @@ _records_check_coverage_scope() {
     DAST) want='target' ;;
     CLOUD) want='account-region' ;;
     POSTURE) want='scope-key' ;;
+    NET) want='target' ;;
+    IMAGE) want='image-id' ;;
     *) return 0 ;;
   esac
   [[ $v == "$want" ]] || records_diag "$path" "$line" 1 E079 "$id" \

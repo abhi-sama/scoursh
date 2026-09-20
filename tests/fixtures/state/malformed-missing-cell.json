@@ -1,0 +1,12 @@
+{
+  "fp_schema": "fp/1",
+  "tool_version": "0.9.0",
+  "run_id": "r1",
+  "completed_at": "2026-06-01T00:00:00Z",
+  "scan_root_id": "path:/x",
+  "covered_checks": {},
+  "findings": [
+    {"fingerprint": "f1", "check_id": "C1", "severity": "low",
+     "first_seen": "a", "last_seen": "a", "suppressed": false}
+  ]
+}

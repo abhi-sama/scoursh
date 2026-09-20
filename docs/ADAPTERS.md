@@ -50,8 +50,8 @@ engine's binary or ruleset is permitted to live.
 
 This has one direct, load-bearing consequence for adapter code:
 
-- **`adapter.sh` never fetches anything.** It only *detects* a vendored binary already committed to the
-  repository at a fixed path (§4), *runs* it fully offline, and *normalizes* its output. It contains no
+- **`adapter.sh` never fetches anything.** It only *detects* a vendored binary already present on disk
+  at a fixed path (§4), *runs* it fully offline, and *normalizes* its output. It contains no
   `curl`, `wget`, `nc`, `ncat`, `netcat`, or `openssl s_client` invocation, and it never sources or calls
   `tools/vendor-engines.sh`.
 - `tests/lint-shell.sh` enforces both directions: the tension-19 "no bypass" check (no bare
@@ -97,10 +97,12 @@ of its own to select or drop (§6 below).
 ```
 modules/<module>/adapters/<engine>/
   adapter.sh   # the three-function contract, §5 below
-  bin/         # the vendored engine binary (or binaries), committed to git,
-               # populated by tools/vendor-engines.sh on a networked box
+  bin/         # the vendored engine binary (or binaries) - gitignored, not
+               # committed (a vendored ruleset routinely carries a
+               # non-redistributable licence); populated per-machine by
+               # tools/vendor-engines.sh on a networked box
   rules/       # the vendored local ruleset/config the engine runs against
-               # offline, committed to git, populated the same way
+               # offline - gitignored, populated the same way
 ```
 
 - `<module>` is the scoursh module the adapter augments - `sast`, `iac`, and so on. `docs/DESIGN.md`'s
@@ -131,7 +133,7 @@ the same process never collide:
 | Function | Signature | Contract |
 |---|---|---|
 | `<engine>_detect` | `<engine>_detect` (no args) | Returns 0 if this engine's vendored binary (and ruleset, if it needs one) exists on disk at its fixed path under `bin/`/`rules/` **and** is executable; 1 otherwise. Pure filesystem check. Never touches the network, never runs the engine, never writes anything. |
-| `<engine>_run` | `<engine>_run OUTPUT_FILE TARGET...` | Runs the vendored engine, fully offline, against `TARGET...` (paths under the scan root), writing the engine's own **native** JSON output to `OUTPUT_FILE`. Every invocation is the engine's own documented offline/no-update flag (`semgrep --offline --config <vendored rules>`, `gitleaks --no-banner`, ...) per `docs/DESIGN.md` §6.4/§9. Exits non-zero only on genuine engine failure, in which case the caller records a `coverage_reduction` and continues the run rather than aborting it (§7). |
+| `<engine>_run` | `<engine>_run OUTPUT_FILE TARGET...` | Runs the vendored engine, fully offline, against `TARGET...` (paths under the scan root), writing the engine's own **native** JSON output to `OUTPUT_FILE`. Every invocation passes whatever combination of flags the engine's CURRENT vendored release actually accepts and needs to guarantee no network access, no telemetry, and no version/update check (`gitleaks --no-banner --no-git`, ...; see §7a below - this is a moving target across upstream releases, not a fixed flag list, and each adapter's own header records what was measured against its own vendored version) per `docs/DESIGN.md` §6.4/§9. Exits non-zero only on genuine engine failure, in which case the caller records a `coverage_reduction` and continues the run rather than aborting it (§7). |
 | `<engine>_normalize` | `<engine>_normalize INPUT_FILE` | Reads `INPUT_FILE` (the file `<engine>_run` wrote) and, for every finding the engine reported, calls `lib/findings.sh`'s public API - `finding_new`, `finding_set`, `finding_set_evidence`, `finding_set_match`, `finding_emit` - to produce a scoursh finding record. Never assigns to the internal `_F` array directly (`tests/lint-shell.sh`'s existing "no direct assignment to a redacted field" check already forbids this repository-wide); never invents a field the finding schema does not have. |
 
 All three are pure functions of their arguments and the filesystem; none of the three accepts a secret
@@ -193,6 +195,60 @@ branch above for real**: `tests/suites/sast-semgrep.sh`'s "graceful degradation"
 reason=engine_not_vendored engine=semgrep` line plus an unaffected exit code - and a second case, with
 neither `--use-engines` given, asserts not even that line appears, proving "unmodified default
 behaviour" rather than merely "no crash".
+
+## 7a. Upstream flag drift is a distinct failure class, measured on two real adapters
+
+A vendored engine's own CLI is not this project's to freeze: an upstream release can rename or remove a
+flag an adapter's `<engine>_run` depends on for the no-egress/no-telemetry guarantee, and the adapter has
+no way to know until it is run against that release. This is not hypothetical - it happened to BOTH
+concrete adapters shipped as of this section landing. `modules/sast/adapters/semgrep/adapter.sh`'s
+`semgrep_run` was written against a semgrep release that accepted `--offline`; a later semgrep release
+(measured: 1.176.0) removed that flag outright (`unknown option '--offline'`, exit 2), with no renamed
+equivalent - the guarantee it named is now the conjunction of an always-local `--config` directory,
+`--metrics=off`, and `--disable-version-check`, none of them new controls, just no longer summarized by
+one flag. `modules/iac/adapters/trivy/adapter.sh`'s `trivy_run` was written against a release that
+accepted `--offline-scan`, `--skip-db-update`, and `--scanners misconfig`; a later release (measured:
+0.74.0) rejects all three outright (`unknown flag`, exit 1) because none of them ever applied to the
+`trivy config` subcommand's actual scope, and separately - a real, measured EGRESS gap, not merely a
+renamed flag - a `trivy config` run with neither `--disable-telemetry` nor `--skip-version-check` (both
+new on this release, covering nothing the old three flags ever did) was observed opening a genuine
+outbound HTTPS connection, verified by sampling `lsof -p <pid>` for the run's lifetime the same way
+`lib/paranoid.sh`'s own `--paranoid` backend does.
+
+Both adapters, and any future one, therefore do two things beyond the bare `<engine>_run` contract in §5:
+
+- **Each adapter's own header states, dated to a measured version**, exactly which flags were verified
+  against the real installed binary's own `--help` output and via a real, sampled-connections run - never
+  assumed from memory or from upstream documentation for a different release. Re-verify the same way
+  after every future re-vendor; a flag still being accepted by `--help` is not the same claim as "still
+  makes no request" (trivy's own telemetry/version-check gap above is exactly a case where the flag
+  surface changed in a way `--help` alone does not flag as risky).
+- **`<engine>_run` distinguishes a flag REJECTION from an ordinary engine failure** when the engine's own
+  error text names an unrecognized flag (semgrep: `unknown option '--foo'`; trivy: `unknown flag: --foo` -
+  each engine's own CLI framework has its own wording, so this is per-adapter, not shared code), and
+  records a SECOND, more specific `coverage_reduction` (`reason=engine_flag_rejected`, naming the flag and
+  the engine's own reported version) alongside the generic `engine_run_failed` §7 already specifies -
+  never replacing it, so a run.json reader unfamiliar with this section still gets the generic reason.
+  This turns "an opt-in engine silently produced nothing" into "here is exactly which flag this
+  adapter's own hardcoded list needs updating for, and for which version" the first time it recurs,
+  rather than requiring another from-scratch investigation.
+
+**A vendor-time smoke test that actually EXECUTES the freshly-downloaded binary was considered and
+deliberately NOT added to `vendor.sh`.** The argument for one is real: `tools/vendor-engines.sh` already
+runs on a networked, operator-supervised box (the same posture `tools/vendor-engines.sh`'s own advisories
+subsystem already relies on to use real ecosystem tooling), so running the exact `<engine>_run` invocation
+once against a trivial scratch target there would catch exactly this class of drift at vendor time,
+before the binary is ever committed. The argument against is what tipped the decision: `veng_fetch`'s own
+contract (§2) is to treat a freshly-downloaded artifact as untrusted bytes until its sha256 verifies, and
+`tests/suites/vendor-engines.sh`'s existing fixtures deliberately plant NON-EXECUTABLE placeholder content
+for the "binary" (`FAKE_CURL_CONTENT_BIN`, asserted byte-for-byte rather than run) precisely so vendoring
+can be tested without ever executing arbitrary fetched bytes in CI. Wiring a real execution into
+`<engine>_vendor` would force every existing vendoring test to grow an executable, flag-aware stand-in
+per engine merely to keep passing - a disproportionate cost for a diagnostic that already fires for free
+at the very next real scan, which is the natural next step after vendoring anyway (each `vendor.sh`'s own
+closing log line already says so: "every real scan from here on runs..."). The §7a mechanism above is the
+chosen alternative: cheaper, fires on every real invocation rather than only at vendor time, and needs no
+change to the vendoring test model's "never execute untrusted bytes" property.
 
 ## 8. Round-trip requirement
 

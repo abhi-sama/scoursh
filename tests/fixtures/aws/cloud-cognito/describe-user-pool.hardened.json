@@ -1,0 +1,33 @@
+{
+    "UserPool": {
+        "Id": "eu-west-2_hardpool01",
+        "Name": "scoursh-fixture-hardened-pool",
+        "Policies": {
+            "PasswordPolicy": {
+                "MinimumLength": 12,
+                "RequireUppercase": true,
+                "RequireLowercase": true,
+                "RequireNumbers": true,
+                "RequireSymbols": true,
+                "TemporaryPasswordValidityDays": 7
+            }
+        },
+        "DeletionProtection": "ACTIVE",
+        "MfaConfiguration": "ON",
+        "UserPoolAddOns": {
+            "AdvancedSecurityMode": "ENFORCED"
+        },
+        "AdminCreateUserConfig": {
+            "AllowAdminCreateUserOnly": true
+        },
+        "AccountRecoverySetting": {
+            "RecoveryMechanisms": [
+                {
+                    "Priority": 1,
+                    "Name": "admin_only"
+                }
+            ]
+        },
+        "Arn": "arn:aws:cognito-idp:eu-west-2:123456789012:userpool/eu-west-2_hardpool01"
+    }
+}

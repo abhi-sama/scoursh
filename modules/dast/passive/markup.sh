@@ -661,15 +661,34 @@ _dast_markup_phase() {
   # whether or not a link on them was defective, which claims neither too much
   # (a run of only ordinary pages still does not assert the sensitive id ran)
   # nor too little.
+  #
+  # THE `continue` USED TO BE BARE, AND THAT WAS A SHIPPED DEFECT.  An id
+  # dropped here left NO record of any kind - the id simply vanished between
+  # `checks_selected` and `checks_run`, which `lib/report.sh`'s coverage report
+  # renders as `unaccounted` and which docs/DESIGN.md §15 forbids.  The skip
+  # itself is correct (a run that saw no authentication page genuinely did not
+  # cover the elevated-severity id); saying nothing about it was not.  Note the
+  # generic `markup_client_rendered_page` reduction below is NOT a substitute:
+  # it is about SPA pages and would be absent from a run of twenty ordinary
+  # server-rendered pages with no login form - exactly the run where this skip
+  # is most likely and least visible.
   local c
+  local -a tab_not_seen=()
   for c in "${_MK_CHECK_IDS[@]+"${_MK_CHECK_IDS[@]}"}"; do
     _mk_selected "$c" || continue
     case $c in
       DAST-MARKUP-TABNABBING-01 | DAST-MARKUP-TABNABBING_SENSITIVE-01)
-        (( ${_MK_TAB_SEEN[$c]:-0} > 0 )) || continue ;;
+        if (( ${_MK_TAB_SEEN[$c]:-0} == 0 )); then
+          tab_not_seen+=("$c")
+          continue
+        fi ;;
     esac
     run_record checks_run "$c"
   done
+  if (( ${#tab_not_seen[@]} > 0 )); then
+    run_record coverage_reduction "module=dast reason=markup_no_page_classified target=$target checks=[${tab_not_seen[*]}] parsed=$parsed - no page parsed on this target was classified under these check id(s), so neither had a document to evaluate. The two reverse-tabnabbing ids split on whether the page carrying the outbound link looks like an authentication page (modules/dast/passive/markup.sh's own \`_MK_SENSITIVE\`), so a run of only ordinary pages does not cover the elevated one and a run of only authentication pages does not cover the ordinary one. They are NOT covered on this target."
+    run_record coverage_gap "dast markup: ${#tab_not_seen[@]} reverse-tabnabbing check(s) on target '$target' had no page of their own kind among the $parsed parsed, so nothing was evaluated for them. Their absence from the findings below is the absence of a test, not a clean result."
+  fi
 
   # Every bound and every gap, named.  docs/DESIGN.md §15: a bound that
   # truncates silently is indistinguishable from a surface that was really that

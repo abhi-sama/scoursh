@@ -671,7 +671,15 @@ _dast_discovery_phase() {
   fi
 
   if (( do_content )) && [[ $wordlist_state == absent ]]; then
-    run_record coverage_reduction "module=dast reason=discovery_wordlist_absent target=$target path=$(crawl_safe_text "$wl" 200) - no content-discovery wordlist is vendored at this path (none ships in this repository by design; vendor one offline and point SCOURSH_DAST_DISCOVERY_WORDLIST at it), so wordlist-based content discovery did not run. The backup/temp and sensitive-path techniques still ran."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-DISC-CONTENT-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=discovery_wordlist_absent target=$target${_nc:+ checks=[$_nc]} path=$(crawl_safe_text "$wl" 200) - no content-discovery wordlist is vendored at this path (none ships in this repository by design; vendor one offline and point SCOURSH_DAST_DISCOVERY_WORDLIST at it), so wordlist-based content discovery did not run. The backup/temp and sensitive-path techniques still ran."
     run_record coverage_gap "dast discovery: no content-discovery wordlist was available for target '$target', so the wordlist-based sweep tested nothing. This is a coverage gap, not a clean bill of health; the fixed sensitive-path and backup/temp checks still ran."
   fi
   if (( do_backup )) && [[ $inventory_state == absent ]]; then

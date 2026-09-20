@@ -632,6 +632,51 @@ assert_contains "$(cat "$W/run-full-profile/meta/checks_run" 2>/dev/null)" 'SAST
   'full-only check ALSO runs under the default - fails under "no --profile-scan silently narrows the scan"'
 
 # =============================================================================
+printf -- '\n-- checks_run semantics: recorded AFTER the walk, only for checks actually evaluated --\n'
+# =============================================================================
+# docs/FOUNDATION.md/AGENTS.md's "checks_run semantics fix": before this fix,
+# modules/sast/run.sh recorded `checks_run "$id"` from the SELECTION list,
+# BEFORE sast_scan_tree ever ran - so a check whose `files:` glob matched zero
+# files in the scanned tree was still reported as "run". This section adds
+# javascript.rules (files: *.js/*.jsx/*.ts/*.tsx/*.mjs/*.cjs) to a registry
+# scanned against $FIXTURES (tests/fixtures/sast), which contains ONLY *.py
+# and one extensionless snippet file - no JS/TS file anywhere in it - so
+# SAST-JS-EVAL-01 is selected but has nothing to evaluate.
+#
+# This is the test that FAILS under the pre-fix reading: recording checks_run
+# from the selection list (before the walk) puts SAST-JS-EVAL-01 in
+# checks_run regardless of the tree's contents, so the first assertion below
+# would fail (assert_not_contains would find it present).
+ROOT_JS_REGISTRY=$W/root-js-registry
+mkdir -p "$ROOT_JS_REGISTRY/config" "$ROOT_JS_REGISTRY/modules/sast/rules"
+printf 'id: scanner\n' >"$ROOT_JS_REGISTRY/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+  "$ROOT_JS_REGISTRY/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/secrets.rules"
+cp "$ROOT/modules/sast/rules/javascript.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/javascript.rules"
+ROOT_JS_REGISTRY=$(cd -- "$ROOT_JS_REGISTRY" && pwd -P)
+
+t_case 'checks_run semantics: a check whose files: glob matched nothing in this tree is NOT recorded as run'
+rm -rf "$W/run-js-not-applicable"
+SCOURSH_INSTALL_ROOT=$ROOT_JS_REGISTRY bash "$ROOT/scan.sh" sast --path "$FIXTURES" \
+  --out "$W/run-js-not-applicable" >/dev/null 2>&1
+_js_checks_run=$(cat "$W/run-js-not-applicable/meta/checks_run" 2>/dev/null || true)
+assert_not_contains "$_js_checks_run" 'SAST-JS-EVAL-01' \
+  'SAST-JS-EVAL-01 (files: *.js/*.jsx/*.ts/*.tsx/*.mjs/*.cjs) is NOT in checks_run over a tree with no such file - fails under the pre-fix reading, which records checks_run from the selection list before the tree walk ever runs, so this id would appear regardless of what the tree contains'
+
+t_case 'checks_run semantics: a check that WAS evaluated (its files: glob matched a real file, or it carries none) still IS recorded as run'
+assert_contains "$_js_checks_run" 'SAST-SEC-AWS_AKID-01' \
+  'SAST-SEC-AWS_AKID-01 (no files: restriction, so applicable to every file) is still recorded as run in the SAME scan - proves the fix narrows to unevaluated checks specifically, not to every check in a registry containing an inapplicable one'
+
+t_case 'checks_run semantics: the unevaluated check is declared, by id, as a coverage_reduction - never silently unaccounted'
+_js_reductions=$(cat "$W/run-js-not-applicable/meta/coverage_reduction" 2>/dev/null || true)
+assert_contains "$_js_reductions" 'module=sast reason=no_matching_files' \
+  'a coverage_reduction names the reason no_matching_files for module=sast'
+assert_contains "$_js_reductions" 'SAST-JS-EVAL-01' \
+  'that reduction names SAST-JS-EVAL-01 specifically, inside its checks=[...] list - the same convention modules/dast/passive/headers.sh already established for a DAST check no fetched response was applicable to'
+unset _js_checks_run _js_reductions ROOT_JS_REGISTRY
+
+# =============================================================================
 printf -- '\n-- sast_evaluate_gate: the SCAN_FLAGS declaredness guard itself --\n'
 # =============================================================================
 # This module is sourced standalone by this very suite (line 29 above), never
@@ -663,10 +708,14 @@ printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >>"$GATE
 t_case 'sast_evaluate_gate honors a real global SCAN_FLAGS[fail-on-new]=true set directly, not via scan.sh'
 # A REAL global, declared at this file's top level (exactly the pattern
 # tests/suites/sast-history.sh already uses for the identical hazard) -
-# never scan.sh's --fail-on-new CLI flag.
+# never scan.sh's --fail-on-new CLI flag.  SCOURSH_DIFF_USABLE=true is set
+# explicitly (docs/STEP7-STATE-PLAN.md STATE-08's carve-out): this test is
+# about the status filter itself, not the diff_usable guard, which has its
+# own dedicated section below.
 declare -A SCAN_FLAGS=([fail-on-new]=true)
 SCOURSH_FAIL_ON=high
 SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=true
 unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
 sast_evaluate_gate "$GATEGUARD_RUNDIR"
 assert_eq 1 "$SCOURSH_GATED_FINDINGS" \
@@ -678,30 +727,293 @@ t_case 'sanity: the SAME two findings with fail-on-new=false gate on both, provi
 declare -A SCAN_FLAGS=([fail-on-new]=false)
 SCOURSH_FAIL_ON=high
 SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=true
 unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
 sast_evaluate_gate "$GATEGUARD_RUNDIR"
 assert_eq 2 "$SCOURSH_GATED_FINDINGS" \
   'without fail-on-new, status is never consulted, so both the new and the old finding gate - confirms the =1 result above is the status filter at work, not an artefact of the fixture'
 
-unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE GATEGUARD_RUNDIR
+# ---------------------------------------------------------------------------
+# docs/STEP7-STATE-PLAN.md STATE-08: the diff_usable carve-out itself.
+#
+# The bare `status == new` test above happens to be correct on a first run
+# or right after an `fp_schema` bump - everything really is `new` then - but
+# FAILS OPEN the moment prior state exists and is only PARTLY stale: a
+# finding classified `old` (standing in here for `recurring`/`unknown`,
+# since this suite has no real state/ to classify against) off state the
+# guard has already declared unusable would silently pass the bare test
+# even though nothing this run can vouch for that classification.  STATE-08
+# closes that by having the status filter apply ONLY when
+# `SCOURSH_DIFF_USABLE` is true; when it is false, ALL findings gate
+# regardless of status - fail-closed on stale-partial prior state, not
+# fail-open.
+t_case 'STATE-08: SCOURSH_DIFF_USABLE=false gates BOTH findings even though only one is status=new'
+declare -A SCAN_FLAGS=([fail-on-new]=true)
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=false
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$GATEGUARD_RUNDIR"
+assert_eq 2 "$SCOURSH_GATED_FINDINGS" \
+  'diff_usable=false means this run cannot trust ANY status, so the status=old finding gates too, not just status=new - fails under a bare status==new predicate (STATE-06-era), which would gate only 1 and let the status=old finding through untested'
+assert_eq fail "$SCOURSH_GATE_RESULT" \
+  'and the gate result reflects it: the run fails closed rather than silently passing on stale-partial prior state'
+
+STALE_RUNDIR=$W/run-gate-stale-partial
+rm -rf "$STALE_RUNDIR"
+mkdir -p "$STALE_RUNDIR"
+# The scenario named in the ticket itself: prior state exists and classified
+# this finding as something other than `new` (here, `old`, standing in for
+# `recurring`) but the guard has ALREADY decided that classification is not
+# usable this run (an fp_schema bump, a scan_root_id change) - so
+# SCOURSH_DIFF_USABLE is false even though a status other than `new` is on
+# disk. A naive reading ("diff_usable only matters when nothing is prior
+# state at all") would still read status=old here and pass this finding
+# through untested; this is what proves the carve-out keys off diff_usable
+# itself, not off whether a status field happens to be present.
+printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >"$STALE_RUNDIR/findings.fields"
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=false
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$STALE_RUNDIR"
+assert_eq 1 "$SCOURSH_GATED_FINDINGS" \
+  'the ONLY finding on disk is status=old, yet it still gates under diff_usable=false - fails under a bare status==new predicate, which would gate 0 and exit clean on a run that could not actually vouch for that status'
+assert_eq fail "$SCOURSH_GATE_RESULT" \
+  'a fail-closed result, not a silent pass, on stale-partial prior state'
+
+unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_DIFF_USABLE GATEGUARD_RUNDIR STALE_RUNDIR
 
 # =============================================================================
 printf -- '\n-- exit-code flip (this ticket''s last acceptance criterion) --\n'
 # =============================================================================
+# docs/STEP7-STATE-PLAN.md STATE-06: `--fail-on-new` gates on `status == new`
+# (unchanged - the real carve-out is STATE-08's), and status now comes from
+# REAL classification against state/latest.json rather than every finding
+# defaulting to `new`.  A bare `SCOURSH_INSTALL_ROOT=$ROOT` subprocess (this
+# suite's own convention everywhere else) would read and write the REAL
+# repository's `$ROOT/state/` - shared, accumulating scratch across every
+# suite this test machine has ever run - so a finding this exact fixture
+# already produced in some earlier run would classify `recurring`, not `new`,
+# and this gate would silently stop firing.  An isolated install root with no
+# `state/` of its own guarantees `no_prior_state`, under which every finding
+# is `new` (tension 11: a first run's findings are new, never unknown) -
+# exactly this test's own pre-STATE-06 assumption, preserved rather than
+# coincidentally true.
+GATE_ISOLATED_ROOT=$W/root-gate-isolated
+rm -rf "$GATE_ISOLATED_ROOT"
+mkdir -p "$GATE_ISOLATED_ROOT/config"
+for _e in lib modules rules data tools VERSION scan.sh; do
+  [[ -e "$ROOT/$_e" ]] || continue
+  cp -RL "$ROOT/$_e" "$GATE_ISOLATED_ROOT/$_e"
+done
+unset _e
+# Canonicalise AFTER populating (this file's own ROOT_REAL_REGISTRY above does
+# the same): lib/records.sh resolves every loaded rule file's path through
+# realpath, and on macOS $TMPDIR/$SCOURSH_SCRATCH itself sits under
+# /var/folders/..., which is a symlink to /private/var/folders/... - so an
+# uncanonicalised SCOURSH_INSTALL_ROOT string never equals the prefix a rule
+# file's own realpath actually resolves to, and every check misfires E070.
+GATE_ISOLATED_ROOT=$(cd -- "$GATE_ISOLATED_ROOT" && pwd -P)
+
 t_case 'scan.sh sast tests/fixtures/vuln --fail-on high --fail-on-new now exits non-zero'
 assert_status "$SCOURSH_EXIT_GATE" \
   'a real subprocess against the vuln fixture, gated on high+, exits the GATE code - fails under the pre-ticket reading where scan_dispatch sast was a no-op and every gate stayed 0' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/vuln" --fail-on high --fail-on-new --out "$W/run-gate"
 
 t_case 'the SAME command against the clean fixture still exits 0 - the gate is not a blanket failure'
 assert_status 0 \
   'no findings at/above high on the clean fixture, so the gate does not trip' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/clean" --fail-on high --fail-on-new --out "$W/run-gate-clean"
 
 t_case 'without --fail-on, the vuln fixture still exits 0 - the gate is opt-in, never ambient'
 assert_status 0 \
   'no --fail-on given means not-evaluated, never a silent gate - fails if the gate fired without being asked' \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/vuln" --out "$W/run-no-gate"
+
+t_case 'a single-module run with no --format at all writes agent-fix.json alongside the other defaults'
+for f in findings.json findings.jsonl report.md report.html agent-fix.json run.json; do
+  assert_file_exists "$W/run-no-gate/$f" \
+    "$f is written on a plain 'scan.sh sast' run with no --format flag - agent-fix.json is in the default list, no flag required"
+done
+assert_file_absent "$W/run-no-gate/report-audit.html" \
+  'report-audit.html is NOT written by default on a single-module run - audit alone stays opt-in'
+
+
+# =============================================================================
+printf -- '\n-- --jobs N: real bounded parallelism, byte-identical to --jobs 1 --\n'
+# =============================================================================
+# `--jobs N` was accepted, validated and exported since step 2 and read by no
+# module: every scan was single-worker and said so with a
+# `single_worker_no_parallel_scan_yet` coverage_reduction.  It is real now
+# (lib/parallel.sh, driven from modules/sast/engine.sh's `_sast_walk_parallel`),
+# and the ONE property that makes it safe to turn on is that turning it on
+# changes nothing an operator reads: the same tree at `--jobs 4` must produce
+# the same findings, in the same order, as at `--jobs 1`.
+#
+# THE ASSERTION IS THE DIFFERENCE, NOT THE ABSENCE.  A test that only said "the
+# two runs match" would pass just as happily against a parallel walk that
+# scanned nothing at all - which is the failure this whole area fails toward,
+# since an empty result reads as a clean report.  So the count is asserted to be
+# NON-ZERO first, and matched second.
+PAR_ROOT=$W/par-root
+rm -rf "$PAR_ROOT"
+mkdir -p "$PAR_ROOT/config" "$PAR_ROOT/modules/sast/rules"
+printf 'id: scanner\n' >"$PAR_ROOT/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+  "$PAR_ROOT/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT/modules/sast/rules/crypto.rules" \
+  "$PAR_ROOT/modules/sast/rules/"
+PAR_ROOT=$(cd -- "$PAR_ROOT" && pwd -P)
+
+# A MANY-FILE tree, generated rather than committed: the point is to have more
+# files than workers, spread so that every worker's block carries real findings
+# (a partition where only worker 0 ever finds anything would let a dropped block
+# pass unnoticed) and enough repetition that a lost or duplicated file shows up
+# as a changed count rather than as a reordering.
+PAR_TREE=$W/par-tree
+rm -rf "$PAR_TREE"
+mkdir -p "$PAR_TREE/a" "$PAR_TREE/b" "$PAR_TREE/c"
+for _i in $(seq -w 1 20); do
+  printf 'aws_key = "AKIA%sABCDEFGHIJ"\n' "$_i" >"$PAR_TREE/a/k$_i.py"
+  printf 'import hashlib\nh = hashlib.md5(data)\n' >"$PAR_TREE/b/h$_i.py"
+  printf 'def ok_%s():\n    return 1\n' "$_i" >"$PAR_TREE/c/plain$_i.py"
+done
+
+# `state/` lives under $SCOURSH_INSTALL_ROOT, so the second run would otherwise
+# see the first one's state and classify every finding `recurring` where the
+# first said `new`.  That is a real difference between the two runs and has
+# nothing to do with parallelism, so it is removed rather than normalised away.
+_par_scan() {
+  local jobs=$1 out=$2
+  rm -rf "$out"
+  rm -f "$PAR_ROOT"/state/*.json
+  SCOURSH_INSTALL_ROOT=$PAR_ROOT bash "$ROOT/scan.sh" sast --path "$PAR_TREE" \
+    --jobs "$jobs" --out "$out" >/dev/null 2>&1
+}
+# One run timestamp is shared by every finding of a run, so normalising that
+# single value is all that is needed to compare two runs byte for byte - the
+# same normalisation tests/suites/e2e.sh's own tension-17 case already uses.
+_par_norm() {
+  sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' \
+      -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' "$1"
+}
+
+_par_scan 1 "$W/par-j1"
+_par_scan 4 "$W/par-j4"
+
+t_case '--jobs 4 finds the same findings as --jobs 1, and neither finds nothing'
+PAR_N1=$(grep -c '' <"$W/par-j1/findings.jsonl" 2>/dev/null || printf 0)
+PAR_N4=$(grep -c '' <"$W/par-j4/findings.jsonl" 2>/dev/null || printf 0)
+PAR_OK=1; (( PAR_N1 > 10 )) && PAR_OK=0
+assert_true "$PAR_OK" \
+  "the single-worker baseline found $PAR_N1 findings - asserted non-trivially non-zero FIRST, so a walk that scanned nothing cannot satisfy the equality below"
+assert_eq "$PAR_N1" "$PAR_N4" \
+  'the same number of findings at 4 workers - fails if a block was dropped (fewer) or scanned twice (the dedup would hide it, but checks_run and the shard count would not)'
+
+t_case 'findings.jsonl is BYTE-IDENTICAL between --jobs 1 and --jobs 4'
+assert_eq "$(_par_norm "$W/par-j1/findings.jsonl")" "$(_par_norm "$W/par-j4/findings.jsonl")" \
+  'sorted by (module, check_id, fingerprint) under LC_ALL=C from per-worker shards, so neither the partition nor the scheduling can reach the bytes'
+
+t_case 'findings.json is byte-identical too - every findings-derived artifact, not just the JSONL'
+assert_eq "$(_par_norm "$W/par-j1/findings.json")" "$(_par_norm "$W/par-j4/findings.json")" 'findings.json'
+
+# `report.md`, `report.html` and `run.json` are audit records of the RUN, not
+# only of its findings, so they legitimately carry the one thing that really did
+# differ between these two invocations: how wide the fan-out was.  Asserting
+# them byte-identical outright would therefore be asserting that run.json stops
+# recording a flag it has recorded since step 2 - and skipping them entirely
+# would leave the whole rendering layer uncovered by this section.  So the
+# parallelism declaration is normalised out BY NAME and the rest is compared
+# whole: everything else in the report - every finding, every count, every
+# other coverage record, in the same order - has to match exactly.
+_par_norm_report() {
+  _par_norm "$1" \
+    | sed -e '/reason=single_worker jobs=/d' \
+          -e '/parallel scan: [0-9]* workers/d' \
+          -e "s|$W/par-j[14]|OUT|g" \
+          -e 's|par-j[14]|RUN|g'
+}
+t_case 'report.md and report.html differ ONLY in the run'"'"'s own parallelism record'
+assert_eq "$(_par_norm_report "$W/par-j1/report.md")" "$(_par_norm_report "$W/par-j4/report.md")" \
+  'every rendered finding, count and other coverage record matches once the jobs/worker declaration is normalised away'
+assert_eq "$(_par_norm_report "$W/par-j1/report.html")" "$(_par_norm_report "$W/par-j4/report.html")" \
+  'and the same for the HTML report'
+
+t_case 'checks_run is the same set - a worker'"'"'s coverage marks are folded back into the parent, not lost with it'
+assert_eq "$(LC_ALL=C sort -u "$W/par-j1/meta/checks_run")" "$(LC_ALL=C sort -u "$W/par-j4/meta/checks_run")" \
+  'FAILS if sast_eval_absorb is dropped: _SAST_CHECK_EVAL lives in the worker'"'"'s own memory and dies with it, so every check would be declared not-applicable and checks_run would come back empty'
+
+t_case 'run.json states honestly which of the two it was'
+assert_contains "$(cat "$W/par-j1/run.json")" 'module=sast reason=single_worker jobs=1' \
+  'a single-worker run still declares itself one - the old flat single_worker_no_parallel_scan_yet is gone, but "one worker" is still a real reduction an operator must be able to read off run.json'
+assert_not_contains "$(cat "$W/par-j1/run.json")" 'single_worker_no_parallel_scan_yet' \
+  'and the retired reason is not still being recorded alongside it'
+assert_contains "$(cat "$W/par-j4/run.json")" 'parallel scan: 4 workers' \
+  'the 4-way run says so, with the worker count - fails if the fan-out silently fell back to one worker while still reporting success'
+
+t_case 'the fan-out really did fork: --jobs 4 wrote more than one shard, --jobs 1 wrote exactly one'
+PAR_S1=$(find "$W/par-j1/shards" -name '*.fields' 2>/dev/null | grep -c '' || printf 0)
+PAR_S4=$(find "$W/par-j4/shards" -name '*.fields' 2>/dev/null | grep -c '' || printf 0)
+assert_eq 1 "$PAR_S1" 'one worker, one shard'
+PAR_OK=1; (( PAR_S4 > 1 )) && PAR_OK=0
+assert_true "$PAR_OK" \
+  "4 workers wrote $PAR_S4 shards - this is what distinguishes real parallelism from a \`--jobs\` value that is merely recorded, and it is asserted on the FILESYSTEM rather than on the note the run wrote about itself"
+
+# ---------------------------------------------------------------------------
+printf -- '\n-- --jobs N: a worker failure is surfaced, never silently dropped --\n'
+# ---------------------------------------------------------------------------
+# The direction that matters.  A lost worker means part of the tree was never
+# scanned, and the whole hazard of fanning out is that the run still finishes,
+# still writes a report, and still exits 0 - a clean result that is really the
+# absence of a scan.  docs/FOUNDATION.md tension 14 puts this at exit 5
+# (SCOURSH_EXIT_INCOMPLETE), whose exact predicate is a non-empty
+# `incomplete_reason`.
+#
+# The failure is injected by overriding `sast_scan_file` in a COPY of engine.sh
+# inside a throwaway install root - the real per-file scan is still reached for
+# every other file, so this is a run that genuinely half-succeeded rather than
+# one that never started.
+PAR_FAIL_ROOT=$W/par-fail-root
+rm -rf "$PAR_FAIL_ROOT"
+mkdir -p "$PAR_FAIL_ROOT/config" "$PAR_FAIL_ROOT/modules/sast/rules"
+printf 'id: scanner\n' >"$PAR_FAIL_ROOT/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/history.sh" "$PAR_FAIL_ROOT/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$PAR_FAIL_ROOT/modules/sast/rules/"
+cp "$ROOT/modules/sast/engine.sh" "$PAR_FAIL_ROOT/modules/sast/engine.sh"
+cat >>"$PAR_FAIL_ROOT/modules/sast/engine.sh" <<'PARFAIL'
+
+# --- test injection (tests/suites/sast.sh): one file's scan aborts its worker.
+eval "_par_scan_file_real() $(declare -f sast_scan_file | tail -n +2)"
+sast_scan_file() {
+  [[ ${3##*/} != poison.py ]] || die "$SCOURSH_EXIT_INCOMPLETE" 'injected worker failure'
+  _par_scan_file_real "$@"
+}
+PARFAIL
+PAR_FAIL_ROOT=$(cd -- "$PAR_FAIL_ROOT" && pwd -P)
+cp "$PAR_TREE/a/k01.py" "$PAR_TREE/c/poison.py"
+
+t_case 'a run whose worker dies exits SCOURSH_EXIT_INCOMPLETE rather than 0'
+rm -rf "$W/par-fail"
+assert_status "$SCOURSH_EXIT_INCOMPLETE" \
+  'FAILS under a bare `wait`, under `wait || true`, and under any shape that folds a worker'"'"'s status into the happy path - each of which turns a partly-scanned tree into a clean report' \
+  env SCOURSH_INSTALL_ROOT="$PAR_FAIL_ROOT" \
+  bash "$ROOT/scan.sh" sast --path "$PAR_TREE" --jobs 4 --out "$W/par-fail"
+
+t_case 'and says so in run.json, by name'
+assert_contains "$(cat "$W/par-fail/run.json" 2>/dev/null)" 'parallel_worker_failed' \
+  'incomplete_reason names the cause - tension 14'"'"'s own predicate for exit 5, so the code and the record cannot disagree'
+
+t_case 'a failed walk records NO coverage - a cell a worker abandoned must never look visited'
+assert_not_contains "$(cat "$W/par-fail/run.json" 2>/dev/null)" '"covered_checks"' \
+  'no covered_checks at all on an incomplete walk (tension 12): claiming the cell would let the NEXT run report every finding this one never reached as fixed'
+
+t_case 'the report is still written - an incomplete run reports what it did find'
+assert_file_exists "$W/par-fail/findings.jsonl" 'findings.jsonl exists despite the failure'
+assert_file_exists "$W/par-fail/report.md" 'report.md too - the run degrades, it does not vanish'
+rm -f "$PAR_TREE/c/poison.py"
 
 t_summary 'sast' || FAILED=1
 exit "${FAILED:-0}"

@@ -17,12 +17,18 @@
 # BOX, to populate `modules/<module>/adapters/<engine>/bin/` and `.../rules/`
 # with a vendored engine binary and its local ruleset (docs/DESIGN.md §9's
 # "drop vendored offline engines into adapters/ ... commit the binaries +
-# local rule DBs, then the scanner uses them offline forever").  The result
-# is committed to git.  From that point on, every real scan of source,
-# dependencies, or IaC (scoursh is egress-restricted, not air-gapped -
-# docs/FOUNDATION.md tension 28 - but those three modules make zero network
-# calls of their own) needs no network access and never invokes this script
-# again.
+# local rule DBs, then the scanner uses them offline forever").  CORRECTION
+# (D1, scoursh's Apache-2.0 repository is PUBLIC; a vendored ruleset is
+# routinely under a non-redistributable licence, e.g. Semgrep's own Semgrep
+# Rules License v1.0): the result is deliberately NOT committed to git -
+# `modules/*/adapters/*/bin/` and `.../rules/` are gitignored - and
+# reproducibility comes from the pinned version + digest this script
+# verified, not from a git commit of the bytes.  From that point on, every
+# real scan of source, dependencies, or IaC (scoursh is egress-restricted,
+# not air-gapped - docs/FOUNDATION.md tension 28 - but those three modules
+# make zero network calls of their own) needs no network access and never
+# invokes this script again; each operator who wants offline engine use
+# vendors their own copy locally.
 #
 # WHAT THIS IS NOT.
 #   - It is NEVER called during a scan.  `scan.sh`, every `lib/*.sh`, and
@@ -340,6 +346,13 @@ veng_vendor_all() {
 
 VENG_ADVISORIES_DB=${SCOURSH_SCA_ADVISORIES_DB:-$VENG_DIR/data/advisories.db}
 VENG_VERSIONS_DB=${SCOURSH_SCA_VERSIONS_DB:-$VENG_DIR/data/versions.db}
+# The two summary side tables docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment adds, mirroring the pair above exactly
+# (modules/sca/engine.sh's sca_advisory_summaries_db_path and
+# modules/dast/passive/banner_engine.sh's banner_summaries_db_path read
+# these same two env-var overrides).
+VENG_SUMMARIES_DB=${SCOURSH_SCA_SUMMARIES_DB:-$VENG_DIR/data/advisory-summaries.db}
+VENG_VERSION_SUMMARIES_DB=${SCOURSH_DAST_VERSION_SUMMARIES_DB:-$VENG_DIR/data/version-summaries.db}
 
 # The six docs/DESIGN.md §6.5 ecosystems, keyed by the SAME literal
 # ecosystem string modules/sca/*.sh's own `sca_lookup_exact`/
@@ -385,19 +398,46 @@ Commands:
                        data/advisories.db, and is deliberately not part of
                        --list/--all/'bulk --all' (see veng_advisories_banner's
                        own header for why).
+  alpine              expand data/advisories.db's (and data/versions.db's)
+                       per-release Alpine namespace (Alpine:vX.Y) from
+                       SCOURSH_ADVISORY_ALPINE_IDS - the container-image
+                       module's own importer (IMG-03).  Writes BOTH files,
+                       unlike 'banner', and is likewise deliberately not part
+                       of --list/--all/'bulk --all' (see veng_advisories_alpine's
+                       own header for why).
+  debian              the container-image module's Debian importer (IMG-09):
+                       per-release Debian namespace (Debian:N, MAJOR version
+                       only) from SCOURSH_ADVISORY_DEBIAN_IDS.  Same shape as
+                       'alpine' in every other respect.
+  ubuntu              the container-image module's Ubuntu importer (IMG-09):
+                       per-release Ubuntu namespace (Ubuntu:XX.YY) from
+                       SCOURSH_ADVISORY_UBUNTU_IDS.  Same shape as 'alpine' in
+                       every other respect.
+  redhat              the container-image module's Red Hat/rpm importer (the
+                       last rpm ticket): a single FLAT 'Red Hat' namespace
+                       (no per-release suffix, unlike 'alpine'/'debian'/
+                       'ubuntu') from SCOURSH_ADVISORY_REDHAT_IDS.  Writes
+                       BOTH data/advisories.db and data/versions.db, and
+                       covers rhel/centos/rocky/almalinux/fedora images
+                       alike (modules/image/engine.sh's
+                       image_distro_ecosystem_resolve).
   bulk ...            import a WHOLE SCA ecosystem's published OSV.dev export
                        in one command, instead of naming advisory ids one at a
                        time; run 'advisories bulk --help' for its own usage,
                        including how artifact integrity is handled.  This is
                        the command that populates a usable database.  Scoped
-                       to the six SCA ecosystems; 'banner' has no bulk path.
+                       to the six SCA ecosystems; 'banner', 'alpine', 'debian',
+                       'ubuntu' and 'redhat' have no bulk path.
   -h, --help          print this message and exit 0
 
 Every SCA ecosystem reads its advisory ids from an operator-supplied env var -
 SCOURSH_ADVISORY_NPM_IDS, SCOURSH_ADVISORY_PYPI_IDS,
 SCOURSH_ADVISORY_MAVEN_IDS, SCOURSH_ADVISORY_GO_IDS,
 SCOURSH_ADVISORY_RUBYGEMS_IDS, SCOURSH_ADVISORY_COMPOSER_IDS - and 'banner'
-reads SCOURSH_ADVISORY_BANNER_IDS, the identical shape.  Each is a
+reads SCOURSH_ADVISORY_BANNER_IDS, 'alpine' reads SCOURSH_ADVISORY_ALPINE_IDS,
+'debian' reads SCOURSH_ADVISORY_DEBIAN_IDS, 'ubuntu' reads
+SCOURSH_ADVISORY_UBUNTU_IDS, and 'redhat' reads
+SCOURSH_ADVISORY_REDHAT_IDS, the identical shape.  Each is a
 comma/space-separated list of real OSV.dev advisory ids (e.g.
 "GHSA-xxxx-xxxx-xxxx", "CVE-2021-41773") the operator identified from that
 ecosystem's (or product's) own advisory source.  This script never guesses or
@@ -466,6 +506,29 @@ _veng_advisories_load_banner_normalizer() {
 # record walk (section 3) reads `*` as "match every affected[] entry that
 # names a package, regardless of ecosystem" rather than adding a second
 # extractor.
+#
+# `alpine` (IMG-03) maps
+# to the sentinel `Alpine:*`, a DIFFERENT shape from `banner`'s `*`: OSV.dev
+# publishes Alpine advisories keyed PER RELEASE (`Alpine:v3.18`,
+# `Alpine:v3.19`, ...), never under one flat `Alpine` ecosystem string, so
+# `Alpine:*` means "match any `affected[].package.ecosystem` that STARTS
+# WITH `Alpine:`" and - unlike every other sentinel or exact match - the
+# ACTUAL matched ecosystem string travels with each row rather than being
+# supplied by the caller, because a single import can legitimately produce
+# rows for several different Alpine releases at once (see
+# `_veng_advisories_osv_extract_py`'s own generalised `eco.endswith(":*")`
+# branch, section 3, and `_veng_advisories_write_db_prefix`, section 3's own
+# write-side sibling to `_veng_advisories_write_db`).
+#
+# `debian`/`ubuntu` (IMG-09, the Stage-2 distro slice) are the
+# IDENTICAL PREFIX-sentinel shape, one per distro's own OSV.dev namespace:
+# Debian's is `Debian:N` (`Debian:11`, `Debian:12`, ... - a bare MAJOR
+# version, never a point release, since OSV does not publish per-point-
+# release Debian advisories), Ubuntu's is `Ubuntu:XX.YY`
+# (`Ubuntu:20.04`, `Ubuntu:22.04`, ...). Both reuse the exact same
+# `eco.endswith(":*")` extractor branch and `_veng_advisories_write_db_prefix`
+# writer alpine's own sentinel already exercises - no new machinery, only
+# two new sentinel strings and two new dispatch cases.
 _veng_advisories_osv_ecosystem() {
   case $1 in
     npm) printf 'npm' ;;
@@ -475,6 +538,21 @@ _veng_advisories_osv_ecosystem() {
     RubyGems) printf 'RubyGems' ;;
     composer) printf 'Packagist' ;;
     banner) printf '*' ;;
+    alpine) printf 'Alpine:*' ;;
+    debian) printf 'Debian:*' ;;
+    ubuntu) printf 'Ubuntu:*' ;;
+    # 'Red Hat' (the rpm advisory ecosystem, the last rpm ticket): UNLIKE
+    # alpine/debian/ubuntu immediately above, this is an EXACT match, not a
+    # ':*' per-release prefix sentinel - OSV.dev's own Red Hat namespace is
+    # a single FLAT ecosystem string with no per-release variant (report.md
+    # §2.3: "Alpine:v3.18, Debian:12, Ubuntu:22.04, Red Hat" - the last one
+    # carries no colon/version suffix). A real advisory's own `versions`
+    # entries already carry the RHEL stream inside the rpm RELEASE field
+    # itself (`...el8`, `...el9`), so this ecosystem needs no wildcard
+    # sentinel and falls through to _veng_advisories_expand_one's generic
+    # (fixed-ecosystem) branch, the identical shape every one of the six
+    # SCA ecosystems above already uses.
+    'Red Hat') printf 'Red Hat' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -492,6 +570,10 @@ _veng_advisories_env_var() {
     RubyGems) printf 'SCOURSH_ADVISORY_RUBYGEMS_IDS' ;;
     composer) printf 'SCOURSH_ADVISORY_COMPOSER_IDS' ;;
     banner) printf 'SCOURSH_ADVISORY_BANNER_IDS' ;;
+    alpine) printf 'SCOURSH_ADVISORY_ALPINE_IDS' ;;
+    debian) printf 'SCOURSH_ADVISORY_DEBIAN_IDS' ;;
+    ubuntu) printf 'SCOURSH_ADVISORY_UBUNTU_IDS' ;;
+    'Red Hat') printf 'SCOURSH_ADVISORY_REDHAT_IDS' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -524,6 +606,28 @@ _veng_advisories_normalize_name() {
       _veng_advisories_load_banner_normalizer
       banner_normalize_product "$raw"
       ;;
+    # alpine (IMG-03): apk package names are already the canonical
+    # identifier apk's own installed database reports - a delightful
+    # accident, since apk's `installed` DB is already scoursh's own
+    # frozen key:value block shape - with no case-folding or punctuation
+    # convention to normalise the way npm/PyPI/Composer names have - so this
+    # is a verbatim pass-through, exactly like every OTHER ecosystem's
+    # version field already is in _veng_advisories_normalize_version below.
+    #
+    # debian/ubuntu (IMG-09): OSV.dev already publishes Debian/Ubuntu
+    # advisories keyed by the dpkg SOURCE package name (the identical identity
+    # `modules/image/distro/dpkg.sh`'s own
+    # Source:-vs-Package: resolution produces at scan time), so there is
+    # nothing to normalise here either - a verbatim pass-through, mirroring
+    # alpine.
+    #
+    # 'Red Hat' (the last rpm ticket): OSV.dev keys Red Hat advisories by
+    # the rpm package's own NAME, and `modules/image/distro/rpm.sh`'s own
+    # enumerator reads that identical name straight off the rpm database
+    # with no source/binary distinction to resolve (that file's own section
+    # 2 header explains why rpm has no dpkg-style Source:-vs-Package: trap)
+    # - another verbatim pass-through.
+    alpine | debian | ubuntu | 'Red Hat') printf '%s' "$raw" ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$db_eco'" ;;
   esac
 }
@@ -672,7 +776,10 @@ US = "\x1f"
 STATS = {
     "advisories_read": 0,
     "rows_extracted": 0,
+    "rows_extracted_range": 0,
     "range_only_skipped": 0,
+    "no_range_no_versions": 0,
+    "versioned_entries": 0,
     "other_ecosystem_skipped": 0,
 }
 
@@ -689,6 +796,31 @@ def clean(s):
     # below): the bash caller re-validates all of them rather than
     # trusting this alone.
     return " ".join(str(s).split())
+
+
+def intervals_for(affected):
+    # ranges[] -> [(introduced, bound, kind), ...], kind in fixed|last|open.
+    # docs/FOUNDATION.md tension 25's amendment (npm ONLY) - see
+    # tools/vendor-engines.sh:744-750's OLD unconditional skip, which this
+    # replaces for npm alone; every other ecosystem still skips a
+    # range-only entry exactly as before, below.
+    out = []
+    for rng in affected.get("ranges", []) or []:
+        if rng.get("type") == "GIT":
+            continue  # not a version range
+        cur = None
+        for ev in rng.get("events", []) or []:
+            if "introduced" in ev:
+                cur = ev["introduced"]
+            if "fixed" in ev:
+                out.append((cur if cur is not None else "0", ev["fixed"], "fixed"))
+                cur = None
+            if "last_affected" in ev:
+                out.append((cur if cur is not None else "0", ev["last_affected"], "last"))
+                cur = None
+        if cur is not None:
+            out.append((cur, "", "open"))
+    return out
 
 
 def rows_for(data):
@@ -708,13 +840,33 @@ def rows_for(data):
     out = []
     for affected in data.get("affected", []) or []:
         pkg = affected.get("package") or {}
+        pkg_eco = pkg.get("ecosystem") or ""
         # eco == "*" is the banner-namespace sentinel
         # (_veng_advisories_osv_ecosystem's own "banner" case): a
         # banner-matched product has no single OSV ecosystem string to
         # filter on the way an npm/PyPI/... advisory does, so every
         # affected[] entry that names a package is taken regardless of its
         # own ecosystem field.
-        if eco != "*" and pkg.get("ecosystem") != eco:
+        #
+        # eco ending in ":*" is a PER-RELEASE distro sentinel (IMG-03's
+        # "Alpine:*", IMG-09's "Debian:*"/"Ubuntu:*"): OSV.dev keys these
+        # advisories PER RELEASE ("Alpine:v3.18", "Debian:12", "Ubuntu:22.04",
+        # ...), never under one flat ecosystem string, so this is a PREFIX
+        # match rather than an exact or wildcard one, and - unlike every
+        # other branch - row_eco below carries the ACTUAL matched ecosystem
+        # string, because one advisory can name several different releases
+        # of the SAME distro across its own affected[] list. Generalised
+        # from a hardcoded "Alpine:*" comparison to this ".endswith(':*')"
+        # form so Debian/Ubuntu share the identical extraction path rather
+        # than a second, distro-specific copy of it.
+        row_eco = ""
+        if eco.endswith(":*"):
+            prefix = eco[:-1]  # "Alpine:*" -> "Alpine:", etc.
+            if not pkg_eco.startswith(prefix):
+                STATS["other_ecosystem_skipped"] += 1
+                continue
+            row_eco = pkg_eco
+        elif eco != "*" and pkg_eco != eco:
             STATS["other_ecosystem_skipped"] += 1
             continue
         name = clean(pkg.get("name") or "")
@@ -741,20 +893,72 @@ def rows_for(data):
         fixed_str = ",".join(fixed)
 
         versions = affected.get("versions") or []
+
+        if eco == "npm":
+            # docs/FOUNDATION.md tension 25's amendment (feasibility scout
+            # report §7 Slices 1+2): npm rows are RANGE rows -
+            # `introduced\tbound\tbound_kind` instead of a single `version`.
+            # An explicit OSV `versions[]` entry becomes a `bound_kind=exact`
+            # row (byte-compared, never through the semver comparator) so no
+            # coverage is lost relative to the old exact path; a `ranges[]`
+            # entry - which the OLD code below skips for every OTHER
+            # ecosystem - becomes one `fixed`/`last`/`open` interval row.
+            had_any = False
+            for version in versions:
+                v = clean(version)
+                if not v:
+                    continue
+                out.append(
+                    US.join([name, v, "", "exact", vuln_id, clean(severity), fixed_str, summary])
+                )
+                had_any = True
+            for (intro, bound, kind) in intervals_for(affected):
+                STATS["rows_extracted_range"] += 1
+                out.append(
+                    US.join([name, clean(intro), clean(bound), kind, vuln_id, clean(severity), fixed_str, summary])
+                )
+                had_any = True
+            if versions:
+                STATS["versioned_entries"] += 1
+            if not had_any:
+                STATS["no_range_no_versions"] += 1
+            continue
+
         if not versions:
             # A range-only entry.  tension 25 puts range arithmetic on the
             # networked box using the ECOSYSTEM's own resolved version
             # list, never on a guess made here, so this is counted and
-            # reported rather than approximated.
+            # reported rather than approximated.  (npm alone no longer
+            # takes this branch - see above.)
             STATS["range_only_skipped"] += 1
             continue
+        # Counted in the same unit as range_only_skipped (per affected
+        # PACKAGE entry, not per advisory and not per row): one advisory
+        # can list many affected packages, and one package can list many
+        # exact versions, so neither range_only_skipped nor rows_extracted
+        # is a sound denominator for "what fraction of this ecosystem's
+        # advisories are missing" on its own, so this is counted separately -
+        # the bash caller can then report an honest coverage percentage
+        # instead of one that can exceed 100%.
+        STATS["versioned_entries"] += 1
         for version in versions:
             v = clean(version)
             if not v:
                 continue
-            out.append(
-                US.join([name, v, vuln_id, clean(severity), fixed_str, summary])
-            )
+            if row_eco:
+                # alpine only (IMG-03): the row's own ecosystem is prepended
+                # since it varies per affected[] entry rather than being
+                # supplied once by the bash caller the way every other
+                # ecosystem's rows are - see _veng_advisories_expand_one's
+                # own "elif db_eco == alpine" branch, which is the one
+                # reader of this 7-field shape.
+                out.append(
+                    US.join([row_eco, name, v, vuln_id, clean(severity), fixed_str, summary])
+                )
+            else:
+                out.append(
+                    US.join([name, v, vuln_id, clean(severity), fixed_str, summary])
+                )
     return out
 
 
@@ -823,11 +1027,26 @@ PY
 }
 
 # _veng_advisories_expand_one DB_ECOSYSTEM OSV_ID OUTFILE - fetches one
-# advisory, extracts and normalises every exact-version row it names for
-# DB_ECOSYSTEM, and appends each as a frozen-schema TSV line (still missing
-# the leading ecosystem field - the caller's merge step adds that once,
-# per output row, rather than threading it through every helper) to
-# OUTFILE.
+# advisory, extracts and normalises every row it names for DB_ECOSYSTEM, and
+# appends each as a frozen-schema TSV line (still missing the leading
+# ecosystem field - the caller's merge step adds that once, per output row,
+# rather than threading it through every helper) to OUTFILE. `summary` no
+# longer lands in OUTFILE at all (docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment): each row's advisory_id/summary pair is
+# instead appended to the companion file OUTFILE.summaries, which
+# _veng_advisories_run (the caller) merges into data/advisory-summaries.db
+# once per ecosystem, after every id has been expanded, via
+# _veng_advisories_write_summaries_db.
+#
+# NPM ONLY (docs/FOUNDATION.md tension 25's amendment): rows are RANGE rows,
+# not exact-version rows - `version` becomes `introduced\tbound\tbound_kind`,
+# per modules/sca/semver.sh's semver_in_range_v. An explicit OSV
+# `affected[].versions` entry becomes a `bound_kind=exact` row (bound
+# empty, introduced holds the literal version - byte-compared, never through
+# the comparator), so npm loses no coverage the old exact path had; a
+# `ranges[]` entry - the 89% of npm advisories tension 25's own resolution
+# was never actually reaching, see this ticket's register-amendment note in
+# docs/FOUNDATION.md - becomes one `fixed`/`last`/`open` row per interval.
 _veng_advisories_expand_one() {
   local db_eco=$1 osv_id=$2 outfile=$3
   local osv_eco raw_json
@@ -836,7 +1055,7 @@ _veng_advisories_expand_one() {
   mkdir -p "$(dirname -- "$raw_json")"
   _veng_advisories_osv_fetch "$osv_id" "$raw_json"
 
-  local name version advisory_id severity fixed summary
+  local name version introduced bound kind advisory_id severity fixed summary
   local norm_name norm_version norm_sev
   local emitted=0 raw_line
   while IFS= read -r raw_line || [[ -n $raw_line ]]; do
@@ -846,6 +1065,51 @@ _veng_advisories_expand_one() {
     # _sca_emit_finding already documents, and so a genuinely embedded
     # TAB/LF inside a field survives to reach
     # _veng_advisories_reject_tab_lf below intact).
+    if [[ $db_eco == npm ]]; then
+      IFS=$'\x1f' read -r name introduced bound kind advisory_id severity fixed summary <<<"$raw_line"
+      [[ -n $name ]] || continue
+      norm_name=$(_veng_advisories_normalize_name "$db_eco" "$name")
+      norm_sev=$(_veng_advisories_normalize_severity "$severity")
+      _veng_advisories_reject_tab_lf package "$norm_name"
+      _veng_advisories_reject_tab_lf introduced "$introduced"
+      _veng_advisories_reject_tab_lf bound "$bound"
+      _veng_advisories_reject_tab_lf advisory_id "$advisory_id"
+      _veng_advisories_reject_tab_lf fixed_versions "$fixed"
+      _veng_advisories_reject_tab_lf summary "$summary"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$db_eco" "$norm_name" "$introduced" "$bound" "$kind" "$advisory_id" "$norm_sev" "$fixed" \
+        >>"$outfile"
+      printf '%s\t%s\n' "$advisory_id" "$summary" >>"$outfile.summaries"
+      emitted=$(( emitted + 1 ))
+      continue
+    fi
+    if [[ $db_eco == alpine || $db_eco == debian || $db_eco == ubuntu ]]; then
+      # alpine/debian/ubuntu (IMG-03/IMG-09): the per-release-distro
+      # ecosystems, each whose ROW carries its own ecosystem field, because
+      # it varies per row (Alpine:v3.18/Alpine:v3.19, Debian:11/Debian:12,
+      # Ubuntu:20.04/Ubuntu:22.04, ...) rather than being the fixed $db_eco
+      # every other branch here writes - see _veng_advisories_osv_extract_py's
+      # own "row_eco" comment (section 3) for where this field is produced.
+      local row_eco norm_row_eco
+      IFS=$'\x1f' read -r row_eco name version advisory_id severity fixed summary <<<"$raw_line"
+      [[ -n $name && -n $row_eco ]] || continue
+      norm_row_eco=$row_eco
+      norm_name=$(_veng_advisories_normalize_name "$db_eco" "$name")
+      norm_version=$(_veng_advisories_normalize_version "$db_eco" "$version")
+      norm_sev=$(_veng_advisories_normalize_severity "$severity")
+      _veng_advisories_reject_tab_lf ecosystem "$norm_row_eco"
+      _veng_advisories_reject_tab_lf package "$norm_name"
+      _veng_advisories_reject_tab_lf version "$norm_version"
+      _veng_advisories_reject_tab_lf advisory_id "$advisory_id"
+      _veng_advisories_reject_tab_lf fixed_versions "$fixed"
+      _veng_advisories_reject_tab_lf summary "$summary"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$norm_row_eco" "$norm_name" "$norm_version" "$advisory_id" "$norm_sev" "$fixed" \
+        >>"$outfile"
+      printf '%s\t%s\n' "$advisory_id" "$summary" >>"$outfile.summaries"
+      emitted=$(( emitted + 1 ))
+      continue
+    fi
     IFS=$'\x1f' read -r name version advisory_id severity fixed summary <<<"$raw_line"
     [[ -n $name ]] || continue
     norm_name=$(_veng_advisories_normalize_name "$db_eco" "$name")
@@ -861,9 +1125,10 @@ _veng_advisories_expand_one() {
     _veng_advisories_reject_tab_lf advisory_id "$advisory_id"
     _veng_advisories_reject_tab_lf fixed_versions "$fixed"
     _veng_advisories_reject_tab_lf summary "$summary"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$db_eco" "$norm_name" "$norm_version" "$advisory_id" "$norm_sev" "$fixed" "$summary" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$db_eco" "$norm_name" "$norm_version" "$advisory_id" "$norm_sev" "$fixed" \
       >>"$outfile"
+    printf '%s\t%s\n' "$advisory_id" "$summary" >>"$outfile.summaries"
     emitted=$(( emitted + 1 ))
   done < <(_veng_advisories_osv_extract "$raw_json" "$osv_eco")
 
@@ -945,12 +1210,137 @@ _veng_advisories_write_db() {
   log_info "vendor-engines: advisories: wrote $rows total row(s) to ${db#"$VENG_DIR"/}"
 }
 
+# _veng_advisories_write_db_prefix DB PREFIX NEW_ROWS [PROVENANCE] - the
+# alpine-only (IMG-03) sibling of _veng_advisories_write_db immediately
+# above, replacing every row whose first field STARTS WITH PREFIX rather
+# than EQUALS one fixed ecosystem string, leaving every other row (every
+# other ecosystem, and every Alpine release NOT present in NEW_ROWS)
+# untouched.
+#
+# WHY A SEPARATE FUNCTION RATHER THAN A PARAMETER ON THE ONE ABOVE.  Every
+# other ecosystem this script imports writes under exactly one fixed key
+# per call - `_veng_advisories_write_db`'s own `a[1] != eco` test is an
+# EQUALITY, and that is correct for them: an npm import replaces npm's
+# rows and nothing else ever shares that first field. Alpine cannot use
+# equality at all: OSV.dev keys Alpine advisories PER RELEASE
+# (`Alpine:v3.18`, `Alpine:v3.19`, ...), a single `SCOURSH_ADVISORY_
+# ALPINE_IDS` import can legitimately produce rows for several releases in
+# one call (one CVE affecting three Alpine branches at once), and NEW_ROWS
+# itself may therefore carry more than one distinct first-field value - so
+# the replace-scope has to be the WHOLE `Alpine:` namespace, decided once,
+# not one release picked by the caller. Threading a `match-mode` flag
+# through the shared function would make its single `awk` program branch
+# on a mode `_veng_advisories_write_db`'s five other callers never need,
+# which is more to review than one small, obviously-alpine-only sibling.
+#
+# Same tail as _veng_advisories_write_db (header, LC_ALL=C sort, mv, log) -
+# deliberately duplicated rather than factored out from just the filter
+# clause: `rules/RULE-FORMAT.md` §14's own additive-cost reasoning applies
+# equally to a script this file's own header calls "the ONE writer" for a
+# reason - splitting the tail into a third helper both functions call would
+# make a future reader trace through an extra layer to see what is, in
+# both cases, five lines of header/sort/mv/log.
+_veng_advisories_write_db_prefix() {
+  local db=$1 prefix=$2 new_rows=$3 provenance=${4:-}
+  mkdir -p "$(dirname -- "$db")"
+  mkdir -p "$SCOURSH_SCRATCH/advisories"
+  local body=$SCOURSH_SCRATCH/advisories/body.$$.tsv
+  local keep=$SCOURSH_SCRATCH/advisories/keep-bulk.$$.txt
+  : >"$body"
+  : >"$keep"
+  if [[ -r $db ]]; then
+    awk -v prefix="$prefix" -v keep="$keep" '
+      /^#/ {
+        if ($0 ~ /^# bulk: ecosystem=/) {
+          f = $0
+          sub(/^# bulk: ecosystem=/, "", f)
+          sub(/ .*$/, "", f)
+          if (index(f, prefix) != 1) print $0 > keep
+        }
+        next
+      }
+      $0 == "" { next }
+      { split($0, a, "\t"); if (index(a[1], prefix) != 1) print }
+    ' "$db" >"$body"
+  fi
+  cat -- "$new_rows" >>"$body"
+  if [[ -n $provenance ]]; then
+    printf '%s\n' "$provenance" >>"$keep"
+  fi
+
+  local tmp=$SCOURSH_SCRATCH/advisories/db.$$.tsv
+  {
+    printf '# scoursh %s - generated by tools/vendor-engines.sh advisories (docs/FOUNDATION.md tension 25)\n' "$(basename -- "$db")"
+    printf '# generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '# source: OSV.dev (https://osv.dev), per-ecosystem provenance on the `# bulk:` lines below where present\n'
+    LC_ALL=C sort -u -- "$keep"
+    TMPDIR=$SCOURSH_SCRATCH LC_ALL=C sort -u -- "$body"
+  } >"$tmp"
+  mv -f -- "$tmp" "$db"
+  local rows
+  rows=$(wc -l <"$body")
+  log_info "vendor-engines: advisories: wrote $rows total row(s) to ${db#"$VENG_DIR"/}"
+}
+
+# _veng_advisories_write_summaries_db DB NEW_PAIRS - the summary side
+# table's own writer (docs/FOUNDATION.md tension 25's summary-normalisation
+# amendment), mirroring _veng_advisories_write_db immediately above but
+# keyed differently: `summary` is advisory-keyed, not ecosystem-keyed (one
+# advisory_id can in principle be re-imported by more than one ecosystem
+# run, though in practice OSV ids are already unique per advisory
+# regardless of ecosystem), so the merge below UPSERTS by the advisory_id
+# set NEW_PAIRS actually names - every OLD row whose advisory_id does NOT
+# appear in NEW_PAIRS is carried forward unchanged, exactly like
+# _veng_advisories_write_db's own "every OTHER ecosystem's rows untouched"
+# - rather than replacing one ecosystem's whole slice.
+#
+# NEW_PAIRS is a file of `advisory_id\tsummary` lines (not necessarily
+# unique or sorted - the final `sort -u` below dedupes byte-identical
+# duplicate rows written by more than one import of the same advisory
+# within a single run, which is legitimate and not an error).
+_veng_advisories_write_summaries_db() {
+  local db=$1 new_pairs=$2
+  mkdir -p "$(dirname -- "$db")"
+  mkdir -p "$SCOURSH_SCRATCH/advisories"
+  local body=$SCOURSH_SCRATCH/advisories/summaries-body.$$.tsv
+  : >"$body"
+  if [[ -r $db ]]; then
+    awk -F'\t' -v idsfile="$new_pairs" '
+      BEGIN {
+        while ((getline line < idsfile) > 0) {
+          n = split(line, a, "\t")
+          if (n >= 1 && a[1] != "") seen[a[1]] = 1
+        }
+        close(idsfile)
+      }
+      /^#/ { next }
+      $0 == "" { next }
+      { if (!($1 in seen)) print }
+    ' "$db" >"$body"
+  fi
+  cat -- "$new_pairs" >>"$body"
+
+  local tmp=$SCOURSH_SCRATCH/advisories/summaries-db.$$.tsv
+  {
+    printf '# scoursh %s - advisory_id\\tsummary side table (docs/FOUNDATION.md tension 25 amendment), generated by tools/vendor-engines.sh advisories\n' "$(basename -- "$db")"
+    printf '# generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    TMPDIR=$SCOURSH_SCRATCH LC_ALL=C sort -u -- "$body"
+  } >"$tmp"
+  mv -f -- "$tmp" "$db"
+  local rows
+  rows=$(wc -l <"$body")
+  log_info "vendor-engines: advisories: wrote $rows total summary row(s) to ${db#"$VENG_DIR"/}"
+}
+
 # _veng_advisories_run DB_ECOSYSTEM - the per-ecosystem driver every
 # veng_advisories_<ecosystem> function below delegates to: reads the
 # operator-supplied id list, expands each advisory, then writes the result
 # into BOTH data/advisories.db and data/versions.db - tension 25's own
 # text ("data/versions.db ... uses the same shape and the same rule")
-# gives both files an identical schema and an identical write path here.
+# gives both files an identical schema and an identical write path here -
+# and, per tension 25's summary-normalisation amendment, into BOTH
+# data/advisory-summaries.db and data/version-summaries.db too, from the
+# same accumulated .summaries companion file.
 # Scoped to the six docs/DESIGN.md §6.5 SCA ecosystems only:
 # veng_advisories_banner (below) is the versions.db-only `banner` namespace's
 # own driver, deliberately NOT this one, since modules/sca/ never reads a
@@ -972,6 +1362,7 @@ _veng_advisories_run() {
   local rows_new=$SCOURSH_SCRATCH/advisories/rows.$db_eco.tsv
   mkdir -p "$(dirname -- "$rows_new")"
   : >"$rows_new"
+  : >"$rows_new.summaries"
 
   local id
   for id in "${id_list[@]+"${id_list[@]}"}"; do
@@ -981,6 +1372,8 @@ _veng_advisories_run() {
 
   _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$rows_new"
   _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
 
 veng_advisories_npm()      { _veng_advisories_run npm; }
@@ -1036,6 +1429,7 @@ veng_advisories_banner() {
   local rows_new=$SCOURSH_SCRATCH/advisories/rows.banner.tsv
   mkdir -p "$(dirname -- "$rows_new")"
   : >"$rows_new"
+  : >"$rows_new.summaries"
 
   local id
   for id in "${id_list[@]+"${id_list[@]}"}"; do
@@ -1044,7 +1438,205 @@ veng_advisories_banner() {
   done
 
   _veng_advisories_write_db "$VENG_VERSIONS_DB" banner "$rows_new"
+  # docs/FOUNDATION.md tension 25's summary-normalisation amendment applies
+  # here too (Change 2 is not npm-specific, nor SCA-ecosystem-specific): the
+  # `banner` namespace's own summary lives in data/version-summaries.db,
+  # never inline in data/versions.db, read back by
+  # modules/dast/passive/banner_engine.sh's banner_summaries_db_path.
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
+
+# veng_advisories_alpine - the seventh advisory importer (IMG-03), closing the container-image
+# module's own "operator supplies the fact, this script only fetches/
+# transforms it" gap the same way veng_advisories_banner closed the
+# banner-catalogue one. Writes `Alpine:vX.Y` rows to data/advisories.db (the
+# same file and the SAME db_lookup_exact lookup modules/sca/ and now
+# modules/image/ both read through) AND data/versions.db, mirroring the SIX
+# SCA ecosystems above rather than `banner` - unlike a banner row, an Alpine
+# row is exactly the "one per exact affected OS package version" shape
+# modules/image/ actually reads, so it belongs in data/advisories.db too,
+# and both files get it for the identical "same shape, same rule" reason
+# tension 25 already gives the six ecosystems (docs/VERSIONS-DB.md §2:
+# nothing reads the versions.db copy of an SCA-ecosystem row today either -
+# this is that same, already-accepted redundancy, not a new one).
+#
+# Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, and reached from
+# its own `alpine` case in veng_advisories_main instead - the identical
+# shape and the identical reason veng_advisories_banner's own header already
+# gives for `banner`, with one addition specific to alpine: `advisories
+# bulk` (section 3a) assumes ONE db_eco per import and writes with the
+# EQUALITY-matched _veng_advisories_write_db, both of which are wrong for a
+# namespace whose own rows can span several distinct `Alpine:vX.Y` keys in
+# one import - joining VENG_ADVISORY_REGISTRY would silently pull alpine
+# into that path (`advisories bulk alpine`, `advisories bulk --all`) with
+# neither assumption holding. A bulk import for this namespace is left as
+# a stated gap for a future ticket to size, rather than reusing machinery
+# built for a different shape.
+#   - it reads SCOURSH_ADVISORY_ALPINE_IDS (via _veng_advisories_env_var's
+#     own "alpine" case), the identical comma/space-separated-OSV-id shape
+#     every other SCOURSH_ADVISORY_<ECOSYSTEM>_IDS var already uses.
+#   - the package NAME is passed through verbatim
+#     (_veng_advisories_normalize_name's own "alpine" case) - apk package
+#     names carry no normalisation convention the way npm/PyPI/Composer
+#     names do.
+#   - the row's ECOSYSTEM is not $db_eco at all: it is read off each row
+#     itself (_veng_advisories_expand_one's own "elif db_eco == alpine"
+#     branch), because _veng_advisories_osv_extract_py's "Alpine:*" sentinel
+#     (section 3) is a PREFIX match across every Alpine release an advisory
+#     names, not one fixed key - see that sentinel's own comment.
+veng_advisories_alpine() {
+  _veng_advisories_load_normalizers
+
+  local env_var
+  env_var=$(_veng_advisories_env_var alpine)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) you identified from Alpine's own secdb/advisory source (https://osv.dev), e.g. $env_var='CVE-2023-xxxxx'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.alpine.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+  : >"$rows_new.summaries"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one alpine "$id" "$rows_new"
+  done
+
+  # PREFIX-scoped writes (_veng_advisories_write_db_prefix, immediately
+  # above _veng_advisories_write_summaries_db): rows_new can carry more than
+  # one distinct Alpine:vX.Y key, and the replace-scope has to be the whole
+  # `Alpine:` namespace decided once - see that function's own header.
+  _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Alpine:' "$rows_new"
+  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Alpine:' "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+}
+
+# veng_advisories_debian - the eighth advisory importer (IMG-09, the
+# Stage-2 distro slice), Debian's
+# sibling to veng_advisories_alpine immediately above - byte-identical in
+# shape, differing only in the sentinel/env-var/prefix names, because
+# OSV.dev publishes distro
+# ecosystems as first-class namespaces and a `Debian:N` row fits the
+# existing `data/advisories.db` shape exactly the way `Alpine:vX.Y` does.
+# Writes `Debian:N` rows (NEVER a point release - see
+# _veng_advisories_osv_ecosystem's own "debian" comment) to BOTH
+# data/advisories.db and data/versions.db, for the identical "same shape,
+# same rule" reasoning veng_advisories_alpine's own header gives.
+#
+# Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, reached from its
+# own `debian` case in veng_advisories_main instead - the identical reason
+# veng_advisories_alpine's own header gives: `advisories bulk` assumes ONE
+# db_eco per import and an equality-matched writer, both wrong for a
+# namespace whose own rows can span several distinct `Debian:N` keys in one
+# import.
+#   - it reads SCOURSH_ADVISORY_DEBIAN_IDS.
+#   - the package NAME is passed through verbatim
+#     (_veng_advisories_normalize_name's own "debian" case) - dpkg SOURCE
+#     package names carry no normalisation convention npm/PyPI/Composer
+#     names have.
+#   - the row's ECOSYSTEM is read off each row itself, exactly like alpine,
+#     because _veng_advisories_osv_extract_py's "Debian:*" sentinel is a
+#     PREFIX match across every Debian release an advisory names.
+veng_advisories_debian() {
+  _veng_advisories_load_normalizers
+
+  local env_var
+  env_var=$(_veng_advisories_env_var debian)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) you identified from Debian's own security tracker (https://osv.dev), e.g. $env_var='CVE-2023-xxxxx'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.debian.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+  : >"$rows_new.summaries"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one debian "$id" "$rows_new"
+  done
+
+  # PREFIX-scoped writes, mirroring veng_advisories_alpine's own identical
+  # call - rows_new can carry more than one distinct Debian:N key, and the
+  # replace-scope has to be the whole `Debian:` namespace decided once.
+  _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Debian:' "$rows_new"
+  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Debian:' "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+}
+
+# veng_advisories_ubuntu - Ubuntu's sibling to veng_advisories_debian
+# immediately above (IMG-09), differing only in the sentinel/env-var/prefix
+# names: Ubuntu's own OSV.dev namespace is `Ubuntu:XX.YY` (major.minor,
+# unlike Debian's bare major).
+veng_advisories_ubuntu() {
+  _veng_advisories_load_normalizers
+
+  local env_var
+  env_var=$(_veng_advisories_env_var ubuntu)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) you identified from Ubuntu's own security tracker (https://osv.dev), e.g. $env_var='CVE-2023-xxxxx'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.ubuntu.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+  : >"$rows_new.summaries"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one ubuntu "$id" "$rows_new"
+  done
+
+  _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Ubuntu:' "$rows_new"
+  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Ubuntu:' "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+}
+
+# veng_advisories_redhat - the container-image module's rpm advisory
+# importer (the last rpm ticket: "complete the rpm slice end-to-end" - the
+# Red Hat advisory ecosystem plus wiring rpm enumeration + rpmvercmp into
+# the vulnerable-package finding path). It is the RHEL/Fedora sibling to
+# veng_advisories_alpine/debian/ubuntu above, but shaped like the SIX SCA
+# ecosystems (_veng_advisories_run) rather than like its three per-release
+# distro siblings: OSV.dev's own Red Hat namespace is a single FLAT
+# ecosystem string with no per-release variant at all
+# (_veng_advisories_osv_ecosystem's own 'Red Hat' case has the full
+# reasoning - a real advisory's own `versions` entries already carry the
+# RHEL stream inside the rpm RELEASE field itself), so it needs none of
+# alpine/debian/ubuntu's ':*' prefix sentinel or
+# `_veng_advisories_write_db_prefix` machinery. It reads
+# SCOURSH_ADVISORY_REDHAT_IDS and writes exact-match `Red Hat` rows to BOTH
+# data/advisories.db and data/versions.db through the identical
+# `_veng_advisories_run` driver npm/pypi/maven/Go/RubyGems/composer already
+# share - the same "same shape and the same rule" reasoning
+# veng_advisories_alpine's own header gives for writing both files, unlike
+# `banner`'s versions.db-only shape.
+#
+# Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, reached from its
+# own `redhat` case in veng_advisories_main instead - the identical reason
+# veng_advisories_alpine's own header gives: `advisories --list`/`--all` and
+# `advisories bulk --all` are scoped to docs/DESIGN.md §6.5's six SCA
+# ecosystems, and this is a distro ecosystem, not one of them.
+veng_advisories_redhat() { _veng_advisories_run 'Red Hat'; }
 
 veng_advisories_list() {
   local name
@@ -1316,6 +1908,11 @@ _veng_bulk_normalize_rows() {
   local names_map=$dir/names.map vers_map=$dir/vers.map sevs_map=$dir/sevs.map
   local errfile=$dir/join.err raw_value
   : >"$errfile"
+  # A GENUINELY empty RAWFILE (every entry skipped/other-ecosystem) means the
+  # awk pass below never executes its main block, so it never opens `sout`
+  # (awk's `>` only creates the file on its first write) - pre-touch it so
+  # the caller's own `sort -u -- "$out.summaries"` never hits a missing file.
+  : >"$out.summaries"
 
   awk -F"$us" '{ print $1 }' "$raw" | LC_ALL=C sort -u >"$names_raw"
   awk -F"$us" '{ print $2 }' "$raw" | LC_ALL=C sort -u >"$vers_raw"
@@ -1344,7 +1941,7 @@ _veng_bulk_normalize_rows() {
     printf '\n'
   done <"$sevs_raw" >"$sevs_map"
 
-  awk -F"$us" -v OFS=$'\t' -v eco="$db_eco" -v errf="$errfile" \
+  awk -F"$us" -v OFS=$'\t' -v eco="$db_eco" -v errf="$errfile" -v sout="$out.summaries" \
     -v nmap="$names_map" -v vmap="$vers_map" -v smap="$sevs_map" '
     function bail(msg) { print msg > errf; close(errf); exit 1 }
     function mapline(dest, line,   i) {
@@ -1361,17 +1958,98 @@ _veng_bulk_normalize_rows() {
       if (!($1 in NAME) || !($2 in VER) || !($4 in SEV)) {
         bail("row " FNR " has no normalisation entry for one of its fields: " $1 " / " $2)
       }
-      row = eco OFS NAME[$1] OFS VER[$2] OFS $3 OFS SEV[$4] OFS $5 OFS $6
-      if (split(row, parts, "\t") != 7) {
-        bail("row " FNR " assembles into more than 7 TAB-separated fields - a TAB inside an OSV field, which the frozen schema forbids")
+      # `summary` ($6) no longer joins the data/advisories.db row itself
+      # (docs/FOUNDATION.md tension 25 summary-normalisation amendment) -
+      # it is written to the companion advisory_id/summary side-table file
+      # instead, and $out below carries only SIX fields (eco + 5), not
+      # seven.
+      row = eco OFS NAME[$1] OFS VER[$2] OFS $3 OFS SEV[$4] OFS $5
+      if (split(row, parts, "\t") != 6) {
+        bail("row " FNR " assembles into more than 6 TAB-separated fields - a TAB inside an OSV field, which the frozen schema forbids")
       }
       print row
+      print $3 OFS $6 > sout
     }
   ' "$names_map" "$vers_map" "$sevs_map" "$raw" >"$out" || {
     local why=''
     [[ -s $errfile ]] && why=$(cat -- "$errfile")
     die "$SCOURSH_EXIT_INCOMPLETE" \
       "advisories: bulk: refusing to write a corrupt data/advisories.db row (tension 25's frozen schema): ${why:-the row transform failed}"
+  }
+}
+
+# _veng_bulk_normalize_npm_rows RAWFILE OUTFILE - the npm-range sibling of
+# _veng_bulk_normalize_rows immediately above (docs/FOUNDATION.md tension
+# 25's amendment). RAWFILE's rows are
+# name<US>introduced<US>bound<US>bound_kind<US>advisory_id<US>severity<US>fixed_versions<US>summary
+# (eight 0x1f-separated fields - see rows_for's own npm branch). Only NAME
+# and SEVERITY go through the same distinct-value-map dispatch
+# _veng_bulk_normalize_rows uses; `introduced`/`bound` need no per-value
+# normalisation (npm's own _veng_advisories_normalize_version case is the
+# verbatim default - only Go's strips anything), so they pass straight
+# through the final awk join untouched, the same way `bound_kind`,
+# `advisory_id` and `fixed_versions` already do in the non-npm path above.
+_veng_bulk_normalize_npm_rows() {
+  local raw=$1 out=$2
+  local dir=$SCOURSH_SCRATCH/advisories/bulk
+  mkdir -p "$dir"
+  local us=$'\x1f'
+  local names_raw=$dir/npm-names.raw sevs_raw=$dir/npm-sevs.raw
+  local names_map=$dir/npm-names.map sevs_map=$dir/npm-sevs.map
+  local errfile=$dir/npm-join.err raw_value
+  : >"$errfile"
+  # See _veng_bulk_normalize_rows's own identical comment: a genuinely empty
+  # RAWFILE never opens `sout` inside the awk pass below.
+  : >"$out.summaries"
+
+  awk -F"$us" '{ print $1 }' "$raw" | LC_ALL=C sort -u >"$names_raw"
+  awk -F"$us" '{ print $6 }' "$raw" | LC_ALL=C sort -u >"$sevs_raw"
+
+  local distinct_names
+  distinct_names=$(wc -l <"$names_raw")
+  distinct_names=${distinct_names//[[:space:]]/}
+  log_info "vendor-engines: advisories: bulk: normalising $distinct_names distinct npm package name(s) through the frozen npm rules"
+
+  while IFS= read -r raw_value; do
+    printf '%s\t' "$raw_value"
+    _veng_advisories_normalize_name npm "$raw_value"
+    printf '\n'
+  done <"$names_raw" >"$names_map"
+
+  while IFS= read -r raw_value; do
+    printf '%s\t' "$raw_value"
+    _veng_advisories_normalize_severity "$raw_value"
+    printf '\n'
+  done <"$sevs_raw" >"$sevs_map"
+
+  awk -F"$us" -v OFS=$'\t' -v errf="$errfile" -v sout="$out.summaries" \
+    -v nmap="$names_map" -v smap="$sevs_map" '
+    function bail(msg) { print msg > errf; close(errf); exit 1 }
+    function mapline(dest, line,   i) {
+      i = index(line, "\t")
+      dest[substr(line, 1, i - 1)] = substr(line, i + 1)
+    }
+    FILENAME == nmap { mapline(NAME, $0); next }
+    FILENAME == smap { mapline(SEV, $0); next }
+    {
+      if (NF != 8) {
+        bail("row " FNR " carries " NF " field(s) where 8 are expected - an LF inside an OSV field does exactly this, and the frozen schema forbids one")
+      }
+      if (!($1 in NAME) || !($6 in SEV)) {
+        bail("row " FNR " has no normalisation entry for one of its fields: " $1 " / " $6)
+      }
+      row = "npm" OFS NAME[$1] OFS $2 OFS $3 OFS $4 OFS $5 OFS SEV[$6] OFS $7
+      if (split(row, parts, "\t") != 8) {
+        bail("row " FNR " assembles into more than 8 TAB-separated fields - a TAB inside an OSV field, which the frozen schema forbids")
+      }
+      print row
+      print $5 OFS $8 > sout
+    }
+  ' "$names_map" "$sevs_map" "$raw" >"$out" || {
+    local why=''
+    [[ -s $errfile ]] && why=$(cat -- "$errfile")
+    die "$SCOURSH_EXIT_INCOMPLETE" \
+      "advisories: bulk: refusing to write a corrupt data/advisories.db npm row (tension 25's frozen schema): ${why:-the row transform failed}"
   }
 }
 
@@ -1418,45 +2096,94 @@ _veng_bulk_one() {
     || die "$SCOURSH_EXIT_INCOMPLETE" \
       "advisories: bulk: $db_eco: the export failed validation and NOTHING was written (see the reason above)"
 
-  local advisories_read=0 rows_extracted=0 range_only_skipped=0 other_ecosystem_skipped=0
+  local advisories_read=0 rows_extracted=0 rows_extracted_range=0 range_only_skipped=0 no_range_no_versions=0 versioned_entries=0 other_ecosystem_skipped=0
   local line
   while IFS= read -r line || [[ -n $line ]]; do
     case $line in
       advisories_read=*) advisories_read=${line#*=} ;;
       rows_extracted=*) rows_extracted=${line#*=} ;;
+      rows_extracted_range=*) rows_extracted_range=${line#*=} ;;
       range_only_skipped=*) range_only_skipped=${line#*=} ;;
+      no_range_no_versions=*) no_range_no_versions=${line#*=} ;;
+      versioned_entries=*) versioned_entries=${line#*=} ;;
       other_ecosystem_skipped=*) other_ecosystem_skipped=${line#*=} ;;
     esac
   done <"$stats"
 
-  _veng_bulk_normalize_rows "$db_eco" "$raw" "$tsv"
+  # npm ONLY (docs/FOUNDATION.md tension 25's amendment): a separate
+  # normaliser, because npm's raw rows carry range fields
+  # (introduced/bound/bound_kind) instead of a single version - see
+  # _veng_bulk_normalize_npm_rows's own header. Every other ecosystem is
+  # completely unchanged.
+  if [[ $db_eco == npm ]]; then
+    _veng_bulk_normalize_npm_rows "$raw" "$tsv"
+  else
+    _veng_bulk_normalize_rows "$db_eco" "$raw" "$tsv"
+  fi
   LC_ALL=C sort -u -- "$tsv" >"$tsv.sorted"
   mv -f -- "$tsv.sorted" "$tsv"
+  LC_ALL=C sort -u -- "$tsv.summaries" >"$tsv.summaries.sorted"
+  mv -f -- "$tsv.summaries.sorted" "$tsv.summaries"
 
   local rows
   rows=$(wc -l <"$tsv")
   rows=${rows//[[:space:]]/}
   (( rows > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" \
-    "advisories: bulk: $db_eco: the export produced ZERO exact-version rows ($advisories_read advisory record(s) read, $range_only_skipped of them range-only) - refusing to replace this ecosystem's rows with nothing, which would quietly turn every $db_eco dependency clean"
-  if (( rows != rows_extracted )); then
-    log_info "vendor-engines: advisories: bulk: $db_eco: $(( rows_extracted - rows )) duplicate row(s) collapsed"
+    "advisories: bulk: $db_eco: the export produced ZERO usable rows ($advisories_read advisory record(s) read, $range_only_skipped range-only entr(y/ies) skipped) - refusing to replace this ecosystem's rows with nothing, which would quietly turn every $db_eco dependency clean"
+  local rows_extracted_total=$(( rows_extracted + rows_extracted_range ))
+  if (( rows != rows_extracted_total )); then
+    log_info "vendor-engines: advisories: bulk: $db_eco: $(( rows_extracted_total - rows )) duplicate row(s) collapsed"
   fi
 
   local provenance
-  provenance=$(printf '# bulk: ecosystem=%s grade=%s sha256=%s advisories_read=%s rows=%s range_only_skipped=%s other_ecosystem_skipped=%s generated=%s source=%s' \
-    "$db_eco" "$_VENG_BULK_GRADE" "$_VENG_BULK_SHA256_GOT" "$advisories_read" "$rows" \
+  provenance=$(printf '# bulk: ecosystem=%s grade=%s sha256=%s advisories_read=%s rows=%s rows_range=%s range_only_skipped=%s other_ecosystem_skipped=%s generated=%s source=%s' \
+    "$db_eco" "$_VENG_BULK_GRADE" "$_VENG_BULK_SHA256_GOT" "$advisories_read" "$rows" "$rows_extracted_range" \
     "$range_only_skipped" "$other_ecosystem_skipped" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_VENG_BULK_SOURCE")
   _veng_advisories_reject_tab_lf provenance "$provenance"
 
   _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$tsv" "$provenance"
   _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$tsv" "$provenance"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$tsv.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$tsv.summaries"
 
-  printf 'grade=%s advisories_read=%s rows=%s range_only_skipped=%s other_ecosystem_skipped=%s\n' \
-    "$_VENG_BULK_GRADE" "$advisories_read" "$rows" "$range_only_skipped" "$other_ecosystem_skipped" \
+  # A raw skip COUNT does not tell a first-time operator how much of the
+  # ecosystem they actually got - measured here: npm's own OSV.dev export is
+  # 90%+ range-only (GHSA npm advisories overwhelmingly ship as a semver
+  # range rather than an explicit version list), so "207444 skipped" reads
+  # as a footnote where "90% of npm's affected-package entries are NOT in
+  # this database" reads as the caveat it is.
+  #
+  # The denominator is versioned_entries, NOT advisories_read: one OSV
+  # advisory can list many affected PACKAGES (each independently range-only
+  # or versioned), so range_only_skipped and advisories_read are counted in
+  # different units and range_only_skipped can legitimately exceed
+  # advisories_read - measured on Go, where one advisory can list dozens of
+  # affected module variants (advisories_read=9048 but
+  # range_only_skipped=13804, a skip/read ratio that reads as "152%" and is
+  # simply wrong).  versioned_entries is counted in the SAME unit as
+  # range_only_skipped (per affected-package entry), so this ratio is
+  # mathematically bounded to [0,100] regardless of how many packages one
+  # advisory names.  Integer percent, no bc dependency, consistent with
+  # every other percentage this script prints.
+  local skip_pct=0
+  local skip_denominator=$(( range_only_skipped + versioned_entries ))
+  (( skip_denominator > 0 )) && skip_pct=$(( range_only_skipped * 100 / skip_denominator ))
+
+  printf 'grade=%s advisories_read=%s rows=%s range_only_skipped=%s (%s%%) other_ecosystem_skipped=%s\n' \
+    "$_VENG_BULK_GRADE" "$advisories_read" "$rows" "$range_only_skipped" "$skip_pct" "$other_ecosystem_skipped" \
     >"$summary"
-  log_info "vendor-engines: advisories: bulk: $db_eco: imported: advisories_read=$advisories_read rows=$rows range_only_skipped=$range_only_skipped other_ecosystem_skipped=$other_ecosystem_skipped"
+  log_info "vendor-engines: advisories: bulk: $db_eco: imported: advisories_read=$advisories_read rows=$rows range_only_skipped=$range_only_skipped ($skip_pct% of affected packages) other_ecosystem_skipped=$other_ecosystem_skipped"
   if (( range_only_skipped > 0 )); then
-    log_warn "vendor-engines: advisories: bulk: $db_eco: $range_only_skipped advisory entr(y/ies) published no explicit affected-version list and are NOT represented in the database - this ecosystem's coverage is smaller than its advisory count by exactly that much (tension 25 requires exact versions, never a guessed range)"
+    log_warn "vendor-engines: advisories: bulk: $db_eco: $range_only_skipped affected-package entr(y/ies) ($skip_pct% of the $skip_denominator this export named for $db_eco) published no explicit affected-version list and are NOT represented in the database - this ecosystem's coverage is smaller than that by exactly that much (tension 25 requires exact versions, never a guessed range)"
+  fi
+  if (( skip_pct >= 50 )); then
+    log_warn "vendor-engines: advisories: bulk: $db_eco: MORE THAN HALF of the affected packages $db_eco's OSV.dev export names are range-only and absent from this database - a scan against $db_eco dependencies will miss most real-world CVEs in this ecosystem even with a freshly-built database; this is a known limitation of $db_eco's own OSV.dev export, not a failed import"
+  fi
+  if [[ $db_eco == npm ]]; then
+    log_info "vendor-engines: advisories: bulk: npm: rows_range=$rows_extracted_range (semver-interval rows, docs/FOUNDATION.md tension 25 amendment)"
+    if (( no_range_no_versions > 0 )); then
+      log_warn "vendor-engines: advisories: bulk: npm: $no_range_no_versions affected-package entr(y/ies) published neither an explicit affected-version list nor a usable (non-GIT) range and are NOT represented in the database"
+    fi
   fi
 }
 
@@ -1585,6 +2312,24 @@ veng_advisories_main() {
       # VENG_ADVISORY_REGISTRY - see veng_advisories_banner's own header for
       # why "banner" is deliberately not one of the six SCA ecosystems.
       veng_advisories_banner
+      ;;
+    alpine)
+      # Also a named command, not routed through the registry - see
+      # veng_advisories_alpine's own header for why (IMG-03).
+      veng_advisories_alpine
+      ;;
+    debian)
+      # Same shape as alpine's case above - see veng_advisories_debian's own
+      # header for why (IMG-09).
+      veng_advisories_debian
+      ;;
+    ubuntu)
+      veng_advisories_ubuntu
+      ;;
+    redhat)
+      # Also a named command, not routed through the registry - see
+      # veng_advisories_redhat's own header for why (the last rpm ticket).
+      veng_advisories_redhat
       ;;
     --*)
       veng_advisories_usage >&2

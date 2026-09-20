@@ -1,0 +1,2 @@
+command=sast
+module=sast parallel scan: 4 workers over 61 files

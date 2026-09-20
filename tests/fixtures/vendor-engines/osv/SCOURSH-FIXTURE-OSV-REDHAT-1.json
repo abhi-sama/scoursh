@@ -1,0 +1,17 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-REDHAT-1",
+  "summary": "fixture: openssl-libs heap overflow (redhat)",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Red Hat", "name": "openssl-libs"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1:1.1.1k-9.el8_6"}]}],
+      "versions": ["1:1.1.1k-9.el8"]
+    },
+    {
+      "package": {"ecosystem": "Debian:12", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.11-1~deb12u3"}]}],
+      "versions": ["3.0.11-1~deb12u2"]
+    }
+  ]
+}

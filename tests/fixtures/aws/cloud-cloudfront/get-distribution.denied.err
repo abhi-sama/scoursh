@@ -1,0 +1,1 @@
+An error occurred (AccessDenied) when calling the GetDistribution operation: User: arn:aws:iam::123456789012:user/scoursh-fixture is not authorized to perform: cloudfront:GetDistribution

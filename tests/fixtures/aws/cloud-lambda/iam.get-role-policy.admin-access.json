@@ -1,0 +1,5 @@
+{
+    "RoleName": "scoursh-fixture-lambda-admin-role",
+    "PolicyName": "AdminAccess",
+    "PolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+}

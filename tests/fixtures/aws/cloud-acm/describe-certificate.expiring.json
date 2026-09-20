@@ -1,0 +1,9 @@
+{
+    "Certificate": {
+        "CertificateArn": "arn:aws:acm:eu-west-2:123456789012:certificate/scoursh-fixture-expiring-cert",
+        "DomainName": "expiring.example.com",
+        "Status": "ISSUED",
+        "Type": "AMAZON_ISSUED",
+        "NotAfter": 1700864000.0
+    }
+}

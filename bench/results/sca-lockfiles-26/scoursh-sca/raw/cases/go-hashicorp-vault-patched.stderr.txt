@@ -1,0 +1,1 @@
+2026-09-10T11:05:50Z info  scan complete in 33s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/go-hashicorp-vault-patched

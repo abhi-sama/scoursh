@@ -206,6 +206,12 @@ Environment:
   SCOURSH_BASH                 an explicit bash >= 4.2 to run the suite with
   SCOURSH_DAILY_GNU_IMAGE      docker image tag for the GNU leg (default is
                                derived from the shipped dockerfile's digest)
+  SCOURSH_DAILY_GNU_MEMORY_GB  real memory (GB) given to the GNU leg's
+                               container - default is derived from docker
+                               info's own reported total, minus a 2GB
+                               reserve. This is what lets
+                               tests/shellcheck-heavy-files.txt's dedicated
+                               pass actually complete; see ds_gnu_memory_gb.
 EOF
 }
 
@@ -804,8 +810,47 @@ ds_gnu_git_mount() {
   printf -- '--mount\ntype=bind,src=%s,dst=%s,readonly\n' "$common" "$common"
 }
 
+# The real memory ceiling to hand the GNU leg's container, in whole GB.
+#
+# tests/shellcheck-heavy-files.txt's dedicated pass (tools/daily-suite/gnu-leg.sh)
+# needs REAL memory to complete - that is the entire reason those files are
+# checked here rather than on CI's fixed ~16GB runner shape - so the container
+# gets as much of what `docker` itself reports it can give as looks safe to
+# commit to one process, not an arbitrary constant sized for today's tree.
+#
+# `docker info`'s own MemTotal is what the DAEMON believes it can hand out
+# (the Docker Desktop VM's own configured ceiling on a Mac, matching whatever
+# a real `--memory` request can actually be granted), which is the right
+# figure to plan against - unlike the HOST's own physical RAM, most of a
+# Docker Desktop VM's memory ceiling is invisible to `sysctl hw.memsize` and a
+# `--memory` request above it is simply capped rather than honoured.  A 2GB
+# reserve is carved out for the container's own OS/runtime overhead, the same
+# floor tests/run-tests.sh's own local model already uses for a host's OS and
+# everything else running on it.
+#
+# SCOURSH_DAILY_GNU_MEMORY_GB is the operator override, for a docker daemon
+# whose own reporting this function gets wrong, or a machine where less
+# should deliberately be committed to this one container.
+ds_gnu_memory_gb() {
+  local override=${SCOURSH_DAILY_GNU_MEMORY_GB:-}
+  if [[ $override =~ ^[0-9]+$ ]] && (( override >= 1 )); then
+    printf '%s' "$override"
+    return 0
+  fi
+  local bytes gb reserve
+  bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null) || bytes=
+  if [[ ! $bytes =~ ^[0-9]+$ ]] || (( bytes < 1 )); then
+    printf '8'   # a conservative, documented fallback - never guessed silently
+    return 0
+  fi
+  gb=$(( bytes / 1024 / 1024 / 1024 ))
+  reserve=2
+  (( gb - reserve < 1 )) && reserve=$(( gb > 1 ? gb - 1 : 0 ))
+  printf '%s' "$(( gb - reserve ))"
+}
+
 ds_run_gnu_leg() {
-  local mode=$DS_GNU_MODE image rc=0 log=$DS_RUN_DIR/gnu-suite.log failed
+  local mode=$DS_GNU_MODE image rc=0 log=$DS_RUN_DIR/gnu-suite.log failed mem_gb
   local -a gitmount=()
   while IFS= read -r _m; do
     [[ -n $_m ]] && gitmount+=("$_m")
@@ -841,7 +886,20 @@ ds_run_gnu_leg() {
     fi
   fi
 
-  printf '\n== GNU leg: %s ==\n' "$image"
+  mem_gb=$(ds_gnu_memory_gb)
+  printf '\n== GNU leg: %s (memory: %sGB) ==\n' "$image" "$mem_gb"
+  # --memory / --memory-swap: real, resident memory for the container as a
+  # whole (both the ordinary run above and the dedicated heavy-file pass
+  # gnu-leg.sh runs after it share this one ceiling). `--memory-swap` equal
+  # to `--memory` disables swap entirely rather than letting it silently
+  # extend the ceiling - shellcheck's GHC runtime growing into swap is a slow
+  # thrash toward the same OOM this exists to avoid, never a rescue.
+  # SCOURSH_SHELLCHECK_FORCE_TOTAL_GB/AVAIL_GB pass the SAME figure into
+  # tests/run-tests.sh's own local memory model (ds_gnu_memory_gb's own
+  # header explains why `docker info`'s reported total, not the host's own
+  # physical RAM nor whatever `/proc/meminfo` says inside the container - a
+  # value Docker does not reliably rewrite to match a `--memory` limit - is
+  # what this run can actually trust).
   # --user is what keeps the container from leaving root-owned files in the
   # operator's own checkout, which they could then not delete.  HOME is
   # redirected because that uid has no passwd entry inside the image.
@@ -865,6 +923,10 @@ ds_run_gnu_leg() {
   docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
+    -e SCOURSH_SHELLCHECK_FORCE_TOTAL_GB="$mem_gb" \
+    -e SCOURSH_SHELLCHECK_FORCE_AVAIL_GB="$mem_gb" \
+    --memory "${mem_gb}g" \
+    --memory-swap "${mem_gb}g" \
     -v "$ROOT:$ROOT" \
     -v "$DS_RUN_DIR:$DS_RUN_DIR" \
     "${gitmount[@]+"${gitmount[@]}"}" \

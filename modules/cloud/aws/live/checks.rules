@@ -1,0 +1,2153 @@
+# modules/cloud/aws/live/checks.rules - the §8.1 S3 read-only script-check
+# registry (rules/RULE-FORMAT.md §9.5; docs/STEP6-CLOUD-PLAN.md CLOUD-05).
+# Owned by modules/cloud/aws/live/s3.sh; ids are all `CLOUD-S3-*`.
+#
+# THIS IS A SHARED, APPEND-ONLY REGISTRY FOR EVERY `aws/live/*.sh` SERVICE, and
+# that is a decision rather than an accident.  rules/RULE-FORMAT.md §9's path
+# table reserves BOTH the `checks.rules` basename and the `checks-<name>.rules`
+# spelling repository-wide, so a per-service `checks-s3.rules` here would be
+# legal too - modules/dast/passive/ is split that way (docs/FOUNDATION.md
+# tension 29).  It is NOT split here because tension 29's own argument is about
+# CONFLICTS BETWEEN PARALLEL PEERS, and step 6's peers are dispatched as
+# sequential bundles against one landed vertical slice rather than as a dozen
+# simultaneous tickets: modules/dast/active/checks.rules and
+# modules/dast/checks.rules are both under the identical append-only rule for
+# the identical reason.  A CONFLICT IN THIS FILE IS RESOLVED BY KEEPING BOTH
+# BLOCKS, never by choosing a side.  A later service whose peers really are
+# in flight simultaneously may add its own `checks-<service>.rules` beside this
+# one; both spellings load, because `checks_registry_load` (lib/checks.sh)
+# globs every `*.rules` under `modules/cloud/` at any depth with no per-file
+# allowlist and no registration step.
+#
+# `coverage-scope: account-region` is CLOUD's cell (§9.5.1), spelled
+# `<account_id>/<region>` or `<account_id>/global`.  EVERY RECORD BELOW LANDS
+# IN THE `<account_id>/global` CELL, and the reason is worth stating here
+# rather than only in the script: `list-buckets` is a single account-wide call
+# and `_CLOUD_SERVICES` marks `live/s3.sh` `global`, so the unit this run
+# actually VISITED is the account's global S3 namespace - every bucket in the
+# account, whatever region it sits in.  The bucket's own region is a fact about
+# the RESOURCE and rides in the finding's `loc_region`, which is why a finding
+# here cites a real region while its cell says `global`.  Writing the bucket's
+# region into the cell instead would be the silent defect: coverage is recorded
+# once per PASS (modules/cloud/aws/run.sh's `_cloud_record_coverage`), so a
+# finding in a cell no pass ever covered can never be classified `fixed` and
+# would sit at `unknown` forever - docs/FOUNDATION.md tension 12's whole point.
+#
+# SEVEN IDS FOR SIX BUCKET PROPERTIES, AND THE ONE SPLIT IS DELIBERATE.  The
+# CLOUD location profile is (account_id, region, resource_key, sub_key) and
+# carries no component naming the DEFECT, so two different problems on one
+# bucket under one id would hash to one fingerprint and `findings_merge` would
+# keep whichever sorted first - the identical argument
+# modules/dast/passive/checks-cors.rules records for its own three ids.  The
+# split that is NOT forced by the fingerprint is
+# PUBLIC_ACL_READ vs PUBLIC_ACL_WRITE: it is two ids because SEVERITY VARIES
+# WITH THE GRANTED PERMISSION, and `severity` is a per-record registry field
+# (§9.5) that every suite asserts the script and the registry agree on - so a
+# script that "weighted a finding higher" at runtime would put the two into
+# disagreement.  Two ids also keeps the ordinary and the escalated case two
+# findings rather than one whose meaning flips between runs, which is the same
+# reasoning DAST-11's two `DAST-MARKUP-TABNABBING*` ids record.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE A REAL CIS v3.0.0
+# CONTROL EXISTS.  data/cis-mappings is an id -> label table and never a source
+# of ids (docs/CIS-MAPPINGS.md §1).  CIS Amazon Web Services Foundations
+# Benchmark v3.0.0 section 2.1 - the S3 section - contains exactly four
+# controls (2.1.1 deny-HTTP bucket policy, 2.1.2 MFA Delete, 2.1.3 Macie
+# discovery, 2.1.4 Block Public Access), so the four PUBLIC-EXPOSURE records
+# below cite 2.1.4, the control whose enforcement each of them observes to be
+# absent or defeated, and the three remaining records - default encryption,
+# versioning, access logging - CITE NOTHING, because v3.0.0 has no S3 control
+# for them.  (v1.4.0's 2.1.1 was "Ensure all S3 buckets employ encryption-at-
+# rest"; v3.0.0 renumbered 2.1.1 to the deny-HTTP control after AWS made
+# SSE-S3 a default, and citing the v1.4.0 number against a v3.0.0-declared
+# table would misattribute the finding - §5 item 5 of docs/CIS-MAPPINGS.md
+# forbids exactly that.  3.4, "S3 bucket access logging is enabled on the
+# CloudTrail S3 bucket", is about ONE named bucket and is not a general
+# access-logging control, so CLOUD-S3-NO_LOGGING-01 does not cite it either.)
+# An honest absence is the right outcome: `cis` is `optional, repeatable`
+# (§9.5), an unmapped finding still carries its CWE and OWASP category, and
+# inventing a control number to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 exists to forbid.  A future
+# ticket that transcribes a control genuinely covering one of the three adds
+# the row via docs/CIS-MAPPINGS.md §5 and the `cis:` line here in the same
+# change.
+#
+# The type tag is `config-read` on every record: each check is one read-only
+# AWS API call and mutates nothing, so lib/checks.sh's `--intensity` ceiling
+# passes all of them at the default `passive` (its own type table names
+# `config-read` in the `passive` row).  They also carry `quick`, which
+# docs/DESIGN.md §5 defines as "passive + config-read, no active probes" -
+# omitting it would leave `--profile-scan quick` selecting no cloud check at
+# all.  `compliance` is carried by exactly the four records that carry a `cis`
+# value, which is finding F3's TAG reading of that profile (lib/checks.sh).
+# None is `intrusive`: there is no state to mutate, and `aws_ro` refuses a
+# non-read operation with exit 3 before the CLI is even exec'd.
+
+id: CLOUD-S3-PUBLIC_ACL_READ-01
+title: S3 bucket ACL grants read access to a public grantee group
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: Remove the AllUsers ("everyone, including anonymous") or
+  AuthenticatedUsers ("any AWS account holder anywhere, not just yours") grant
+  from this bucket's ACL, then confirm nothing depended on it. Note that
+  AuthenticatedUsers is not a narrowing - any person who can create a free AWS
+  account is inside it. Prefer to disable ACLs entirely by setting the bucket's
+  Object Ownership to BucketOwnerEnforced, which makes every ACL inert and
+  leaves the bucket policy as the single access-control surface, and turn on
+  all four Block Public Access settings at both the bucket and the account
+  level so a future ACL cannot re-open it. If the objects really are meant to
+  be world-readable, serve them through a CloudFront distribution with an
+  Origin Access Control rather than by making the bucket itself public, so the
+  bucket keeps a single, auditable reader.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-PUBLIC_ACL_WRITE-01
+title: S3 bucket ACL grants write or full control to a public grantee group
+script: aws/live/s3.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: Remove this grant immediately. A WRITE, WRITE_ACP or FULL_CONTROL
+  grant to AllUsers or AuthenticatedUsers lets an unauthenticated or
+  arbitrary-AWS-account principal add, replace and delete objects in this
+  bucket - and WRITE_ACP or FULL_CONTROL additionally lets them rewrite the
+  ACL itself, so the exposure survives being partially undone. Set the
+  bucket's Object Ownership to BucketOwnerEnforced to make every ACL inert,
+  enable all four Block Public Access settings at the bucket and account
+  level, and grant writes only to named principals through an IAM or bucket
+  policy. Because a public writer may already have modified content, review
+  the bucket's object versions and CloudTrail data-event history rather than
+  assuming the grant was unused.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-PUBLIC_POLICY-01
+title: S3 bucket policy is evaluated as public by AWS
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: AWS's own policy evaluation reports this bucket's policy as
+  public, which means at least one statement grants a bucket or object action
+  to a principal that is not constrained to your account or organisation -
+  typically Principal "*" with no Condition, or a Condition that does not
+  actually narrow it (aws:Referer and aws:UserAgent are attacker-supplied and
+  narrow nothing). Rewrite the statement to name the principals, accounts or
+  aws:PrincipalOrgID that need the access, and enable the RestrictPublicBuckets
+  and BlockPublicPolicy settings of Block Public Access so a future policy
+  cannot re-open it. If the content is genuinely public, front it with a
+  CloudFront distribution using an Origin Access Control instead of leaving the
+  bucket itself reachable by any principal.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html
+
+id: CLOUD-S3-BLOCK_PUBLIC_ACCESS_OFF-01
+title: S3 bucket Block Public Access is absent or partially disabled
+script: aws/live/s3.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+fix-cli: aws s3api put-public-access-block --bucket %RESOURCE% --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+remediation: Turn on all four Block Public Access settings for this bucket -
+  BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy and
+  RestrictPublicBuckets - and set the same four at the account level, which
+  applies to every current and future bucket. The four are not
+  interchangeable: the two Acls settings neutralise public ACLs, while
+  BlockPublicPolicy rejects a new public bucket policy and
+  RestrictPublicBuckets suppresses an existing one, so leaving any of them off
+  leaves one route open. This finding is about the guardrail rather than about
+  a bucket that is public today: with the guardrail off, one future ACL or
+  policy edit is enough to expose the bucket, and nothing will refuse it.
+references: CWE-1188
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-NO_DEFAULT_ENCRYPTION-01
+title: S3 bucket has no default server-side encryption configuration
+script: aws/live/s3.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+fix-cli: aws s3api put-bucket-encryption --bucket %RESOURCE% --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+remediation: Set a default encryption configuration on the bucket so every
+  object is encrypted at rest whether or not the uploading client asks for it.
+  SSE-S3 (AES256) is the zero-cost baseline; SSE-KMS with a customer-managed
+  key adds a separate, auditable key policy and CloudTrail key-usage events,
+  which is what an estate needing separation of duties or a defined key
+  rotation should use. Enable S3 Bucket Keys alongside SSE-KMS to keep the KMS
+  request cost down. Note that default encryption applies to objects written
+  after it is set, so also confirm whether existing objects need re-encrypting
+  by copying them in place.
+references: CWE-311
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html
+
+id: CLOUD-S3-NO_VERSIONING-01
+title: S3 bucket versioning is not enabled
+script: aws/live/s3.sh
+severity: low
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+fix-cli: aws s3api put-bucket-versioning --bucket %RESOURCE% --versioning-configuration Status=Enabled
+remediation: Enable versioning on the bucket. Without it an overwrite or a
+  delete is unrecoverable, which makes accidental deletion, a compromised
+  credential and ransomware-style encryption of the bucket's contents all
+  terminal rather than merely disruptive. With versioning on, add MFA Delete
+  or an Object Lock retention policy if the data warrants it, and add a
+  lifecycle rule expiring non-current versions so the storage cost stays
+  bounded. A bucket whose versioning is Suspended is reported here as well as
+  one that never had it: suspension stops new versions being created, so
+  objects written from that point on are as unrecoverable as they were before
+  versioning was ever enabled.
+references: CWE-693
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html
+
+id: CLOUD-S3-NO_LOGGING-01
+title: S3 bucket server access logging is not enabled
+script: aws/live/s3.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable server access logging (or CloudTrail S3 data events) for
+  this bucket and send the records to a separate, restricted log bucket -
+  never to the bucket being logged, which creates a feedback loop and lets
+  anyone who can write to the source bucket also write its own audit trail.
+  Without either, there is no record of who read or wrote which object, so a
+  future investigation into a suspected exposure has nothing to work from and
+  cannot even establish whether anything was accessed. Server access logs are
+  best-effort and delivered on a delay; CloudTrail data events are the option
+  to choose where the record must be reliable and queryable.
+references: CWE-778
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html
+
+# docs/STEP6-CLOUD-PLAN.md CLOUD-22 (`aws/live/apigw.sh`, docs/DESIGN.md §8.4).
+# Two ids for one condition ("this method has no authorizer") for the same
+# reason CLOUD-S3-PUBLIC_ACL_READ-01/WRITE-01 are two ids rather than one:
+# `severity` is a per-record registry field every suite asserts the script and
+# the registry agree on, and the two cases genuinely differ in severity - a
+# route with NO barrier at all versus one gated by a shared, unauthenticated
+# API key - so a script that "weighted a finding higher" at runtime would put
+# the two into disagreement. CIS AWS Foundations Benchmark v3.0.0 has no API
+# Gateway section (its sections are IAM, S3, CloudTrail/Config/monitoring, KMS,
+# RDS and VPC/networking only), so neither record carries a `cis:` value -
+# docs/CIS-MAPPINGS.md §1 forbids inventing a control id to satisfy a
+# "must cite CIS" habit, and an honest absence is the correct outcome here.
+
+id: CLOUD-APIGW-OPEN_AUTH_ROUTE-01
+title: API Gateway method has no authorizer and no API key
+script: aws/live/apigw.sh
+severity: high
+confidence: high
+cwe: CWE-306
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach an authorizer to this method - AWS_IAM (SigV4-signed
+  requests from an IAM principal), a Cognito user pool authorizer, or a
+  Lambda (custom) authorizer - unless the route is genuinely meant to be
+  public (a health check, a public content-delivery endpoint fronted by its
+  own CDN-level controls). authorizationType NONE with apiKeyRequired false
+  means API Gateway performs no check of any kind before invoking the
+  integration: anyone who has this URL can call it. If some access control is
+  wanted but a full authorizer is not yet available, apiKeyRequired alone is
+  not a substitute - see CLOUD-APIGW-OPEN_AUTH_KEY_ONLY-01's own remediation
+  for why.
+references: CWE-306
+references: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-control-access-to-api.html
+
+id: CLOUD-APIGW-OPEN_AUTH_KEY_ONLY-01
+title: API Gateway method has no authorizer and relies on an API key alone
+script: aws/live/apigw.sh
+severity: medium
+confidence: high
+cwe: CWE-306
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: An API key is not an authorizer - API Gateway's apiKeyRequired
+  setting only checks that SOME provisioned key was presented in the
+  `x-api-key` header, never who the caller is, so every holder of any key
+  provisioned anywhere in the account gets the identical access and a leaked
+  or shared key cannot be traced to a caller. If callers need to be
+  individually identified, revoked, or rate-limited per identity, attach a
+  real authorizer (AWS_IAM, a Cognito user pool, or a Lambda authorizer) in
+  addition to, or instead of, the key requirement. If this route is an
+  intentional machine-to-machine integration where a shared key is an
+  accepted risk, no change is needed beyond confirming the key is rotated and
+  scoped to a usage plan.
+references: CWE-306
+references: https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-usage-plans.html
+
+# ===========================================================================
+# CLOUD-07 (aws/live/kms.sh), CLOUD-08 (aws/live/secretsmanager.sh) and
+# CLOUD-09 (aws/live/ssm.sh) - kms/secretsmanager/ssm, landed in one ticket
+# and appended here together (docs/STEP6-CLOUD-PLAN.md).
+#
+# `cis:` FOLLOWS THE IDENTICAL DISCIPLINE THE S3 RECORDS ABOVE ESTABLISH: cited
+# only where CIS AWS Foundations Benchmark v3.0.0 names a real control, never
+# invented to satisfy a "must cite CIS" habit (docs/DESIGN.md §15).  Of these
+# six checks, exactly ONE has a real control: `CLOUD-KMS-ROTATION_DISABLED-01`
+# cites 3.6 ("Ensure rotation for customer-created symmetric CMKs is
+# enabled"), already present in data/cis-mappings.  The benchmark has no
+# section for KMS key policies, Secrets Manager, or SSM Parameter Store at
+# all - Security Hub's own public v3.0.0 mapping was checked and confirms
+# none exists - so the other five carry no `cis:` line, an honest absence
+# rather than a gap, the identical outcome the S3 encryption/versioning/
+# logging records above already model.  A future benchmark revision that adds
+# one of these sections gets its row added to data/cis-mappings and its
+# `cis:` line added here, in the same change, per docs/CIS-MAPPINGS.md §5.
+#
+# All six are `config-read`/`quick`: each is one or more read-only AWS API
+# calls with no active probe, exactly as the S3 records above.  Only
+# `CLOUD-KMS-ROTATION_DISABLED-01` carries `compliance` (the tag `cis:`-bearing
+# records use, per finding F3's TAG reading of `--profile-scan compliance`).
+
+id: CLOUD-KMS-ROTATION_DISABLED-01
+title: KMS customer-managed key does not have automatic rotation enabled
+script: aws/live/kms.sh
+severity: medium
+confidence: high
+cwe: CWE-320
+owasp: A02:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.6
+remediation: Enable automatic annual key rotation
+  (`aws kms enable-key-rotation --key-id <id>`) for every customer-managed
+  symmetric encryption key. AWS keeps every prior backing key version, so
+  data encrypted before rotation still decrypts correctly and no application
+  change is required. Rotation applies only to enabled, AWS_KMS-origin,
+  SYMMETRIC_DEFAULT/ENCRYPT_DECRYPT keys - an asymmetric, HMAC, or
+  imported-key-material key is out of scope for this control by design, not
+  an oversight.
+references: CWE-320
+references: https://docs.aws.amazon.com/kms/latest/developerguide/rotate-keys.html
+
+id: CLOUD-KMS-PUBLIC_POLICY-01
+title: KMS key policy grants to an unqualified wildcard principal
+script: aws/live/kms.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal (or Principal.AWS "*") from the
+  key policy statement, or add a Condition that genuinely narrows it (an
+  attacker-supplied context key such as aws:Referer narrows nothing). A KMS
+  key policy is the ONLY access-control surface for the key - unlike an S3
+  bucket, where IAM also gates access - so an unconditioned wildcard grant
+  here means any AWS principal in any account that can name the key's ARN can
+  request whatever this statement allows. Name the specific account(s),
+  role(s), or aws:PrincipalOrgID that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/kms/latest/developerguide/key-policies.html
+
+id: CLOUD-SECRETSMANAGER-NO_ROTATION-01
+title: Secrets Manager secret does not have automatic rotation enabled
+script: aws/live/secretsmanager.sh
+severity: medium
+confidence: high
+cwe: CWE-262
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Configure automatic rotation for the secret (a Lambda rotation
+  function - AWS provides templates for RDS/DocumentDB/Redshift master
+  credentials, and a custom function covers any other secret type) so a
+  leaked or over-shared value has a bounded lifetime even when the leak
+  itself is never detected. A secret owned by another AWS service (its
+  OwningService field is set) or already scheduled for deletion is not
+  evaluated by this check - its rotation lifecycle belongs to the owning
+  service, not to this account's operator.
+references: CWE-262
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_turn-on-for-other.html
+
+id: CLOUD-SECRETSMANAGER-PUBLIC_POLICY-01
+title: Secrets Manager resource policy grants to an unqualified wildcard principal
+script: aws/live/secretsmanager.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal from the secret's resource policy,
+  or add a Condition that genuinely narrows it. A Secrets Manager resource
+  policy controls who can call GetSecretValue directly, so an unconditioned
+  wildcard grant means any AWS principal in any account that can name the
+  secret's ARN can retrieve its value. Name the specific account(s) or
+  role(s) that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_resource-based-policies.html
+
+id: CLOUD-SSM-STRING_TYPE_SENSITIVE-01
+title: SSM parameter name suggests sensitive content but is not a SecureString
+script: aws/live/ssm.sh
+severity: medium
+confidence: medium
+cwe: CWE-312
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Re-create the parameter with `--type SecureString`, which
+  encrypts the value at rest with a KMS key and requires kms:Decrypt in
+  addition to ssm:GetParameter to read it back. This is a NAME-based
+  heuristic over the parameter's path (password/secret/token/credential/key),
+  not a content scan: confirm the value is genuinely sensitive before acting,
+  and note that a differently-named parameter holding a secret will not be
+  caught by it.
+references: CWE-312
+references: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-securestring.html
+
+id: CLOUD-SSM-PUBLIC_POLICY-01
+title: SSM parameter resource policy grants to an unqualified wildcard principal
+script: aws/live/ssm.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal from the parameter's resource
+  policy, or add a Condition that genuinely narrows it. An SSM resource
+  policy controls cross-account access to the parameter directly, so an
+  unconditioned wildcard grant means any AWS principal in any account that
+  can name the parameter's ARN can call GetParameter against it. Name the
+  specific account(s) or role(s) that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-resource-policies.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-IAM-* - modules/cloud/aws/live/iam.sh (docs/STEP6-CLOUD-PLAN.md
+# CLOUD-06).  Appended to this shared, append-only registry per the header
+# note above; a merge conflict here is resolved by keeping BOTH blocks.
+#
+# EVERY RECORD BELOW LANDS IN THE `<account_id>/global` CELL, exactly as the
+# CLOUD-S3-* records above do, and for an even simpler reason: IAM is
+# genuinely global end to end, so `region: global` is not merely the cell -
+# it is the literal `loc_region` this service's every finding carries
+# (modules/cloud/aws/live/iam_engine.sh's own header explains why that
+# differs from S3, whose bucket-region resolution keeps the two apart).
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE data/cis-mappings
+# ALREADY CARRIES THE CONTROL (docs/CIS-MAPPINGS.md §1: it is a label table,
+# never a source of ids).  Eight of these twelve checks cite a seeded CIS
+# v3.0.0 control from IAM section 1: 1.4 (root access key),
+# 1.5 (root MFA), 1.8 and 1.9 (the password-policy minimum length and reuse
+# prevention - both cited on the one WEAK_PASSWORD_POLICY record, since an
+# absent policy fails both simultaneously and the check has no way to tell
+# them apart from a policy that fails only one), 1.12 (credentials unused 45+
+# days), 1.14 (access keys rotated every 90 days or less), and 1.20 (IAM
+# Access Analyzer enabled). The remaining four - full-admin policies, a
+# wildcard/cross-account trust relationship, an unused role, and inline/
+# managed policy sprawl - cite NOTHING: CIS v3.0.0 control 1.16 (full-admin
+# policies) is real but data/cis-mappings has no row for it yet (a stated
+# gap, docs/CIS-MAPPINGS.md §4 - a future ticket transcribes it, per that
+# document's §5, rather than this one guessing at a number with no PDF in
+# hand), and the benchmark has no numbered control at all for a wildcard
+# trust principal, a missing sts:ExternalId, an unused role, or mixed
+# inline/managed policies. An honest absence beats an invented control id;
+# every one of these four still carries its own CWE and OWASP category.
+#
+# THE TYPE TAG IS `config-read` ON EVERY RECORD, exactly as CLOUD-S3-*'s own
+# note explains: each check is one read-only AWS API call (or a small,
+# bounded sequence of them) and mutates nothing, so lib/checks.sh's
+# `--intensity` ceiling passes all of them at the default `passive`. They
+# also carry `quick`, and `compliance` on the eight that carry a `cis` value -
+# finding F3's TAG reading of that profile. None is `intrusive`.
+
+id: CLOUD-IAM-ROOT_MFA_OFF-01
+title: The AWS account root user has no MFA device registered
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-308
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.5
+remediation: Register a hardware or virtual MFA device for the root user
+  under IAM > My Security Credentials, then use root only for the handful of
+  tasks that genuinely require it - creating the account's first IAM
+  administrator, closing the account, and the small set of actions AWS
+  documents as root-only. The root user cannot be restricted by any IAM
+  policy, so a compromised root credential with no second factor is an
+  immediate, unrestrictable account takeover.
+references: CWE-308
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html
+
+id: CLOUD-IAM-ROOT_ACCESS_KEY-01
+title: The AWS account root user has an active access key
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.4
+remediation: Delete every root access key under IAM > My Security
+  Credentials. The root user should never be used for programmatic access;
+  any automation that currently depends on a root key needs a named IAM role
+  or user with least-privilege permissions instead. Rotate any credential the
+  key was used to protect once the key is deleted, since its prior use cannot
+  be retroactively distinguished from misuse.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html
+
+id: CLOUD-IAM-WEAK_PASSWORD_POLICY-01
+title: The account's IAM password policy is absent or below the CIS minimums
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-521
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.8
+cis: 1.9
+remediation: Set an account password policy under IAM > Account settings >
+  Password policy requiring a minimum length of at least 14 characters and
+  remembering at least the last 24 passwords, matching CIS v3.0.0 controls
+  1.8 and 1.9. An account with no password policy at all fails both at once.
+references: CWE-521
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html
+
+id: CLOUD-IAM-ACCESS_ANALYZER_DISABLED-01
+title: No active IAM Access Analyzer was found for this account
+script: aws/live/iam.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.20
+remediation: Enable IAM Access Analyzer under IAM > Access Analyzer, in every
+  region this account uses (CIS v3.0.0 control 1.20 asks for all of them,
+  though this check itself examines only the region the run's own AWS CLI
+  configuration resolves - see modules/cloud/aws/live/iam.sh's own header).
+  Access Analyzer flags resources whose own resource policy makes them
+  reachable from outside the account or organization, a cross-resource class
+  of exposure no single-resource read-only check in this catalog can detect
+  on its own.
+references: CWE-778
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+
+id: CLOUD-IAM-POLICY_FULL_ADMIN-01
+title: An IAM identity carries a policy granting full administrative privileges
+script: aws/live/iam.sh
+severity: critical
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the statement granting Effect Allow, Action "*",
+  Resource "*" with one scoped to the specific actions and resources this
+  identity actually needs. This check matches CIS AWS Foundations Benchmark
+  v3.0.0 control 1.16's own published audit shape for a policy document, not
+  a live policy simulation - an equivalent permission set assembled from
+  several narrower-looking statements will not be caught by this pattern, so
+  a clean result here is not a complete privilege review on its own.
+references: CWE-269
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+
+id: CLOUD-IAM-TRUST_WILDCARD_PRINCIPAL-01
+title: An IAM role's trust policy admits any AWS principal
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard Principal with the specific account ids,
+  role or user ARNs, or AWS service principals that legitimately need to
+  assume this role. A trust policy is the ONLY control standing between "any
+  AWS principal in existence" and everything this role's own permissions
+  reach.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+
+id: CLOUD-IAM-TRUST_NO_EXTERNAL_ID-01
+title: An IAM role's trust policy allows a cross-account principal with no ExternalId condition
+script: aws/live/iam.sh
+severity: high
+confidence: medium
+cwe: CWE-441
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add a Condition requiring a unique, secret sts:ExternalId to
+  every statement that trusts an AWS account other than this one, per AWS's
+  own third-party cross-account access guidance. Without one, a trust
+  relationship reused across more than one external customer of the trusting
+  account is the confused-deputy pattern that guidance exists to prevent -
+  one customer's request assuming a role meant for another's resources.
+references: CWE-441
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+
+id: CLOUD-IAM-UNUSED_CREDENTIAL-01
+title: An IAM credential has not been used in 45 days or more
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.12
+remediation: Disable or delete the console password or access key named in
+  this finding's evidence. A credential nobody is using is a credential
+  nobody will notice if it is stolen, and it contributes nothing that
+  removing it would take away.
+references: CWE-613
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_getting-report.html
+
+id: CLOUD-IAM-ACCESS_KEY_ROTATION-01
+title: An IAM access key is 90 days old or older and has not been rotated
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-262
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.14
+remediation: Create a replacement access key, update whatever uses the old
+  one to the new key, confirm the new key works, then delete the old one. A
+  long-lived static credential has a longer window in which a leak goes
+  undetected, and rotating on a schedule bounds that window regardless of
+  whether a leak is ever suspected.
+references: CWE-262
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+
+id: CLOUD-IAM-UNUSED_ROLE-01
+title: An IAM role has not been assumed in 90 days or more
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Confirm nothing still depends on the role named in this
+  finding's evidence and remove it if not. An unused role is standing access
+  with no active owner relying on it, and every additional role is one more
+  trust policy and permission set that has to be reviewed on every future
+  audit whether or not anything still uses it.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_manage.html
+
+id: CLOUD-IAM-NO_PERMISSION_BOUNDARY-01
+title: A full-admin IAM identity has no permission boundary attached
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a permission boundary to the identity named in this
+  finding's evidence, scoped to the maximum permissions it should ever be
+  able to reach. A boundary caps the damage of both a compromised credential
+  and a future policy change that widens the identity's own attached policy
+  without anyone revisiting whether it still should be full-admin.
+references: CWE-269
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+
+id: CLOUD-IAM-POLICY_SPRAWL-01
+title: An IAM identity mixes inline and attached managed policies
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-710
+owasp: A04:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Consolidate the identity named in this finding's evidence onto
+  managed (ideally customer-managed) policies, and remove its inline policies
+  once their grants are represented there. An identity whose permissions are
+  split between an inline policy and one or more attached managed policies
+  has no single place a reviewer can read to see its whole effective
+  permission set.
+references: CWE-710
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html
+
+# ---------------------------------------------------------------------------
+# EC2/VPC (docs/STEP6-CLOUD-PLAN.md CLOUD-13) - owned by
+# modules/cloud/aws/live/ec2.sh, ids all `CLOUD-EC2-*`.  Appended to this
+# shared, append-only registry per this file's own header note - a per-service
+# `checks-ec2.rules` would also be legal (rules/RULE-FORMAT.md §9's path
+# table admits both spellings), but step 6's tickets are sequential bundles
+# against one landed vertical slice rather than parallel peers, so the
+# tension-29 split modules/dast/passive/ needed does not apply here.
+#
+# EIGHT IDS FOR SEVEN PROPERTIES.  The admin-port and database-port cases are
+# two ids, `SG_OPEN_ADMIN_PORT` and `SG_OPEN_DB_PORT`, because CIS AWS
+# Foundations Benchmark v3.0.0 control 5.2 covers "remote server
+# administration ports" (22, 3389) specifically and has no database-port
+# equivalent - citing 5.2 against a MySQL/Redis/... exposure would
+# misattribute a control that does not cover it (docs/CIS-MAPPINGS.md §1),
+# and the CLOUD location profile carries no component naming which port
+# family fired, so one id would also collide the two onto one fingerprint.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE A REAL CIS v3.0.0
+# CONTROL EXISTS (data/cis-mappings is an id -> label table, never a source of
+# ids - docs/CIS-MAPPINGS.md §1).  Four of these eight cite a real control
+# (5.2, 5.4, 5.6, 3.7, all already seeded in data/cis-mappings for exactly
+# this v1 CIS-core service scope); the other four - the database-port case,
+# public AMIs, public EBS snapshots, and unencrypted volumes - cite nothing,
+# because CIS v3.0.0 has no control for any of them.  An honest absence is the
+# right outcome; inventing a control number to satisfy a "must cite CIS"
+# habit is the overstated-coverage failure docs/DESIGN.md §15 forbids.
+#
+# THE TYPE TAG IS `config-read` ON EVERY RECORD: each check is one or more
+# read-only `describe-*`/`get-*` AWS API calls and mutates nothing, so
+# lib/checks.sh's `--intensity` ceiling passes all of them at the default
+# `passive`. They also carry `quick` (docs/DESIGN.md §5's "passive +
+# config-read, no active probes"); `compliance` is carried by exactly the
+# four records that carry a `cis` value (finding F3's TAG reading of that
+# profile). None is `intrusive`: there is no state to mutate, and `aws_ro`
+# refuses a non-read operation with exit 3 before the CLI is even exec'd.
+
+id: CLOUD-EC2-SG_OPEN_ADMIN_PORT-01
+title: Security group allows ingress from 0.0.0.0/0 to a remote administration port
+script: aws/live/ec2.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.2
+remediation: Remove the 0.0.0.0/0 ingress rule for port 22 (SSH) or 3389
+  (RDP) from this security group. A rule this broad lets any host on the
+  internet attempt to authenticate against the port, which is one of the
+  most commonly scanned and brute-forced surfaces on AWS. Restrict ingress to
+  a known jump host or bastion's own security group, a VPN or Direct Connect
+  CIDR, or replace the direct exposure entirely with AWS Systems Manager
+  Session Manager, which needs no inbound rule at all.
+references: CWE-284
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html
+
+id: CLOUD-EC2-SG_OPEN_DB_PORT-01
+title: Security group allows ingress from 0.0.0.0/0 to a common database port
+script: aws/live/ec2.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the 0.0.0.0/0 ingress rule for this database port
+  (MySQL/MariaDB 3306, PostgreSQL 5432, MSSQL 1433/1434, Oracle 1521, MongoDB
+  27017, Redis 6379, CouchDB 5984, Elasticsearch 9200, Memcached 11211, or
+  Redshift 5439). A database reachable from the whole internet is exposed to
+  credential-stuffing and unpatched-CVE scanning from the moment it is
+  provisioned, regardless of how strong its own authentication is. Restrict
+  ingress to the application tier's own security group and place the database
+  in a private subnet with no route to the internet.
+references: CWE-284
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html
+
+id: CLOUD-EC2-DEFAULT_SG_IN_USE-01
+title: The VPC's default security group is attached to a resource
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.4
+remediation: Move every resource attached to the VPC's default security
+  group onto a purpose-specific security group whose rules are reviewed
+  deliberately, then remove all of the default security group's own ingress
+  and egress rules so it restricts all traffic, per CIS AWS Foundations
+  Benchmark control 5.4. A resource left in the default group inherits
+  whatever rule set it carries and is the group most likely to be overlooked
+  in a review that only inspects custom security groups by name.
+references: CWE-1188
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html#default-security-group
+
+id: CLOUD-EC2-PUBLIC_AMI-01
+title: Owned AMI grants public launch permission
+script: aws/live/ec2.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the AMI's public launch permission (the AllUsers/"all"
+  group in describe-image-attribute's launchPermission) immediately. Any AWS
+  account in the partition can launch an instance from a publicly-shared AMI
+  and inspect its full disk contents, which routinely includes application
+  code, configuration files, and any credential baked into the image at build
+  time. Share the AMI only with named account ids, or with an AWS
+  Organization/Resource Access Manager share where the recipient set needs to
+  be broad but still bounded.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-explicit.html
+
+id: CLOUD-EC2-PUBLIC_EBS_SNAPSHOT-01
+title: Owned EBS snapshot grants public create-volume permission
+script: aws/live/ec2.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the snapshot's public create-volume permission (the
+  AllUsers/"all" group in describe-snapshot-attribute's
+  createVolumePermission) immediately. Any AWS account in the partition can
+  create a volume from a publicly-shared snapshot, attach it to their own
+  instance, and read every byte it contains - a direct data-exposure path
+  that bypasses every access control the original, running instance ever
+  had. Share the snapshot only with named account ids, and consider whether
+  any data it contains needs to be treated as already exposed.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-modifying-snapshot-permissions.html
+
+id: CLOUD-EC2-UNENCRYPTED_VOLUME-01
+title: EBS volume is not encrypted at rest
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable "EBS encryption by default" for the region so every
+  volume created from now on is encrypted automatically, then replace this
+  volume with an encrypted copy - create a snapshot, copy it with
+  encryption enabled (or copy an unencrypted snapshot into an encrypted one
+  directly), and create a new volume from the encrypted copy, since an
+  existing volume cannot be encrypted in place. Without encryption at rest, a
+  compromised storage-layer credential or a mis-shared snapshot exposes the
+  volume's contents in plaintext.
+references: CWE-311
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html
+
+id: CLOUD-EC2-IMDSV2_NOT_ENFORCED-01
+title: EC2 instance metadata service does not enforce IMDSv2
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-918
+owasp: A10:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.6
+remediation: Set the instance's metadata options to HttpTokens required
+  (IMDSv2 only), per CIS AWS Foundations Benchmark control 5.6. The original
+  metadata service (IMDSv1) answers a plain, unauthenticated HTTP GET from
+  inside the instance, so any request the instance can be tricked into
+  making on its own behalf - the textbook Server-Side Request Forgery shape -
+  can retrieve the instance's own IAM role credentials from
+  169.254.169.254. IMDSv2 requires a session token obtained via a PUT
+  request first, which most SSRF techniques cannot forge.
+references: CWE-918
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+
+id: CLOUD-EC2-FLOW_LOGS_OFF-01
+title: VPC has no active flow log
+script: aws/live/ec2.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.7
+remediation: Enable VPC flow logs, per CIS AWS Foundations Benchmark control
+  3.7, delivering them to CloudWatch Logs or S3 with a retention period
+  matched to the estate's incident-response window. Without a flow log there
+  is no record of which network traffic was accepted or rejected in or out
+  of the VPC, so an investigation into a suspected compromise or a
+  data-exfiltration path has no network-layer evidence to work from -
+  identical in kind to the S3 access-logging gap this project's own
+  CLOUD-S3-NO_LOGGING-01 check reports one layer up the stack.
+references: CWE-778
+references: https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html
+
+# ---------------------------------------------------------------------------
+# The §8.1 governance & detection bundle (docs/STEP6-CLOUD-PLAN.md
+# CLOUD-30..34), appended to this shared, append-only registry per this
+# file's own header rule.  Five services, seven checks:
+# `modules/cloud/aws/live/cloudtrail.sh` (three - not enabled, not
+# multi-region, log file validation off), `config.sh`, `guardduty.sh`,
+# `inspector.sh` and `macie.sh` (one each).
+#
+# `cis:` IS AUTHORED ONLY WHERE A REAL CIS v3.0.0 CONTROL EXISTS, per this
+# file's own rule above.  CloudTrail cites 3.1 (twice, for its two distinct
+# failure modes - "no trail" and "no multi-region trail" are both facts
+# about the same control) and 3.2; AWS Config cites 3.3; all three already
+# have rows in data/cis-mappings, so no new mapping entry was needed.
+# GuardDuty, Inspector2 and Macie2 have NO CIS Amazon Web Services
+# Foundations Benchmark v3.0.0 control anywhere in that benchmark's sections
+# 1-5 (confirmed against data/cis-mappings' own scope, and its header's own
+# statement that section 4 - the closest thing to a detection-service
+# section - is entirely "Not supported - manual check" for v3.0.0 and
+# carries no control ids this table could cite). Their three records
+# therefore carry no `cis:` line and no `compliance` tag - an honest
+# absence, not a gap to be quietly filled with an invented number
+# (docs/DESIGN.md §15).
+#
+# Every record is `config-read`/`quick`, the identical reasoning the S3
+# records above give: each check is one or two read-only AWS API calls and
+# mutates nothing.
+
+id: CLOUD-CLOUDTRAIL-NOT_ENABLED-01
+title: CloudTrail is not logging in this account or region
+script: aws/live/cloudtrail.sh
+severity: critical
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.1
+remediation: Create a CloudTrail trail (or restart logging on an existing
+  one with StartLogging) so API activity in this account is recorded. A
+  single, enabled, multi-region trail with log file validation on is the
+  minimum an account needs before any of the rest of this bundle's checks -
+  or an incident investigation - has anything to work from. Without it,
+  there is no audit record of who did what in this account at all.
+references: CWE-778
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-and-update-a-trail.html
+
+id: CLOUD-CLOUDTRAIL-NOT_MULTI_REGION-01
+title: CloudTrail trail is not multi-region
+script: aws/live/cloudtrail.sh
+severity: high
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.1
+remediation: Convert this trail to multi-region (UpdateTrail
+  --is-multi-region-trail), or create a separate multi-region trail
+  alongside it. A single-region trail records activity only in its own home
+  region, so an action taken through any other region's endpoint - which
+  includes almost every global-service API call and any region an attacker
+  chooses specifically because it is not being watched - leaves no trace at
+  all. CIS 3.1 requires at least one enabled, logging, multi-region trail.
+references: CWE-778
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-and-update-a-trail.html
+
+id: CLOUD-CLOUDTRAIL-LOG_FILE_VALIDATION_OFF-01
+title: CloudTrail log file validation is not enabled
+script: aws/live/cloudtrail.sh
+severity: medium
+confidence: high
+cwe: CWE-345
+owasp: A08:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.2
+remediation: Enable log file validation on the trail
+  (UpdateTrail --enable-log-file-validation). Each delivered log file is
+  then paired with a signed digest file, so a log file modified or deleted
+  after delivery - by an attacker covering their tracks, or by a
+  misconfigured retention policy - can be detected rather than trusted
+  silently. Without it, a CloudTrail log is evidence only until someone with
+  write access to the log bucket decides it should not be.
+references: CWE-345
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+
+id: CLOUD-CONFIG-RECORDER_OFF-01
+title: AWS Config configuration recorder is absent or not recording
+script: aws/live/config.sh
+severity: high
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.3
+remediation: Create a configuration recorder covering all resource types
+  (PutConfigurationRecorder with recordingGroup.allSupported true) and start
+  it (StartConfigurationRecorder) in this region. Without an active
+  recorder, AWS Config is not tracking how resource configuration in this
+  region changes over time, which removes both the change-history an
+  incident investigation needs and the input every AWS Config rule in this
+  region depends on to evaluate anything at all.
+references: CWE-778
+references: https://docs.aws.amazon.com/config/latest/developerguide/gs-console.html
+
+id: CLOUD-GUARDDUTY-DISABLED-01
+title: GuardDuty is not enabled in this region
+script: aws/live/guardduty.sh
+severity: high
+confidence: high
+cwe: CWE-693
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable GuardDuty in this region (CreateDetector, or
+  UpdateDetector to set an existing detector's Enable to true). GuardDuty is
+  this account's automated analysis of CloudTrail management events, VPC
+  Flow Logs and DNS query logs for known malicious and anomalous activity
+  patterns; with it off, that analysis simply does not happen, and a
+  compromised credential or instance in this region will not generate a
+  finding here however long it is active.
+references: CWE-693
+references: https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html
+
+id: CLOUD-INSPECTOR-DISABLED-01
+title: Inspector2 automated vulnerability scanning is not fully enabled
+script: aws/live/inspector.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A06:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable Inspector2 scanning for every resource type this
+  account actually uses in this region (Enable, naming the affected
+  resourceTypes - EC2, ECR, LAMBDA). Without it, a newly-disclosed CVE
+  against an in-use EC2 AMI's installed packages, an ECR container image's
+  layers, or a Lambda function's dependencies is not detected by anything
+  this account runs on its own; it is found only when something external
+  does - an attacker, a customer, or a researcher's disclosure.
+references: CWE-693
+references: https://docs.aws.amazon.com/inspector/latest/user/enabling.html
+
+id: CLOUD-MACIE-DISABLED-01
+title: Macie sensitive-data discovery is not enabled in this region
+script: aws/live/macie.sh
+severity: medium
+confidence: medium
+cwe: CWE-693
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable Macie in this region (EnableMacie), then configure a
+  discovery job against the S3 buckets this account uses. Without it, no
+  automated scan is looking for PII, credentials or financial data sitting
+  in an S3 bucket that should not hold it, so that kind of exposure is found
+  only by accident or after it has already been used against this account.
+  Note this check's confidence is medium rather than high: Macie reports
+  "not enabled" as the same AccessDeniedException code a genuine permission
+  gap on the scanning role's own IAM policy would produce (see
+  modules/cloud/aws/live/macie.sh's own header), so an absent
+  macie2:GetMacieSession grant on an otherwise-enabled account can read the
+  same way as Macie genuinely being off.
+references: CWE-693
+references: https://docs.aws.amazon.com/macie/latest/user/macie-setting-up.html
+
+# ---------------------------------------------------------------------------
+# Owned by modules/cloud/aws/live/lambda.sh (docs/DESIGN.md §8.6;
+# docs/STEP6-CLOUD-PLAN.md CLOUD-21). Ids are all `CLOUD-LAMBDA-*`, appended
+# to this SHARED, APPEND-ONLY registry rather than a per-service
+# `checks-lambda.rules` - this file's own header above already states why:
+# step 6's peers are dispatched as sequential bundles against one landed
+# vertical slice, not as parallel tickets fighting over one file, which is
+# the CONFLICT tension 29's per-owner split exists to prevent and which does
+# not apply here.
+#
+# `coverage-scope: account-region` is CLOUD's cell, exactly as the S3 records
+# above declare - but UNLIKE `s3`, whose `list-buckets` call is account-wide
+# (a `global` row in `_CLOUD_SERVICES`), `lambda` is a REGIONAL row: `lambda
+# list-functions` answers only for the region it is addressed to, so every
+# finding below lands in the `<account_id>/<region>` cell the pass actually
+# ran in, and that region IS the function's own region - there is no
+# S3-shaped split between "the cell the pass covered" and "the resource's own
+# region" here, because for a regional service they are the same fact.
+#
+# SIX IDS FOR THREE PROPERTIES, splitting each of docs/DESIGN.md §8.6's three
+# bullets in two for the identical reason S3's own PUBLIC_ACL_READ/WRITE
+# split states: the CLOUD location profile carries no component naming the
+# DEFECT, so two different problems on one function under one id would
+# collide onto one fingerprint and `findings_merge` would keep whichever
+# sorted first, and each pair's two halves genuinely differ in SEVERITY - a
+# per-record registry field a script cannot "weigh" at runtime without
+# putting itself in disagreement with the record.
+#   - ROLE_WILDCARD (critical) vs ROLE_SENSITIVE_SERVICE (high): an
+#     account-wide-admin-equivalent grant (`Action:"*"`, `Resource:"*"`) is a
+#     strictly worse root cause than a wildcard confined to one sensitive
+#     service, and reporting a role that happens to trip BOTH readings under
+#     one id would understate the narrower, commoner case's own severity.
+#   - PUBLIC_FUNCTION_URL (critical) vs PUBLIC_POLICY (critical/pattern): two
+#     independent SINKS for the same "unauthenticated invocation" root cause
+#     - a function URL and a resource-based policy are two different API
+#       surfaces a function can be reached through, and either can exist
+#       without the other - the same "one root cause, two sinks, two ids"
+#       shape modules/dast/active/hosthdr.sh's own two check ids record.
+#   - ENV_SECRET (high, confidence medium - a NAME/VALUE-shape heuristic, not
+#     a proof) vs ENV_NOT_ENCRYPTED (low): a credential sitting in an env var
+#     is a live exposure the moment anyone can call
+#     lambda:GetFunctionConfiguration; the absence of a customer-managed KMS
+#     key protecting the whole block is a weaker, defence-in-depth gap that
+#     exists whether or not any single value in it happens to be a secret.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, exactly as the S3 header above
+# states - and NONE of the six records below carries one. CIS AWS Foundations
+# Benchmark v3.0.0 has no dedicated Lambda section at all (its five sections
+# are IAM, Storage, Logging, Monitoring, Networking - data/cis-mappings'
+# own 34-row seed, cross-referenced against AWS Security Hub's public v3.0.0
+# control-id mapping, names none for Lambda), so there is no control an
+# honest transcription could cite. This is the identical "an honest absence
+# is the right outcome" call the S3 header above makes for its own three
+# unmapped checks (default encryption, versioning, logging) - inventing a
+# control number to satisfy a "must cite CIS" habit is the overstated-
+# coverage failure docs/DESIGN.md §15 forbids. A future CIS version that adds
+# a Lambda section, or a benchmark cross-reference that surfaces an existing
+# IAM control genuinely covering one of these six, adds the row via
+# docs/CIS-MAPPINGS.md §5 and the `cis:` line here in the same change - none
+# is `compliance`-tagged for the identical reason none carries a `cis` value
+# (S3's header states the TAG reading of the `compliance` profile: only a
+# check with a real `cis` value earns the tag).
+#
+# The type tag is `config-read` on every record, exactly as the S3 records
+# above: each check is one or more read-only AWS API calls (list-functions,
+# list-function-url-configs, get-policy, and - for the two role checks -
+# list-role-policies/get-role-policy/list-attached-role-policies/get-policy/
+# get-policy-version) and mutates nothing, so `--intensity`'s ceiling passes
+# all six at the default `passive`. They also carry `quick`
+# (docs/DESIGN.md §5's "passive + config-read, no active probes").
+
+id: CLOUD-LAMBDA-ROLE_WILDCARD-01
+title: Lambda execution role grants unrestricted Action "*" on Resource "*"
+script: aws/live/lambda.sh
+severity: critical
+confidence: high
+cwe: CWE-250
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the offending policy statement with the specific actions
+  and resource ARNs this function's code actually calls - AWS IAM Access
+  Analyzer's policy generation, run against the role's own recent CloudTrail
+  activity, is the fastest path to a scoped replacement. An `Action: "*"` on
+  `Resource: "*"` grant gives this function's code, any dependency it loads,
+  and anything that can influence its input the same reach as an account
+  administrator; there is no narrower control left to fail once this one has.
+references: CWE-250
+references: https://docs.aws.amazon.com/lambda/latest/dg/lambda-permissions.html
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-policy-generation.html
+
+id: CLOUD-LAMBDA-ROLE_SENSITIVE_SERVICE-01
+title: Lambda execution role grants a wildcard action on a sensitive AWS service
+script: aws/live/lambda.sh
+severity: high
+confidence: high
+cwe: CWE-250
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Narrow the flagged `<service>:*` action to the specific calls
+  this function actually makes, and confine the Resource element to the
+  specific ARNs it needs rather than leaving it unrestricted. Which services
+  count as sensitive enough to flag on a bare wildcard alone - identity
+  (iam), key management (kms), secrets (secretsmanager), cross-identity
+  assumption (sts), the organization itself (organizations), and networking
+  primitives (ec2) - is a configurable, operator-editable list in
+  modules/cloud/aws/live/lambda-sensitive-services.txt; a function that
+  genuinely needs broad access to one of these should still narrow the
+  Resource element even where the Action list cannot shrink further.
+references: CWE-250
+references: https://docs.aws.amazon.com/lambda/latest/dg/lambda-permissions.html
+
+id: CLOUD-LAMBDA-PUBLIC_FUNCTION_URL-01
+title: Lambda function URL allows unauthenticated invocation (AuthType NONE)
+script: aws/live/lambda.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the function URL's AuthType to AWS_IAM and grant
+  lambda:InvokeFunctionUrl only to the specific principals that need to call
+  it; a NONE AuthType means any request that reaches the URL over the
+  internet invokes the function with no AWS authentication at all. If
+  anonymous access is genuinely required for a subset of callers, front the
+  URL with an authenticating layer (API Gateway with its own authorizer, or
+  CloudFront with signed requests/URLs) rather than leaving the raw function
+  URL open.
+references: CWE-284
+references: https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
+
+id: CLOUD-LAMBDA-PUBLIC_POLICY-01
+title: Lambda resource-based policy allows a wildcard or unrestricted principal
+script: aws/live/lambda.sh
+severity: critical
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the "*" (or {"AWS":"*"}) principal with the specific
+  account, role, or AWS-service principal that genuinely needs to invoke this
+  function, or add a Condition (aws:SourceArn / aws:SourceAccount) that
+  narrows the grant to a specific caller if one is not already present.
+  Confidence is medium rather than high because Lambda has no
+  server-evaluated "is this policy public" API the way S3's
+  get-bucket-policy-status gives S3 - this is a pattern match over the
+  policy's Principal element, and a real Condition on the flagged statement
+  may already narrow it; review the statement before assuming the grant is
+  unconditionally public.
+references: CWE-284
+references: https://docs.aws.amazon.com/lambda/latest/dg/access-control-resource-based.html
+
+id: CLOUD-LAMBDA-ENV_SECRET-01
+title: Lambda environment variable looks like a plaintext credential
+script: aws/live/lambda.sh
+severity: high
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Move this value out of the function's environment variables and
+  into AWS Secrets Manager or SSM Parameter Store (SecureString), reading it
+  at invocation time with the minimum IAM grant needed to fetch that one
+  secret - an environment variable is visible in plaintext, via
+  lambda:GetFunctionConfiguration, to every principal permitted to read the
+  function's configuration, which is routinely a broader set than the ones
+  the credential is meant to be scoped to. Confidence is medium because this
+  is a name- or shape-based heuristic (modules/cloud/aws/live/lambda-secret-env-keywords.txt),
+  not a proof that the value is genuinely live; the finding's evidence never
+  includes the value itself.
+references: CWE-798
+references: https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_lambda.html
+
+id: CLOUD-LAMBDA-ENV_NOT_ENCRYPTED-01
+title: Lambda environment variables are not encrypted with a customer-managed key
+script: aws/live/lambda.sh
+severity: low
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Configure a customer-managed KMS key for this function's
+  environment-variable encryption. Lambda always encrypts environment
+  variables at rest, so this finding is not "unencrypted" in the literal
+  sense - it is that the AWS-owned default key protecting them cannot be
+  rotated on your own schedule, restricted with its own key policy, or have
+  its usage audited separately from every other function relying on that
+  same shared default key. This finding is only raised for a function that
+  has at least one environment variable configured.
+references: CWE-311
+references: https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html#configuration-envvars-encryption
+
+# ---------------------------------------------------------------------------
+# CLOUD-14 (docs/STEP6-CLOUD-PLAN.md) - modules/cloud/aws/live/elb.sh.
+# `elb` (Classic Load Balancer) and `elbv2` (ALB/NLB) are one AWS product,
+# "Elastic Load Balancing", across two API generations
+# (docs/STEP6-CLOUD-PLAN.md's own counting note) - one script, one set of
+# check ids, evaluated against both namespaces.  `elb.sh` is a `regional` row
+# in `_CLOUD_SERVICES`, unlike S3's `global` one, so `loc_region` here is
+# simply the region the pass ran in - see elb_engine.sh's own header for why
+# that needs no second resolution the way an S3 bucket's does.
+#
+# NO `cis:` ON ANY OF THESE THREE.  CIS AWS Foundations Benchmark v3.0.0 has
+# no Elastic Load Balancing section at all - its scope is IAM (section 1),
+# storage encryption/access (2), logging (3) and networking (5); confirmed
+# against data/cis-mappings, which transcribes the full v1(CIS-core) scope
+# and carries no `CLOUD-ELB-*`-shaped row.  Per docs/CIS-MAPPINGS.md §1,
+# `data/cis-mappings` is an id -> label table and never a source of ids: an
+# absent `cis:` line here is the honest reading, exactly as it is for S3's own
+# NO_DEFAULT_ENCRYPTION/NO_VERSIONING/NO_LOGGING records above, and inventing
+# a control number to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 forbids.
+# ---------------------------------------------------------------------------
+
+id: CLOUD-ELB-HTTP_NO_REDIRECT-01
+title: Load balancer listener accepts plain HTTP with no redirect to HTTPS
+script: aws/live/elb.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: A Classic Load Balancer has no redirect capability at all - it
+  is a pass-through TCP/HTTP proxy - so remove the plain-HTTP listener
+  entirely, or migrate to an Application Load Balancer where a redirect
+  action can be configured. On an ALB, add or fix the HTTP listener's default
+  action so it is a `redirect` whose `Protocol` is exactly `HTTPS` (not the
+  `#{protocol}` placeholder, which preserves the original scheme and performs
+  no upgrade at all) rather than forwarding the request in the clear.
+references: CWE-319
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-https-listener.html
+
+id: CLOUD-ELB-WEAK_TLS_POLICY-01
+title: Load balancer HTTPS/TLS listener uses a TLS policy that does not prove a TLS 1.2 floor
+script: aws/live/elb.sh
+severity: high
+confidence: medium
+cwe: CWE-326
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a security policy that names a TLS 1.2 (or later) floor -
+  on ALB/NLB, one of the `ELBSecurityPolicy-TLS-1-2-*` or
+  `ELBSecurityPolicy-TLS13-*` predefined policies (Forward-Secrecy variants
+  where the client population supports them); on a Classic Load Balancer,
+  replace the listener's policy with `ELBSecurityPolicy-TLS-1-2-2017-01` or
+  newer, or a custom policy that explicitly disables SSLv3, TLSv1 and
+  TLSv1.1. On ALB/NLB the check reads the listener's own `SslPolicy` field
+  directly, so a CUSTOM policy name that does not itself declare a TLS 1.2+
+  floor is reported even when the underlying cipher/protocol list happens to
+  be fine - see elb_engine.sh's `elb_policy_is_weak`, which proves strong
+  rather than matches a known-weak name. On a Classic Load Balancer the check
+  instead resolves the attached policy's own attributes
+  (`Reference-Security-Policy`, or the `Protocol-SSLv3`/`Protocol-TLSv1`/
+  `Protocol-TLSv1.1` flags on a fully custom policy), because a Classic ELB
+  listener's own `PolicyNames` entry is an operator-chosen label that
+  routinely carries no protocol information at all, unlike ALB/NLB's field.
+references: CWE-326
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html
+
+id: CLOUD-ELB-NO_ACCESS_LOGS-01
+title: Load balancer access logging is not enabled
+script: aws/live/elb.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable access logging for this load balancer (the
+  `access_logs.s3.enabled` attribute on ALB/NLB, or the `AccessLog.Enabled`
+  attribute on a Classic Load Balancer) and deliver the logs to a separate,
+  restricted S3 bucket. Without it there is no per-request record of who was
+  served by this load balancer, so a later investigation into a suspected
+  abuse or outage has nothing to work from.
+references: CWE-778
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-24 (docs/STEP6-CLOUD-PLAN.md) - modules/cloud/aws/live/cloudfront.sh.
+# `cloudfront` is a `global` row in `_CLOUD_SERVICES`, and every finding here
+# cites `region: global` - a CloudFront distribution has no per-resource AWS
+# region at all (cloudfront_engine.sh's own header). No `cis:` on any of
+# these five, for the identical reason the CLOUD-ELB-* records above give:
+# CIS AWS Foundations Benchmark v3.0.0 has no CloudFront section, and
+# data/cis-mappings carries no row for one.
+# ---------------------------------------------------------------------------
+
+id: CLOUD-CLOUDFRONT-VIEWER_HTTP_ALLOWED-01
+title: CloudFront distribution permits plain HTTP between viewer and edge
+script: aws/live/cloudfront.sh
+severity: high
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the distribution's (default and any per-path) cache
+  behavior ViewerProtocolPolicy to `redirect-to-https` or `https-only`
+  instead of `allow-all`. With `allow-all`, a viewer that happens to request
+  the plain-HTTP URL is served over an unencrypted connection between itself
+  and the CloudFront edge, and nothing about the distribution's own
+  configuration prevents that request from ever being made.
+references: CWE-319
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-viewers-to-cloudfront.html
+
+id: CLOUD-CLOUDFRONT-WEAK_MIN_TLS-01
+title: CloudFront distribution's minimum viewer TLS protocol version is weak
+script: aws/live/cloudfront.sh
+severity: medium
+confidence: high
+cwe: CWE-326
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a certificate through AWS Certificate Manager (a
+  distribution using the shared CloudFront default certificate cannot set a
+  custom minimum protocol version at all, and its fixed minimum is weak) and
+  set the distribution's SecurityPolicy/MinimumProtocolVersion to
+  `TLSv1.2_2021` or later, so a client attempting a connection below TLS 1.2
+  is refused rather than served.
+references: CWE-326
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+
+id: CLOUD-CLOUDFRONT-NO_WAF-01
+title: CloudFront distribution has no AWS WAF web ACL associated
+script: aws/live/cloudfront.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Create or reuse an AWS WAF (WAFv2) web ACL scoped to CloudFront
+  and associate it with this distribution, starting from the AWS Managed
+  Core rule group so common web exploits (SQL injection, known bad inputs)
+  are filtered at the edge before ever reaching an origin. An unassociated
+  distribution passes every request straight through with no rule evaluation
+  of any kind.
+references: CWE-1188
+references: https://docs.aws.amazon.com/waf/latest/developerguide/cloudfront-features.html
+
+id: CLOUD-CLOUDFRONT-ORIGIN_EXPOSED-01
+title: CloudFront S3 origin has no Origin Access Control or Origin Access Identity
+script: aws/live/cloudfront.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Create an Origin Access Control (OAC; the current, SigV4-based
+  mechanism - the legacy Origin Access Identity still works but AWS
+  recommends OAC for new distributions) for this origin, attach it to the
+  distribution, and restrict the S3 bucket policy to that OAC's principal.
+  Without either, the bucket has to be reachable by more than just this
+  distribution to serve content at all, which in practice usually means the
+  bucket is public or trusts a far wider principal than "requests CloudFront
+  itself forwarded".
+references: CWE-284
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
+
+id: CLOUD-CLOUDFRONT-NO_LOGGING-01
+title: CloudFront distribution standard logging is not enabled
+script: aws/live/cloudfront.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable standard access logging for this distribution and
+  deliver the logs to a separate, restricted S3 bucket. Without it there is
+  no per-request record of what CloudFront served at the edge, so a later
+  investigation into a suspected abuse or content exposure has nothing to
+  work from.
+references: CWE-778
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/AccessLogs.html
+
+# ---------------------------------------------------------------------------
+# ECR / ECS / EKS - docs/STEP6-CLOUD-PLAN.md CLOUD-25/26/27 (Tier 6,
+# containers).  All six records below are `script: aws/live/<service>.sh`
+# for the service owning them, exactly as every S3 record above is `script:
+# aws/live/s3.sh` - one shared, append-only registry per the header note.
+#
+# NONE OF THESE SIX RECORDS CARRIES A `cis:` VALUE, AND THAT IS AN HONEST
+# ABSENCE RATHER THAN A GAP LEFT FOR LATER.  `data/cis-mappings` names
+# exactly one benchmark - CIS Amazon Web Services Foundations Benchmark
+# v3.0.0 (see this file's own header on `cis:`, and docs/CIS-MAPPINGS.md §4)
+# - and that benchmark's own numbering covers IAM (section 1), Storage
+# (section 2: S3/EBS/RDS/EFS), Logging (section 3) and Networking (section
+# 5) only; it has no ECR, ECS or EKS section at all.  A SEPARATE published
+# benchmark exists for containers (CIS Amazon ECS Benchmark, CIS Amazon EKS
+# Benchmark), but citing an id from either against a table that names only
+# the Foundations Benchmark and its version would misattribute the finding
+# exactly as docs/CIS-MAPPINGS.md §3 warns a version mismatch does - "a
+# table that cannot say which [benchmark] edition a given control number was
+# drawn from ... silently misattribute[s] every id in it the day a second
+# [benchmark] is ever added" applies identically to a second BENCHMARK, not
+# only a second version of the same one.  Adding that second benchmark to
+# `data/cis-mappings` is a real, deliberate register change for whoever
+# transcribes it by hand from the published PDF (docs/CIS-MAPPINGS.md §5) -
+# not a thing to guess at from inside a check record.  Each finding still
+# carries its CWE and OWASP category, exactly as S3's own three
+# CIS-less records (encryption, versioning, logging) already do.
+
+id: CLOUD-ECR-PUBLIC_REPOSITORY-01
+title: ECR repository policy grants access to a wildcard principal
+script: aws/live/ecr.sh
+severity: high
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Review the repository's resource policy
+  (`aws ecr get-repository-policy --repository-name <name>`) and remove the
+  statement that grants an Allow to a wildcard Principal - either the bare
+  string "*" or {"AWS": "*"}, both of which admit every AWS account, or an
+  anonymous caller if nothing else fronts the pull. This is scoursh's own
+  reading of the policy statement rather than an AWS-evaluated verdict: ECR
+  has no equivalent of S3's get-bucket-policy-status, so confirm the finding
+  against the full policy before acting on it. Scope the Principal to named
+  account ids or roles, or remove the statement entirely if no cross-account
+  pull was ever intended.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-policies.html
+
+id: CLOUD-ECR-SCAN_ON_PUSH_OFF-01
+title: ECR repository does not scan images on push
+script: aws/live/ecr.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A06:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable scan-on-push for the repository (or a registry-wide
+  scanning configuration covering it) so an image is checked for
+  known-vulnerable packages the moment it is pushed, rather than discovered
+  later by a separate audit or never at all. This is read directly off
+  imageScanningConfiguration.scanOnPush; an absent configuration is reported
+  the same as an explicitly-disabled one, since a repository created before
+  scan-on-push existed carries no scanning either way.
+references: CWE-1188
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning.html
+
+id: CLOUD-ECR-MUTABLE_TAGS-01
+title: ECR repository allows image tags to be overwritten
+script: aws/live/ecr.sh
+severity: medium
+confidence: high
+cwe: CWE-345
+owasp: A08:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the repository's image tag mutability to IMMUTABLE. With
+  mutable tags (AWS's own default), a tag like :latest or :prod can be
+  silently repointed to a different image after it has been reviewed or
+  deployed, undermining any verification that trusted the tag rather than
+  the image digest. A deployment pipeline that needs to move a tag should
+  push a new one instead of overwriting an existing one.
+references: CWE-345
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html
+
+id: CLOUD-ECS-PUBLIC_SERVICE-01
+title: ECS service assigns a public IP to its tasks
+script: aws/live/ecs.sh
+severity: high
+confidence: medium
+cwe: CWE-668
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the service's networkConfiguration.awsvpcConfiguration.
+  assignPublicIp to DISABLED and route any outbound traffic the tasks need
+  through a NAT gateway instead, unless the service genuinely must be
+  directly reachable from the internet. This finding is a signal that the
+  task's network interface CAN receive a public IPv4 address, not a
+  confirmed internet-reachability verdict - actual reachability also
+  depends on the subnet's route table and the attached security group,
+  neither of which this check reads, so confirm both before deciding the
+  exposure is (or is not) real.
+references: CWE-668
+references: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-networking-awsvpc.html
+
+id: CLOUD-ECS-TASK_ROLE_OVERPERMISSIVE-01
+title: ECS task role grants unrestricted access
+script: aws/live/ecs.sh
+severity: critical
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard statement (Action "*" on Resource "*") in
+  the task role's inline policy with the specific actions and resource ARNs
+  the application actually uses - review CloudTrail for the API calls it
+  has really made if that is not already known. Every container that runs
+  using this task definition inherits this role's full permission set at
+  runtime, so an application-level compromise (a dependency vulnerability,
+  an injection flaw) becomes an account-wide one. Only the task role's
+  INLINE policies are read by this check; a managed (attached) policy
+  granting the same wildcard is a real gap this check does not close.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html
+
+id: CLOUD-EKS-PUBLIC_ENDPOINT-01
+title: EKS cluster API endpoint is reachable from outside the VPC
+script: aws/live/eks.sh
+severity: high
+confidence: high
+cwe: CWE-668
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Disable public access to the cluster's API endpoint
+  (endpointPublicAccess: false) and reach it over the VPC via
+  endpointPrivateAccess, or at minimum restrict publicAccessCidrs to the
+  specific ranges that legitimately need it rather than the 0.0.0.0/0
+  default. The API server is the single most powerful control point in the
+  cluster - anyone who can reach it and present valid credentials can
+  create or modify any workload in it.
+references: CWE-668
+references: https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html
+
+id: CLOUD-EKS-POD_ROLE_OVERPERMISSIVE-01
+title: EKS node group IAM role grants unrestricted access
+script: aws/live/eks.sh
+severity: critical
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard statement (Action "*" on Resource "*") in
+  the node group's inline role policy with the specific actions and
+  resource ARNs the node's own workloads use, and adopt IAM Roles for
+  Service Accounts (IRSA) for any pod that needs AWS API access beyond
+  that. Every pod scheduled onto a node in this group that has NOT adopted
+  its own IRSA binding inherits this NODE role's full permission set via
+  the EC2 instance metadata service - this check evaluates the node
+  group's role because a literal per-pod IRSA binding is recorded inside
+  the cluster's own Kubernetes API server, which scoursh has no credential
+  or network path to read; a cluster where every workload already has a
+  narrowly-scoped IRSA role is not fully assessed by this check alone.
+  Only the node role's INLINE policies are read; a managed (attached)
+  policy granting the same wildcard is a real gap this check does not
+  close.
+references: CWE-732
+references: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
+references: https://docs.aws.amazon.com/eks/latest/userguide/create-node-role.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-SNS-*, CLOUD-SQS-*, CLOUD-ACM-*, CLOUD-ROUTE53-*, CLOUD-BACKUP-*
+# (docs/STEP6-CLOUD-PLAN.md CLOUD-28/29/10/11/12) - owned by
+# modules/cloud/aws/live/{sns,sqs,acm,route53,backup}.sh.  Appended to this
+# shared, append-only registry per this file's own header above (a conflict
+# here is resolved by keeping BOTH blocks, never by choosing a side).
+#
+# NONE OF THESE SEVEN RECORDS CARRIES A `cis:` VALUE, AND THAT IS AN HONEST
+# ABSENCE RATHER THAN A GAP THIS TICKET LEFT.  This file's own header states
+# the rule at length for S3's three uncited records: `cis:` is authored only
+# where a real CIS AWS Foundations Benchmark v3.0.0 control exists for the
+# property being observed, and data/cis-mappings' benchmark-v3.0.0 catalog
+# (sections 1 IAM, 2.1 S3, 2.2-2.4 EBS/RDS/EFS encryption, 3 logging/
+# monitoring, 5 networking) contains no section for SNS, SQS, ACM, Route53 or
+# AWS Backup at all - inventing a control id to satisfy a "must cite CIS"
+# habit is precisely the overstated-coverage failure docs/DESIGN.md §15
+# forbids.  A future ticket that transcribes a control genuinely covering one
+# of these five services adds the row via docs/CIS-MAPPINGS.md §5 and the
+# `cis:` line here in the same change.
+
+id: CLOUD-SNS-PUBLIC_POLICY-01
+title: SNS topic policy grants access to a wildcard principal
+script: aws/live/sns.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove or narrow the statement in this topic's resource policy
+  that grants Effect Allow to a wildcard Principal ("*" or {"AWS":"*"}) with
+  no Condition. Name the specific accounts, roles or AWS services that need to
+  publish to or subscribe from this topic, or add a Condition
+  (aws:SourceArn/aws:SourceAccount for an AWS-service principal,
+  aws:PrincipalOrgID for a cross-account grant scoped to your organisation)
+  that genuinely narrows who the grant applies to. A wildcard principal with
+  no condition lets any AWS account - and, for actions that do not require
+  SigV4, an unauthenticated caller - use this topic.
+references: CWE-732
+references: https://docs.aws.amazon.com/sns/latest/dg/sns-access-policy-use-cases.html
+
+id: CLOUD-SNS-NO_ENCRYPTION-01
+title: SNS topic has no server-side encryption configured
+script: aws/live/sns.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set a KmsMasterKeyId on this topic - a customer-managed key for
+  a separate, auditable key policy and CloudTrail key-usage events, or the AWS
+  managed alias/aws/sns as the zero-cost baseline. Unlike S3 and SQS, SNS
+  applies no default managed encryption to a new topic, so this is the
+  topic's real, current state rather than an inherited default that happens
+  to be safe.
+references: CWE-311
+references: https://docs.aws.amazon.com/sns/latest/dg/sns-server-side-encryption.html
+
+id: CLOUD-SQS-PUBLIC_POLICY-01
+title: SQS queue policy grants access to a wildcard principal
+script: aws/live/sqs.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove or narrow the statement in this queue's resource policy
+  that grants Effect Allow to a wildcard Principal ("*" or {"AWS":"*"}) with
+  no Condition. Name the specific accounts, roles or AWS services that need to
+  send to or receive from this queue, or add a Condition that genuinely
+  narrows the grant (aws:SourceArn for an AWS-service principal,
+  aws:PrincipalOrgID for a cross-account grant scoped to your organisation). A
+  wildcard principal with no condition lets any AWS account use this queue.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html
+
+id: CLOUD-SQS-NO_ENCRYPTION-01
+title: SQS queue has no server-side encryption configured
+script: aws/live/sqs.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable SQS-managed server-side encryption (SqsManagedSseEnabled)
+  as the zero-cost baseline, or set a customer-managed KmsMasterKeyId where a
+  separate, auditable key policy and CloudTrail key-usage events are
+  required. This queue has neither configured, so messages in it are not
+  encrypted at rest.
+references: CWE-311
+references: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-server-side-encryption.html
+
+id: CLOUD-ACM-EXPIRING-01
+title: ACM certificate is nearing or past its expiry date
+script: aws/live/acm.sh
+severity: high
+confidence: high
+cwe: CWE-298
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Renew this certificate before it lapses. If it is ACM-issued
+  with DNS or email validation, confirm the validation record still exists
+  and the domain still resolves - a changed or removed validation CNAME is
+  the commonest reason an ACM-managed certificate silently fails to
+  auto-renew. If it is imported rather than ACM-issued, ACM cannot renew it
+  automatically and it must be replaced with a new certificate manually. A
+  certificate that lapses while still attached to a listener breaks TLS for
+  every client of the service it terminates.
+references: CWE-298
+references: https://docs.aws.amazon.com/acm/latest/userguide/managed-renewal.html
+
+id: CLOUD-ROUTE53-DANGLING_RECORD-01
+title: DNS record points to an S3 static-website endpoint for a bucket that does not exist
+script: aws/live/route53.sh
+severity: high
+confidence: medium
+cwe: CWE-706
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove this DNS record if the site it served is retired, or
+  recreate the S3 bucket it names (with static-website hosting configured) if
+  it is not. AWS's S3 static-website hosting feature requires the serving
+  bucket's name to exactly match the DNS name being served; while the bucket
+  does not exist, ANY AWS account - not only yours - can create a bucket with
+  that exact name and configure it as a website, taking over everything
+  served at this DNS name. This check covers only the S3-website subdomain-
+  takeover vector; a CNAME/ALIAS to a retired ELB, CloudFront distribution or
+  third-party hosting provider is a related but separate risk this check does
+  not evaluate.
+references: CWE-706
+references: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/dns-configuring-dangling-domain.html
+
+id: CLOUD-BACKUP-NO_PLAN_COVERAGE-01
+title: EBS volume has no AWS Backup recovery point
+script: aws/live/backup.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add this volume to a backup plan's resource selection - by its
+  own ARN, by a tag it carries, or via an account-wide wildcard selection -
+  and confirm a rule in that plan actually runs against it. A volume with no
+  recovery point is unrecoverable if it is accidentally deleted, corrupted,
+  or encrypted by a ransomware-style attack. If this volume is intentionally
+  excluded (purely ephemeral scratch storage that is rebuilt rather than
+  restored), no action is needed, but confirm that is a deliberate choice
+  rather than an oversight in the backup plan's selection criteria.
+references: CWE-693
+references: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+# ---------------------------------------------------------------------------
+# CLOUD-OPENSEARCH-*, CLOUD-REDSHIFT-*, CLOUD-EFS-* - docs/STEP6-CLOUD-PLAN.md
+# CLOUD-17/18/19, the "data stores" tier's three §8.1 rows sharing one
+# three-check shape: public access, no encryption at rest, no encryption in
+# transit. Owned by modules/cloud/aws/live/opensearch.sh, redshift.sh and
+# efs.sh respectively.
+#
+# WHY NONE OF THESE NINE RECORDS CITES A `cis` VALUE, EXCEPT ONE.  Following
+# the S3 records' own rule above ("cis IS AUTHORED HERE ... AND ONLY WHERE A
+# REAL CIS v3.0.0 CONTROL EXISTS"): the CIS AWS Foundations Benchmark v3.0.0
+# has no OpenSearch or Redshift section at all - its storage coverage (§2) is
+# S3, EBS, RDS and EFS only - so none of the six OpenSearch/Redshift records
+# below cites one, and inventing a control number for either service is
+# exactly the overstated-coverage failure docs/DESIGN.md §15 forbids.  EFS IS
+# in scope (§2.4), but only for encryption at rest: `data/cis-mappings`
+# carries `2.4.1`, "Ensure EFS volumes are encrypted at rest", which
+# CLOUD-EFS-NO_ENCRYPTION_AT_REST-01 cites below - the benchmark's EFS
+# coverage stops there, so EFS's own public-access and in-transit records
+# cite nothing either, for the identical reason S3's own NO_VERSIONING/
+# NO_LOGGING records above cite nothing.
+#
+# WHY THE THREE POLICY-HEURISTIC CHECKS (OpenSearch and EFS public access,
+# EFS in-transit) ARE `confidence: medium` WHILE EVERY REDSHIFT CHECK AND
+# EVERY ENCRYPTION-AT-REST CHECK IS `high`.  Redshift's `PubliclyAccessible`
+# and `Encrypted` are direct API fields, and OpenSearch's/EFS's encryption
+# flags are too - an exact read, the same `high` S3's own field-read checks
+# earn.  OpenSearch and EFS have no `get-bucket-policy-status`-style
+# evaluator API, so their public-access (and EFS's in-transit) checks read
+# the raw policy document with modules/cloud/aws/engine.sh's
+# `cloud_policy_is_wide_open`/`cloud_policy_denies_insecure_transport` - a
+# heuristic over the policy's Principal/Condition shape, not AWS's own
+# verdict, and the confidence field says so honestly rather than borrowing
+# the same certainty an exact field read earns.
+#
+# The type tag is `config-read` on every record below, for the identical
+# reason the S3 records above give: each check is one or two read-only AWS
+# API calls and mutates nothing.
+
+id: CLOUD-OPENSEARCH-PUBLIC_ACCESS-01
+title: OpenSearch domain is on the public endpoint with a wide-open access policy
+script: aws/live/opensearch.sh
+severity: critical
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Either attach the domain to a VPC (VPCOptions), which removes
+  the public AWS-owned endpoint entirely, or narrow the access policy so its
+  Principal names specific accounts, roles or a Condition that genuinely
+  restricts the caller (aws:SourceVpc/aws:SourceVpce, or a source IP range)
+  rather than admitting the wildcard "*". A domain with no VPC and a wide-open
+  policy is reachable, unauthenticated, by any host on the internet that
+  knows or guesses the endpoint.
+references: CWE-284
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/ac.html
+
+id: CLOUD-OPENSEARCH-NO_ENCRYPTION_AT_REST-01
+title: OpenSearch domain has no encryption at rest configured
+script: aws/live/opensearch.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable encryption at rest with an AWS-owned or customer-managed
+  KMS key. This setting cannot be changed on a running domain - migrate the
+  data to a newly-created, encrypted domain (a snapshot restore or a reindex)
+  rather than expecting an in-place toggle.
+references: CWE-311
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/encryption-at-rest.html
+
+id: CLOUD-OPENSEARCH-NO_ENCRYPTION_IN_TRANSIT-01
+title: OpenSearch domain has node-to-node transport encryption disabled
+script: aws/live/opensearch.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable node-to-node encryption so traffic between the domain's
+  own data nodes is encrypted in transit. This is a distinct setting from
+  HTTPS-to-client (DomainEndpointOptions.EnforceHTTPS) and from encryption at
+  rest, and like encryption at rest it cannot be toggled in place - plan a
+  migration to a newly-created domain with the setting enabled.
+references: CWE-319
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/ntn.html
+
+id: CLOUD-REDSHIFT-PUBLIC_ACCESS-01
+title: Redshift cluster is configured as publicly accessible
+script: aws/live/redshift.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the cluster's PubliclyAccessible option to false and reach
+  it from outside the VPC through a VPN, Direct Connect, or a bastion/proxy
+  host inside the VPC instead. A publicly accessible cluster is reachable
+  from the internet whenever its security group and network ACLs also permit
+  the connection, which is the ordinary case for a security group opened for
+  a BI tool or an operator's own workstation.
+references: CWE-284
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/managing-clusters-vpc.html
+
+id: CLOUD-REDSHIFT-NO_ENCRYPTION_AT_REST-01
+title: Redshift cluster has no encryption at rest configured
+script: aws/live/redshift.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Encryption at rest cannot be enabled on a running cluster - create
+  a new, encrypted cluster from a snapshot of the existing one (or with KMS
+  encryption enabled from the start) and switch client connections over to
+  it, then decommission the unencrypted cluster.
+references: CWE-311
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/working-with-db-encryption.html
+
+id: CLOUD-REDSHIFT-NO_ENCRYPTION_IN_TRANSIT-01
+title: Redshift cluster parameter group does not require SSL
+script: aws/live/redshift.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set require_ssl to true in the cluster's own parameter group and
+  apply it. Without it, a client can connect and exchange query text and
+  result rows in the clear even though the cluster supports TLS; setting the
+  parameter does not itself disconnect existing plaintext sessions, so plan a
+  client reconnect after applying it.
+references: CWE-319
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/connecting-ssl-support.html
+
+id: CLOUD-EFS-PUBLIC_ACCESS-01
+title: EFS file system policy grants access to a wildcard principal
+script: aws/live/efs.sh
+severity: critical
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Scope the file system policy's Principal to specific accounts or
+  roles, or add a Condition restricting elasticfilesystem:AccessedViaMountTarget
+  and the expected VPC/account, rather than admitting the wildcard "*". A
+  wide-open policy is not itself internet exposure - EFS has no public
+  endpoint - but it means any principal that can reach a mount target,
+  including one outside this account if network access is otherwise
+  available, can mount the file system without being named on the policy.
+references: CWE-284
+references: https://docs.aws.amazon.com/efs/latest/ug/iam-access-control-nfs-efs.html
+
+id: CLOUD-EFS-NO_ENCRYPTION_AT_REST-01
+title: EFS file system has no encryption at rest configured
+script: aws/live/efs.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.4.1
+remediation: Encryption at rest can only be set when a file system is
+  created - there is no in-place toggle. Create a new, encrypted file system
+  and migrate the data onto it (AWS DataSync or an EFS-to-EFS copy), then
+  redirect mount targets and decommission the unencrypted file system.
+references: CWE-311
+references: https://docs.aws.amazon.com/efs/latest/ug/encryption-at-rest.html
+
+id: CLOUD-EFS-NO_ENCRYPTION_IN_TRANSIT-01
+title: EFS file system policy does not require encryption in transit
+script: aws/live/efs.sh
+severity: medium
+confidence: medium
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add a Deny statement to the file system policy conditioned on
+  Bool aws:SecureTransport=false, so every client is required to mount over
+  the TLS-wrapped transport (mount.efs's -o tls option) rather than plain
+  NFS. Without it, TLS is available but not enforced, and a client's own
+  mount options - not this file system's own configuration - decide whether
+  traffic is encrypted.
+references: CWE-319
+references: https://docs.aws.amazon.com/efs/latest/ug/encryption-in-transit.html
+
+# ---------------------------------------------------------------------------
+# The following two records are owned by modules/cloud/aws/live/appsync.sh
+# (docs/DESIGN.md §8.5; docs/STEP6-CLOUD-PLAN.md CLOUD-23).  Appended to this
+# shared, append-only registry per this file's own header rule.
+#
+# NEITHER RECORD CARRIES A `cis` VALUE, AND THAT IS AN HONEST ABSENCE RATHER
+# THAN A GAP.  CIS Amazon Web Services Foundations Benchmark v3.0.0 has no
+# section for AppSync, or for any managed GraphQL service - its four sections
+# cover IAM, storage (S3/EBS/RDS), logging/monitoring, and networking - so
+# there is no control number to cite.  `data/cis-mappings`'s own header
+# records the identical judgement for the three S3 checks that also cite
+# nothing; inventing one here to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 exists to forbid.  Neither
+# record carries `tags: compliance` either, matching the rule those three S3
+# checks already establish: that tag is carried by exactly the records that
+# also carry a `cis` value.
+#
+# TWO IDS FOR TWO INDEPENDENT FACTS, PER §8.5'S OWN TEXT ("API-key auth in
+# use and key expiry").  The CLOUD location profile carries no component
+# naming the defect, so one id covering both an API's own default-auth choice
+# and one of its keys' expiry would collide two unrelated findings about two
+# different resources (the API itself; one API key) onto whichever
+# fingerprint sorted first.
+
+id: CLOUD-APPSYNC-API_KEY_DEFAULT_AUTH-01
+title: AppSync GraphQL API's default authentication is a plain API key
+script: aws/live/appsync.sh
+severity: medium
+confidence: high
+cwe: CWE-287
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Move the API's default authentication off API_KEY onto AWS_IAM
+  (for first-party, SigV4-signing callers such as another AWS service or a
+  backend you control) or Amazon Cognito user pools (for end users who need
+  individual identity and field-level `@aws_auth` authorization). An API key
+  is a static, bearer-style credential that carries no caller identity -
+  anyone who holds it, however it reached them, gets whatever access the
+  schema grants an API-key caller, with no per-caller authorization, no MFA,
+  and no revocation short of deleting the key itself. If API_KEY is kept at
+  all, reserve it for development use with a short-lived key and pair it with
+  additional authentication providers so production traffic never depends on
+  it.
+references: CWE-287
+references: https://docs.aws.amazon.com/appsync/latest/devguide/security-authz.html
+
+id: CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01
+title: AppSync API key has a long, far-future expiration
+script: aws/live/appsync.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Reissue the key with a short lifetime - the 7-to-30-day range
+  covers most legitimate uses, and AppSync's own maximum for any key is 365
+  days from creation - and put a rotation process in front of whatever
+  consumes it before the old key expires. The longer a static, unrotatable
+  API key stays valid, the longer it remains useful if it is ever captured -
+  copied out of a mobile app's decompiled binary, committed to a repository,
+  or read straight out of a JavaScript bundle a browser downloaded. Where the
+  consuming client can authenticate another way, move it off API_KEY
+  authentication entirely (see CLOUD-APPSYNC-API_KEY_DEFAULT_AUTH-01) rather
+  than only shortening this key's lifetime.
+references: CWE-613
+references: https://docs.aws.amazon.com/appsync/latest/devguide/security-authz.html

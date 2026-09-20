@@ -1,0 +1,160 @@
+# bench/corpus.lock - every benchmark corpus, pinned.
+#
+# This file is the B2 deliverable and it is the reason a published number is
+# reproducible by a stranger.  A
+# corpus that is fetched at "HEAD" is not a corpus, it is a moving target: two
+# runs a week apart measure two different things and the difference is
+# invisible in the result.  Every row here pins a COMMIT, never a branch or a
+# tag, because a tag can be moved and a branch always is.
+#
+# NO CORPUS CONTENT IS COMMITTED TO THIS REPOSITORY, and that is a licence
+# decision as well as a size one.  scoursh is Apache-2.0; OWASP Benchmark is
+# GPL-2.0.  Vendoring even a subset of its test cases - or of its
+# `expectedresults` ground-truth CSV, which is part of the same work - would
+# put GPL-2.0 material inside an Apache-2.0 tree.  `bench/fetch-corpus.sh`
+# clones it into an IGNORED directory instead (bench/corpora/, see
+# bench/.gitignore), and the committed smoke result under bench/results/
+# carries only the SCORE and the two tools' own normalised output - never a
+# line of corpus text.
+#
+# FORMAT.  Blank-line-separated `key: value` block records, the same shape
+# rules/RULE-FORMAT.md freezes for the scanner's own record files - so anyone
+# who can read a `.rules` file can read this without learning a second format.
+# It is deliberately NOT loaded by the scanner and is NOT covered by
+# tests/lint-rules.sh: bench/ is a separate harness (see bench/README.md), and
+# `rules/RULE-FORMAT.md` §9's path table governs the scanner's own record
+# files, not this one.  Values carry no escaping; a `#` in the first column is
+# a whole-line comment.
+#
+# KEYS
+#   id             the name every other bench/ script refers to this corpus by
+#   repo           the clone URL
+#   commit         the pinned commit sha - full 40 hex, never abbreviated
+#   licence        SPDX identifier, or `unstated` (which is a reason NOT to use it)
+#   ground-truth   how a case's true label is obtained, or `none`
+#   categories     the scoring categories this corpus supplies, space separated
+#   sparse         optional: a sparse-checkout path, to avoid fetching the whole tree
+#   note           free prose, repeatable
+
+id: owasp-benchmark
+repo: https://github.com/OWASP-Benchmark/BenchmarkJava.git
+commit: 20cbf3d11123347e47ed89541e6942836def53f7
+licence: GPL-2.0
+ground-truth: csv:expectedresults-1.2.csv
+categories: sqli cmdi ldapi pathtraver crypto hash weakrand xss trustbound securecookie xpathi
+sparse: src/main/java/org/owasp/benchmark/testcode
+note: 2,740 single-file Java test cases, each labelled with its category, its
+  CWE and a `real vulnerability: true|false` column - the only corpus in this
+  file whose ground truth is machine-readable and authored by neither of the
+  tools being compared.  Half the cases are deliberate SANITIZED TRAPS, which
+  is what makes a false-positive rate measurable here at all and what makes
+  recall alone meaningless.
+note: GPL-2.0.  Fetched, never vendored - see the licence paragraph above.
+
+id: terragoat
+repo: https://github.com/bridgecrewio/terragoat.git
+commit: 729f8da62c6a85ce4af5ad3d123de97776d954c4
+licence: Apache-2.0
+ground-truth: labels:terragoat-aws.truth
+categories: terraform-aws
+sparse: terraform/aws
+note: Deliberately-misconfigured Terraform.  Its own ground truth is PROSE plus
+  Checkov's own `CKV_*` check ids, so scoring recall against THAT would bias
+  the result toward Checkov - which is why this row read `ground-truth: none`
+  until the B6 leg hand-labelled the corpus.  It now names
+  bench/labels/terragoat-aws.truth, a label set this project authored by
+  reading the Terraform and applying two written rules, with a rationale
+  committed beside every case.  No `CKV_*` id, and no tool's output of any
+  kind, was consulted to produce it - methodology rule R2.
+note: Scoped to `terraform/aws` on purpose.  The repository is mostly
+  Azure/GCP/Oracle/AliCloud and scoursh's terraform.rules is AWS-shaped, so
+  scoring the whole tree would measure cloud-provider mismatch and report it
+  as a detection gap.  For IaC, "same category" has to mean "same cloud" -
+  which is why `categories` says `terraform-aws` and not `iac`.
+
+id: kubernetes-goat
+repo: https://github.com/madhuakula/kubernetes-goat.git
+commit: 723a0db478f050d173d23b4ce5044b65bce0bdd0
+licence: MIT
+ground-truth: labels:kubernetes-goat.truth
+categories: kubernetes
+sparse: scenarios
+note: Deliberately-vulnerable Kubernetes scenario manifests.  Its own ground
+  truth is PROSE (a per-scenario walkthrough in `guide/`), so this repository
+  hand-labels it instead - see bench/labels/kubernetes-goat.truth, which IS
+  the ground truth and is committed for exactly that reason.  `ground-truth:
+  labels:<file>` names a file under bench/labels/ rather than a file inside
+  the corpus, which is what distinguishes a corpus whose labels this project
+  authored from one that ships its own.
+note: Scoped to `scenarios` on purpose.  `guide/` is documentation, `platforms/`
+  is cluster bootstrap for a specific hosted provider, and
+  `infrastructure/helm-tiller/` is a Helm chart whose templates are Go
+  templates rather than Kubernetes manifests - a plain-manifest scanner cannot
+  parse them and scoring it on them would measure template syntax, not
+  detection.  The two Helm-shaped directories INSIDE `scenarios` are excluded
+  by the label file for the same reason, and the exclusion is stated there.
+
+id: leaky-repo
+repo: https://github.com/Plazmaz/leaky-repo.git
+commit: 2e951359cac53addbee56437da3ffb546e3dfe24
+licence: MIT
+ground-truth: labels:leaky-repo.truth
+categories: secrets
+note: A deliberately-seeded collection of the credential-bearing files that
+  most often reach a public repository by accident - ssh and PEM private keys,
+  cloud credential files, framework config, a database dump, browser password
+  stores.  Its author states plainly that none of the values are real; they
+  are randomised or redacted reproductions of shapes seen in the wild, which
+  is what makes it publishable at all.
+note: It is NOT any scanned tool's own fixture set, which is what methodology
+  rule R1 requires.  It does ship `.leaky-meta/benchmarking/*.md` reporting
+  how several scanners scored against it, so a tool author COULD have tuned
+  against it since 2019 - that is a weaker relationship than authorship and it
+  is stated here rather than left for a reader to find.  Its own
+  `.leaky-meta/secrets.csv` is a per-FILE count of "risk" and "informative"
+  lines, not a line-level label, and it covers only a subset of the tree - so
+  it is used here as an independent CROSS-CHECK on the hand labels, never as
+  the labels themselves.
+note: SecretBench (`setu1421/SecretBench`, MSR'23) was the first choice and is
+  NOT obtainable here: the dataset itself is not in that repository, it lives
+  in Google BigQuery and Google Cloud Storage behind a Google Cloud account
+  AND a signed data-protection agreement AND per-email access granted by its
+  authors.  That is recorded as an explicit not-measured cell rather than
+  quietly substituted - see bench/results/b6-secrets-leaky-repo/README.md.
+
+id: dast-juiceshop
+repo: https://github.com/juice-shop/juice-shop.git
+commit: f915bddd82790d0f3018902d36ae9b4241a5f51f
+licence: MIT
+ground-truth: labels:dast-juiceshop.truth
+categories: cors missing-csp sqli info-disclosure
+image: bkimminich/juice-shop:v20.1.1
+image-digest: sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf
+note: A RUNNING TARGET, not a scanned tree - `commit` above is the SOURCE
+  commit the `v20.1.1` tag dereferences to (required to satisfy
+  bench/lib/corpus.sh's own full-40-hex validation, which every corpus row
+  must pass or the whole lock file fails to load), but the artefact actually
+  under test is the CONTAINER IMAGE, so `image`/`image-digest` pin that
+  separately and it is `image-digest` a reproduction should match against.
+  tools/dast-test-target.sh starts it, fixed at 127.0.0.1:3400,
+  authorized by docs/DAST-TEST-TARGET-AUTHORIZATION.md and
+  tools/dast-test-target/scope.conf - the same local, operator-owned target
+  scoursh's own DAST test suite (tests/e2e/dast-auth-live.sh) already uses.
+note: `ground-truth: labels:dast-juiceshop.truth` names a file this project
+  authored by probing the running target directly (`curl -i`) and, for its one
+  SQL-injection case, reproducing a challenge Juice Shop itself documents and
+  names in its own shipped challenge catalogue - never a tool's output.  See
+  that file's own header for the full methodology and its stated scope limit
+  (a client-rendered SPA reachable only by a short, hand-enumerated endpoint
+  list, not by a static crawl).
+note: VAmPI (`erev0s/vampi:latest`, digest
+  sha256:0a5a224b6e14ae7da6a6ea265178ff71286ff903aec74adee98f660bb0e4ca12) WAS
+  obtained in this environment (`docker pull` succeeded once retried past a
+  slow first attempt) but is NOT part of this leg's scored corpus: standing up
+  a second target, hand-labelling a second ground-truth set and running a
+  second full ZAP active scan (each ZAP active scan against Juice Shop alone
+  took the driver through five real attempts before completing - see
+  bench/results/b7-dast-juiceshop/README.md) was outside this ticket's time
+  budget once that Juice Shop measurement was real. Recorded here, pinned by
+  digest, rather than silently dropped, so a follow-up ticket can pick it up
+  without re-deriving whether it is obtainable.

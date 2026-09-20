@@ -105,6 +105,7 @@ id: scanner
 requests-per-second: 5000
 request-budget: 20000
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
 config_scanner_load "$W/scanner.conf"
 
@@ -378,7 +379,7 @@ _run_case() {
   _dast_markup_phase
 }
 
-B=https://mk.fixture.example
+MK_BASE=https://mk.fixture.example
 
 # ===========================================================================
 # A. The tokenizer, on its own.
@@ -554,7 +555,7 @@ assert_contains "$(_meta checks_run)" 'DAST-MARKUP-SRI_MISSING-01' \
 # C. Subresource Integrity.
 # ===========================================================================
 t_case 'SRI'
-_run_case sri mk-fixture "$B/sri"
+_run_case sri mk-fixture "$MK_BASE/sri"
 assert_eq 1 "$(_count_check DAST-MARKUP-SRI_MISSING-01)" \
   'the five SRI-relevant elements on /sri produce ONE finding for the page, not one per element'
 _evi=$(_field_of DAST-MARKUP-SRI_MISSING-01 evidence)
@@ -608,7 +609,7 @@ assert_not_contains "$(cat "$REQ_LOG")" 'cdn.example' \
 # D. Reverse tabnabbing.
 # ===========================================================================
 t_case 'tabnabbing'
-_run_case tab mk-fixture "$B/tab"
+_run_case tab mk-fixture "$MK_BASE/tab"
 assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
   '/tab is not an authentication or redirect page, so its finding carries the ordinary id'
 assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING_SENSITIVE-01)" \
@@ -630,7 +631,7 @@ assert_eq 'low' "$(_field_of DAST-MARKUP-TABNABBING-01 base_severity)" \
   'the ordinary id is low severity - current browsers imply noopener, and the remediation says so'
 
 t_case 'tabnabbing: the comment/script/template traps'
-_run_case tricky mk-fixture "$B/tricky"
+_run_case tricky mk-fixture "$MK_BASE/tricky"
 assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING-01)" '/tricky yields exactly one finding'
 _evi=$(_field_of DAST-MARKUP-TABNABBING-01 evidence)
 assert_contains "$_evi" '1 element(s)' 'and exactly one element inside it'
@@ -646,7 +647,7 @@ assert_not_contains "$_evi" 'quoted' 'a single-quoted rel=noopener protects'
 assert_not_contains "$_evi" 'unquoted' 'so does an unquoted one'
 
 t_case 'tabnabbing: weighted higher on sensitive pages'
-_run_case login mk-fixture "$B/login"
+_run_case login mk-fixture "$MK_BASE/login"
 assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING_SENSITIVE-01)" \
   '/login carries the ELEVATED id - this ticket asks for the check to be weighted higher on login and redirect pages'
 assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
@@ -654,7 +655,7 @@ assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
 assert_eq 'medium' "$(_field_of DAST-MARKUP-TABNABBING_SENSITIVE-01 base_severity)" \
   'the elevated id is medium where the ordinary one is low, which is what "weighted higher" means here'
 
-_run_case pwpage mk-fixture "$B/account/settings"
+_run_case pwpage mk-fixture "$MK_BASE/account/settings"
 assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING_SENSITIVE-01)" \
   '/account/settings matches no sensitive path token, but it carries an <input type="password">, so the CONTENT signal elevates it - FAILS if only the path is consulted'
 assert_eq 0 "$(_count_check DAST-MARKUP-CSRF_TOKEN_ABSENT-01)" \
@@ -664,7 +665,7 @@ assert_eq 0 "$(_count_check DAST-MARKUP-CSRF_TOKEN_ABSENT-01)" \
 # E. Insecure external frames.
 # ===========================================================================
 t_case 'frames'
-_run_case frames mk-fixture "$B/frames"
+_run_case frames mk-fixture "$MK_BASE/frames"
 assert_eq 1 "$(_count_check DAST-MARKUP-FRAME_INSECURE_SCHEME-01)" \
   'the one http:// frame produces the plaintext-transport finding'
 assert_eq 1 "$(_count_check DAST-MARKUP-FRAME_UNTRUSTED-01)" \
@@ -689,7 +690,7 @@ assert_not_contains "$_evi" '/own/widget' 'a same-origin frame is not a finding'
 # F. Anti-CSRF tokens in state-changing forms.
 # ===========================================================================
 t_case 'CSRF'
-_run_case forms mk-fixture "$B/forms"
+_run_case forms mk-fixture "$MK_BASE/forms"
 assert_eq 1 "$(_count_check DAST-MARKUP-CSRF_TOKEN_ABSENT-01)" \
   'the five forms on /forms produce ONE finding for the page'
 _evi=$(_field_of DAST-MARKUP-CSRF_TOKEN_ABSENT-01 evidence)
@@ -710,7 +711,7 @@ _rem=$(_field_of DAST-MARKUP-CSRF_TOKEN_ABSENT-01 remediation)
 assert_contains "$_rem" 'SameSite' 'and the remediation names the accepted alternative defence rather than pretending a token is the only one'
 
 t_case 'login form: both findings, on the same page'
-_run_case login2 mk-fixture "$B/login"
+_run_case login2 mk-fixture "$MK_BASE/login"
 assert_eq 1 "$(_count_check DAST-MARKUP-CSRF_TOKEN_ABSENT-01)" \
   'the /login POST form has no token, which is a finding'
 assert_contains "$(_field_of DAST-MARKUP-CSRF_TOKEN_ABSENT-01 evidence)" 'login form' \
@@ -722,7 +723,7 @@ assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING_SENSITIVE-01)" \
 # G. The grain: one finding per check per PAGE.
 # ===========================================================================
 t_case 'grain'
-_run_case twopages mk-fixture "$B/tab" "$B/tricky"
+_run_case twopages mk-fixture "$MK_BASE/tab" "$MK_BASE/tricky"
 assert_eq 2 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
   'two defective pages are TWO findings - markup is a template property, so collapsing them (as headers.sh does for a server-configuration property) would say "a page on this target" without saying which'
 _tpls=$(_fields_of DAST-MARKUP-TABNABBING-01 loc_path_template)
@@ -735,21 +736,21 @@ assert_eq '' "$(_field_of DAST-MARKUP-TABNABBING-01 loc_param_name)" \
 # H. Honesty: every bound and every gap.
 # ===========================================================================
 t_case 'gaps: client-rendered page'
-_run_case spa mk-fixture "$B/spa"
+_run_case spa mk-fixture "$MK_BASE/spa"
 assert_contains "$(_meta coverage_reduction)" 'markup_client_rendered_page' \
   'a page that looks client-rendered is DECLARED: scoursh executes no JavaScript, so the DOM a browser actually builds was never inspected'
 assert_contains "$(_meta coverage_gap)" 'look client-rendered' \
   'and it reaches the coverage_gap the report renders, so a clean markup result for it does not read as "tested and sound"'
 
 t_case 'gaps: a response that is not markup'
-_run_case api mk-fixture "$B/api"
+_run_case api mk-fixture "$MK_BASE/api"
 assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
   'a JSON response is not parsed, so the <a target=_blank> inside one of its string values produces nothing - FAILS if the body is tokenised regardless of Content-Type, which reports findings about a document that does not exist'
 assert_contains "$(_meta coverage_reduction)" 'markup_response_not_html' \
   'and the un-parsed response is declared'
 
 t_case 'gaps: an out-of-scope inventory URL'
-_run_case oos mk-fixture 'https://not-authorised.example/page' "$B/tab"
+_run_case oos mk-fixture 'https://not-authorised.example/page' "$MK_BASE/tab"
 assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
   'an inventory URL the scope gate declines is never handed to http_request - FAILS without the pre-check, where http_request exits 3 and one bad inventory row aborts the whole run'
 MK_RED=$(_meta coverage_reduction)
@@ -822,7 +823,7 @@ assert_contains "$(_meta coverage_reduction)" 'markup_non_get_endpoint_skipped' 
 
 t_case 'gaps: the endpoint cap'
 _new_run cap mk-fixture
-SCOURSH_DAST_ENDPOINTS=$(_inv cap mk-fixture "$B/one" "$B/two" "$B/three" "$B/four")
+SCOURSH_DAST_ENDPOINTS=$(_inv cap mk-fixture "$MK_BASE/one" "$MK_BASE/two" "$MK_BASE/three" "$MK_BASE/four")
 SCOURSH_DAST_TARGET=mk-fixture SCOURSH_DAST_CELL=mk-fixture
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
 _MARKUP_MAX_ENDPOINTS=2 _dast_markup_phase
@@ -932,7 +933,7 @@ t_case 'J1: a run-level counter reset once per page'
 # the reduction is never recorded: the form is still correctly EXCLUDED from
 # the CSRF check and the exclusion is silently lost, leaving the page reading
 # as though it HAD been evaluated for an anti-CSRF token.
-_run_case xopage mk-fixture "$B/forms" "$B/tab"
+_run_case xopage mk-fixture "$MK_BASE/forms" "$MK_BASE/tab"
 assert_contains "$(_meta coverage_reduction)" 'markup_form_posts_cross_origin' \
   'a cross-origin POST form on a page that is NOT the last one still declares its exclusion - FAILS when the counter is reset per page, where the last page (which has no form at all) zeroes it and the declaration vanishes'
 assert_contains "$(_meta coverage_reduction)" 'count=1' \
@@ -946,7 +947,7 @@ t_case 'J2: a tokenizer that failed is not a document that is clean'
 # `checks_run` as having executed against a page whose markup was never read.
 _mk_extract_orig=$(declare -f markup_html_extract)
 markup_html_extract() { printf 'markup_html_extract: simulated tokenizer failure\n' >&2; return 3; }
-_run_case tokfail mk-fixture "$B/tab" "$B/frames"
+_run_case tokfail mk-fixture "$MK_BASE/tab" "$MK_BASE/frames"
 eval "$_mk_extract_orig"
 assert_contains "$(_meta coverage_gap)" 'could not be tokenized' \
   'a tokenizer that exits non-zero produces a coverage GAP naming the page - FAILS when the status is discarded, where a page with three real defects reports as tested-and-clean'

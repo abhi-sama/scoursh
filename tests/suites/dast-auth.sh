@@ -45,6 +45,8 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 source "$ROOT/modules/dast/auth_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
+# shellcheck source=tests/lib/bounded-read.sh
+source "$ROOT/tests/lib/bounded-read.sh"
 
 # Deliberately NOT $SCOURSH_SCRATCH/dast-auth: that is the session store's own
 # path, and `_reset` below erases it between cases.  A workspace sharing it
@@ -969,11 +971,15 @@ if [[ ! -f $AUTH_HUGEFILE ]]; then
   printf '%s' "$hs" >"$AUTH_HUGEFILE"
   unset hs
 fi
+AUTH_HUGE_MARKER=$W/huge-auth-producer-finished
 _auth_huge_transport() {
   local method=$1 path=$5
   printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
-    cp -- "$AUTH_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+    # Served through a FIFO rather than `cp`'d into place, so the PRODUCER'S
+    # own progress reports whether the whole body was read.  See
+    # tests/lib/bounded-read.sh for why that replaces the wall clock here.
+    bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$AUTH_HUGEFILE" "$AUTH_HUGE_MARKER"
   fi
   if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
     printf 'HTTP/1.1 200 Stub\n\n' >>"$_HTTP_TX_HEADERS_OUT"
@@ -981,18 +987,18 @@ _auth_huge_transport() {
   printf '200\n\n'
 }
 SCOURSH_HTTP_TRANSPORT=_auth_huge_transport
-t0=$(now_epoch_ns)
 huge_rc=0
 _dast_auth_post auth-fixture a "https://auth.fixture.example/rest/user/login" \
   application/json '{"email":"a@example.com","password":"x"}' || huge_rc=$?
-t1=$(now_epoch_ns)
-huge_ms=$(( (t1 - t0) / 1000000 ))
+huge_finished=1
+bounded_read_producer_finished "$AUTH_HUGE_MARKER" || huge_finished=0
+bounded_read_reap
 SCOURSH_HTTP_TRANSPORT=_auth_transport
 
 assert_eq 0 "$huge_rc" '_dast_auth_post itself succeeds for a large-but-reachable login response'
 assert_eq "$_DAST_AUTH_MAX_BODY_BYTES" "${#_DAST_AUTH_RESP_BODY}" \
   "a 256 MiB login response leaves _DAST_AUTH_RESP_BODY holding exactly the ${_DAST_AUTH_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
-assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "_dast_auth_post completed in ${huge_ms}ms for a 256 MiB login response - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+assert_eq 0 "$huge_finished" \
+  "the producer serving the 256 MiB login response was still parked mid-write when _dast_auth_post returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces, which drains the pipe to EOF and lets the producer finish. This used to be a 1593ms-on-CI wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 t_summary 'dast-auth'

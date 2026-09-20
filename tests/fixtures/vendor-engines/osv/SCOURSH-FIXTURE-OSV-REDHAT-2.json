@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-REDHAT-2",
+  "summary": "fixture: bash privilege escalation (redhat)",
+  "database_specific": {"severity": "MEDIUM"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Red Hat", "name": "bash"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "4.4.20-5.el8"}]}],
+      "versions": ["4.4.20-4.el8"]
+    }
+  ]
+}

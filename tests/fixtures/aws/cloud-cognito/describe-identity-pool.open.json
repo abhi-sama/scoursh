@@ -1,0 +1,7 @@
+{
+    "IdentityPoolId": "eu-west-2:11111111-1111-1111-1111-111111111111",
+    "IdentityPoolName": "scoursh_fixture_open_pool",
+    "AllowUnauthenticatedIdentities": true,
+    "AllowClassicFlow": true,
+    "IdentityPoolTags": {}
+}

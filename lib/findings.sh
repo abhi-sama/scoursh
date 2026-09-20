@@ -134,6 +134,8 @@ _fp_profile_for() {
     dast) printf '%s' dast ;;
     cloud) printf '%s' cloud ;;
     posture) printf '%s' posture ;;
+    net) printf '%s' net ;;
+    image) printf '%s' image ;;
     derived) printf '%s' derived ;;
     *) return 1 ;;
   esac
@@ -147,6 +149,12 @@ _fp_components_for() {
     dast) printf '%s\n' target method path_template param_location param_name ;;
     cloud) printf '%s\n' account_id region resource_key sub_key ;;
     posture) printf '%s\n' control_id scope_key ;;
+    net) printf '%s\n' target host port transport ;;
+    # IMAGE: SCA's three
+    # components plus image_id, so two images scanned in one run cannot
+    # collide - "Not the version" applies here for the identical reason
+    # SCA's own profile excludes one (§9.2).
+    image) printf '%s\n' image_id ecosystem package advisory_id ;;
     derived) printf '%s\n' correlation ;;
     *) return 1 ;;
   esac
@@ -201,7 +209,13 @@ path_template_of() {
 # SAST history (tension 13): scoping it to a path instead would reintroduce
 # per-commit duplication, since the same content is reachable under a renamed
 # path.
-declare -A _OCC=()
+#
+# Every top-level associative/indexed array in this file is `declare -g`,
+# never bare - see lib/records.sh's `_SCHEMA_LOADED` comment for the measured
+# failure (tools/vendor-engines.sh's advisories bootstrap sources this file,
+# transitively, from inside a short-lived function) that this defends
+# against.
+declare -gA _OCC=()
 OCCURRENCE_RESULT=0
 
 # Clears every ordinal space.  A real run is one process, so this is normally
@@ -268,8 +282,8 @@ _REDACTION_COMBINED=''
 # finding and are identical across every finding of that check, and each miss
 # costs an engine fork.  Evidence is usually longer and usually unique, so the
 # size cap keeps the cache small.
-declare -A _REDACT_MEMO=()
-declare -a _REDACTION_IDS=()
+declare -gA _REDACT_MEMO=()
+declare -ga _REDACTION_IDS=()
 
 # The path argument is optional and defaults to the shipped file.  Callers that
 # pass one - the fixture harness and the test suites - live outside this file and
@@ -511,7 +525,7 @@ md_fence_for() {
 # host state, no network, no ordering.  Facts absent from a finding take their
 # documented default, so the function is total and never depends on whether a
 # module bothered to set a field.
-declare -A _RUBRIC=()
+declare -gA _RUBRIC=()
 _RUBRIC_LOADED=0
 
 # The path argument is optional and defaults to the shipped file.  Callers that
@@ -643,8 +657,8 @@ cvss_score_of() {
 # never a fingerprint input: putting it into a cloud finding's identity would
 # make every cloud finding churn to `new` the moment an operator edited
 # config/scope.conf, which is the instability tension 5 exists to prevent.
-declare -A _ATTR_HOST=()      # host -> LF-joined target ids
-declare -A _ATTR_SUBDOMAIN=() # target -> LF-joined hosts allowing subdomains
+declare -gA _ATTR_HOST=()      # host -> LF-joined target ids
+declare -gA _ATTR_SUBDOMAIN=() # target -> LF-joined hosts allowing subdomains
 _ATTR_LOADED=0
 
 # The path argument is optional and defaults to the shipped file.  Callers that
@@ -908,7 +922,7 @@ _dec() {
 # ---------------------------------------------------------------------------
 # 11. The finding record
 # ---------------------------------------------------------------------------
-declare -A _F=()
+declare -gA _F=()
 
 # The complete field set.  An unknown field is an error rather than a silent
 # no-op, because a typo in a module would otherwise drop a fact the rubric or
@@ -921,11 +935,15 @@ _finding_known_field() {
       logical_fqn | line | url | commit | path | unit_key | \
       loc_path | loc_line | loc_match_digest | loc_occurrence | loc_blob_sha | \
       loc_ecosystem | loc_package | loc_version | loc_advisory_id | loc_target | \
+      loc_image_id | \
       loc_method | loc_path_template | loc_param_location | loc_param_name | \
       loc_account_id | loc_region | loc_resource_key | loc_sub_key | \
       loc_control_id | loc_scope_key | loc_correlation | \
+      loc_host | loc_port | loc_transport | \
       corr_target | corr_account | corr_account_region | corr_file | \
-      oldest_reaching_commit_time)
+      oldest_reaching_commit_time | \
+      fix_kind | fix_find | fix_replace | fix_snippet | fix_fixed_versions | \
+      dep_type | fix_cli)
       return 0
       ;;
     *) return 1 ;;
@@ -1211,6 +1229,56 @@ finding_from_record() {
   done <<<"$(records_list "$set" "$idx" cis)"
   _F[_severity_floor]=$(records_field_or "$set" "$idx" severity-floor '')
   _F[_severity_ceiling]=$(records_field_or "$set" "$idx" severity-ceiling '')
+
+  # rules/RULE-FORMAT.md §9.1.4's optional fix scaffold (--format agent,
+  # docs/AGENT-FORMAT.md).  Read here rather than by each of sast/iac/cloud
+  # separately, because this is the one function all three already share for
+  # every other rule-authored field.
+  local ck
+  ck=$(records_id "$set" "$idx")
+  local fk fkfind fkrepl fksnip fkcli
+  fk=$(records_field_or "$set" "$idx" fix-kind '')
+  fkfind=$(records_field_or "$set" "$idx" fix-find '')
+  fkrepl=$(records_field_or "$set" "$idx" fix-replace '')
+  fksnip=$(records_field_or "$set" "$idx" fix-snippet '')
+  # `fix-cli` (§9.5's script-check schema only, docs/AGENT-FORMAT.md's
+  # captain-decided cloud scaffold): a WRITE, unlike the other three, so it
+  # is never checked against the secret-family guard below (a cloud CLI
+  # remediation names no credential) and is always `assisted`, never `auto` -
+  # report_agent enforces both.
+  fkcli=$(records_field_or "$set" "$idx" fix-cli '')
+  # A bare `[[ cond ]] && cmd` whose COND is false and which is the LAST
+  # statement a function executes becomes that function's own return status
+  # (AGENTS.md "Things measured on this codebase" - the same set -e trap this
+  # whole file's own conventions warn about elsewhere), so every one of these
+  # six optional-field reads is a real `if`, never a short-circuit `&&`.
+  if [[ -n $fkcli ]]; then
+    finding_set fix_cli "$fkcli"
+  fi
+  if [[ -n $fk || -n $fkfind || -n $fkrepl || -n $fksnip ]]; then
+    # A secret-family check's evidence IS the credential (possibly redacted,
+    # possibly a truncated regex fragment): an automated edit built from a
+    # rule-authored fix-find/fix-replace on one of these checks would delete
+    # the literal without rotating it, leaving a live compromised credential
+    # nobody looked at (docs/AGENT-FORMAT.md).  `manual` is correct there on
+    # purpose, so this is refused rather than silently accepted.
+    if finding_check_is_secret_family "$ck"; then
+      die "$SCOURSH_EXIT_INCOMPLETE" \
+        "finding_from_record: '$ck' is a secret-family check and must not carry a fix-* key"
+    fi
+    if [[ -n $fk ]]; then
+      finding_set fix_kind "$fk"
+    fi
+    if [[ -n $fkfind ]]; then
+      finding_set fix_find "$fkfind"
+    fi
+    if [[ -n $fkrepl ]]; then
+      finding_set fix_replace "$fkrepl"
+    fi
+    if [[ -n $fksnip ]]; then
+      finding_set fix_snippet "$fksnip"
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1246,6 +1314,51 @@ finding_fingerprint() {
     parts+=("${_F[loc_$comp]:-}")
   done <<<"$(_fp_components_for "$profile")"
   fingerprint_compute "${parts[@]+"${parts[@]}"}"
+}
+
+# tension 22 / SARIF-01: a profile-driven default logical identity, computed
+# ONCE here rather than by each of the ~30 emitting scripts - the same "a
+# control every caller must remember is not a control" argument AGENTS.md
+# already makes for dast_check_selected and dast_auth_apply.  Applied only
+# when the emitter has not already set logical_kind, so modules/sca/,
+# modules/iac/ and the derived composite path (which all set their own
+# identity before finding_emit runs) keep it unchanged.
+#
+# logical_kind/logical_fqn are deliberately absent from _fp_components_for for
+# every profile above, so nothing here can move a fingerprint - and the
+# reverse must stay true too: this function must never assign to a field that
+# IS a fingerprint component (e.g. loc_target, loc_path), only to
+# logical_kind/logical_fqn themselves.
+#
+# fqn goes through finding_set, not a direct _F[] assignment, because
+# logical_fqn is a _finding_redacted_field (tension 9): a dast fqn is built
+# from target-supplied method and parameter data and must be redacted exactly
+# as it is today.
+_finding_default_logical() {
+  local profile=$1
+  [[ -z ${_F[logical_kind]:-} ]] || return 0
+  case $profile in
+    path | history)
+      finding_set logical_kind file
+      finding_set logical_fqn "${_F[loc_path]:-}:${_F[loc_line]:-}"
+      ;;
+    dast)
+      finding_set logical_kind endpoint
+      finding_set logical_fqn \
+        "${_F[loc_target]:-}:${_F[loc_method]:-} ${_F[loc_path_template]:-}#${_F[loc_param_name]:-}"
+      ;;
+    cloud)
+      finding_set logical_kind resource
+      finding_set logical_fqn "${_F[loc_resource_key]:-}"
+      ;;
+    posture)
+      finding_set logical_kind control
+      finding_set logical_fqn "${_F[loc_control_id]:-}"
+      ;;
+    # sca and derived always set their own logical identity before
+    # finding_emit is called (modules/sca/, the composite path in this file) -
+    # nothing to default.
+  esac
 }
 
 finding_emit() {
@@ -1290,6 +1403,7 @@ finding_emit() {
 
   : "${_F[first_seen]:=${SCOURSH_RUN_TIMESTAMP:-$(now_iso)}}"
   : "${_F[last_seen]:=${SCOURSH_RUN_TIMESTAMP:-$(now_iso)}}"
+  _finding_default_logical "$profile"
   _F[fingerprint]=$(finding_fingerprint)
 
   local shard
@@ -1444,7 +1558,7 @@ _sorted_keys_of_F() {
 # Decoded findings land in the dedicated global _DF.  Namerefs (`local -n`) are
 # deliberately not used anywhere in this repository: `declare -n` arrived in bash
 # 4.3 and tension 24 freezes the minimum interpreter at 4.2.
-declare -A _DF=()
+declare -gA _DF=()
 
 finding_decode() {
   local line=$1 pair k v
@@ -1676,9 +1790,9 @@ derive_findings() {
   fi
 }
 
-declare -A _DERIVE_PRESENT=()
-declare -A _DERIVE_SEV=()
-declare -A _DERIVE_BACKREF=()
+declare -gA _DERIVE_PRESENT=()
+declare -gA _DERIVE_SEV=()
+declare -gA _DERIVE_BACKREF=()
 
 # The correlation value of the last decoded finding, for one correlation key.
 _corr_value_of() {
@@ -1854,10 +1968,30 @@ _sorted_keys_of_DF() {
 
 # ---------------------------------------------------------------------------
 # 16. Classifying a prior composite that did not fire this run (tension 6)
+#     (docs/STEP7-STATE-PLAN.md STATE-05: wires this against real prior state
+#     by threading tension 12's own GUARD through it, and by making (b1)'s
+#     "fixed-eligible" test literally CALL findings_classify_absent - the
+#     same function that decides whether an ordinary finding is `fixed`
+#     (STATE-03) plus its SAST-HIST-* boundary extension (STATE-04) - rather
+#     than reimplementing a second copy of that test here.  Getting (b) wrong
+#     in the lenient direction (a contributor reported "covered" when its
+#     prior state is not actually comparable) is the same false-reassurance
+#     class tension 12 exists to prevent for ordinary findings, so a
+#     composite's contributors must not be exempt from the two guards that
+#     protect them.)
 # ---------------------------------------------------------------------------
-# `classify_derived CHECK_ID CORRELATION FIRED PRIOR_CONTRIBUTORS
+# `classify_derived CHECK_ID CORRELATION FIRED PRIOR_CONTRIBUTORS GUARD
 #                   PRIOR_STATE_FILE COVERED_THIS_RUN_FILE PRIOR_COVERED_FILE
 #                   THIS_RUN_OLDEST_COMMIT_TIME`
+#
+# GUARD is tension 12's own guard result for THIS run - the same value
+# `findings_classify_guard` produces and every ordinary finding is classified
+# against (`usable` / `no_prior_state` / `fp_schema_mismatch` /
+# `scan_root_id_mismatch`).  It is computed once per run and passed in here
+# unchanged, exactly as it is passed to `findings_classify_present`/
+# `findings_classify_absent` - a composite is not a second, ungoverned path
+# to a `fixed` verdict off state that the rest of the run has already
+# decided is unusable.
 #
 # Prints `fixed` or `unknown` (with a reason on the second field).
 #
@@ -1877,8 +2011,28 @@ _sorted_keys_of_DF() {
 #   COVERED_THIS_RUN     check_id \t cell
 #   PRIOR_COVERED        check_id \t cell
 classify_derived() {
-  local check_id=$1 correlation=$2 fired=$3 prior_contributors=$4
-  local prior_state=$5 covered_now=$6 covered_prior=$7 oldest_commit_time=${8:-}
+  local check_id=$1 correlation=$2 fired=$3 prior_contributors=$4 guard=$5
+  local prior_state=$6 covered_now=$7 covered_prior=$8 oldest_commit_time=${9:-}
+
+  # A whole-state guard (fp_schema bumped, or no prior state to begin with)
+  # makes the ENTIRE prior set incomparable, composite included - checked
+  # first, exactly as `findings_classify_present`/`findings_classify_absent`
+  # check GUARD before doing any fingerprint or coverage work.
+  # `scan_root_id_mismatch` is deliberately NOT handled here: a composite's
+  # own cell is JSON null, not `path-root` (tension 12: "the gate is scoped
+  # to path-root cells and to nothing else"), so it cannot invalidate the
+  # composite's OWN classification - it can only invalidate a path-root-scoped
+  # CONTRIBUTOR, which (b1) below applies it to via findings_classify_absent.
+  case $guard in
+    fp_schema_mismatch)
+      printf 'unknown\tfp_schema_mismatch'
+      return 0
+      ;;
+    no_prior_state)
+      printf 'unknown\tno_prior_state'
+      return 0
+      ;;
+  esac
 
   # (a) Own selection.  A composite has no coverage cell, so tension 12's
   # (check, cell) test cannot protect it, and nothing else asks whether the
@@ -1914,7 +2068,7 @@ classify_derived() {
   local c uncovered=''
   while IFS= read -r c; do
     [[ -n $c ]] || continue
-    if ! _contributor_covered "$c" "$prior_contributors" "$prior_state" \
+    if ! _contributor_covered "$c" "$prior_contributors" "$guard" "$prior_state" \
       "$covered_now" "$covered_prior" "$oldest_commit_time"; then
       uncovered="${uncovered:+$uncovered,}$c"
     fi
@@ -1933,32 +2087,61 @@ classify_derived() {
   printf 'fixed\tchain-broken'
 }
 
+# A contributor check id's own coverage-scope, derived from the module that
+# owns it - the same module-prefix table `lib/records.sh`'s
+# `_records_check_coverage_scope` enforces at lint time (E079), so a
+# contributor's declared `coverage-scope` can never legally disagree with
+# what this function computes.  Deriving it here, rather than threading a
+# fifth column through PRIOR_STATE_FILE, keeps that file's shape unchanged
+# and keeps this the same information STATE-06's real caller would read off
+# `covered_checks[<check>].scope` (`lib/state.sh`'s `state_covered_scope`).
+_derived_contributor_scope() {
+  local mod=${1%%-*}
+  case $mod in
+    SAST | SCA | IAC) printf 'path-root' ;;
+    DAST) printf 'target' ;;
+    CLOUD) printf 'account-region' ;;
+    POSTURE) printf 'scope-key' ;;
+    *) printf '' ;;
+  esac
+}
+
 # (b) has two branches because contributors divide into two kinds.
 _contributor_covered() {
-  local check=$1 prior_contributors=$2 prior_state=$3
-  local covered_now=$4 covered_prior=$5 oldest_commit_time=$6
+  local check=$1 prior_contributors=$2 guard=$3 prior_state=$4
+  local covered_now=$5 covered_prior=$6 oldest_commit_time=$7
 
   # (b1) A check that produced a prior contributor finding.  Its (check_id,
-  # cell) pair is read from state/ and must be covered this run.  Additionally
-  # that contributor must itself be `fixed`-ELIGIBLE, not merely cell-covered:
-  # the rule is general, not a SAST-HIST-* special case - a contributor counts
-  # as covered only under the same test that would let its own finding be
-  # classified `fixed`.
-  local fp found=0 line c_check c_cell c_time
+  # cell) pair is read from state/ and must be covered this run.
+  # `findings_classify_absent` IS that test - the same function an ordinary
+  # finding for this check would be classified through - so calling it here,
+  # rather than re-testing `_pair_covered` and re-deriving the SAST-HIST-*
+  # boundary comparison locally, is what makes "a contributor counts as
+  # covered only under the same test that would let its own finding be
+  # classified `fixed`" literally true instead of merely intended.  It also
+  # means a contributor whose OWN scope is `path-root` is protected by
+  # `scan_root_id_mismatch` exactly as an ordinary finding for that check
+  # would be - the guard classify_derived's own top-level switch deliberately
+  # does not apply to the composite itself.
+  #
+  # The local is spelled `coverage_scope`, never the shorter `scope` - the
+  # same measured reason `findings_classify_present`/`findings_classify_absent`
+  # above already state theirs that way: a `scope` local here produced two
+  # false SC2100 findings on an unrelated file
+  # (`tests/suites/dast-scope-precheck.sh`) under a whole-tree `shellcheck -x`
+  # run, some coincidence in how `-x` merges this file's inlined source graph
+  # with that one's.  Do not rename it back.
+  local fp found=0 line c_check c_cell c_time coverage_scope status
   while IFS= read -r fp; do
     [[ -n $fp ]] || continue
     while IFS=$'\t' read -r line c_check c_cell c_time; do
       [[ $line == "$fp" ]] || continue
       [[ $c_check == "$check" ]] || continue
       found=1
-      _pair_covered "$check" "$c_cell" "$covered_now" || return 1
-      if [[ $check == SAST-HIST-* ]]; then
-        # tension 13: a covered cell is necessary but not sufficient.  Reading
-        # only the cell would let a composite be `fixed` while the history
-        # contributor it depends on is itself correctly `unknown`.
-        [[ -n $c_time && -n $oldest_commit_time ]] || return 1
-        [[ $c_time > $oldest_commit_time || $c_time == "$oldest_commit_time" ]] || return 1
-      fi
+      coverage_scope=$(_derived_contributor_scope "$check")
+      status=$(findings_classify_absent "$check" "$c_cell" "$coverage_scope" "$guard" \
+        "$covered_now" "$c_time" "$oldest_commit_time")
+      [[ ${status%%$'\t'*} == fixed ]] || return 1
     done <"$prior_state"
   done <<<"${prior_contributors//,/$'\n'}"
   (( found )) && return 0
@@ -2005,4 +2188,239 @@ _derived_record_selected() {
   local id=$1
   [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0    # no filter chain: all selected
   [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 17. Classifying an ORDINARY (non-derived) finding against state/
+#     (docs/STEP7-STATE-PLAN.md STATE-03; tension 12's four-row table and its
+#     two guards; tension 11 stage 5)
+# ---------------------------------------------------------------------------
+# This is the classification ENGINE only: pure functions over plain scalars
+# and line-oriented files, in the same tradition `classify_derived` above
+# already established for the composite case (a caller with real state/ -
+# lib/state.sh's loader and this run's own write-side coverage builder -
+# converts them into these shapes; nothing here sources lib/state.sh or
+# reaches into its arrays, so there is no new shellcheck -x source edge
+# added here - see AGENTS.md's "Sharp edges" for why that graph is guarded).
+# This ticket wires nothing into scan_main, scan.sh diff, or the report:
+# that is STATE-06 (docs/STEP7-STATE-PLAN.md), which converts a REAL loaded
+# state/latest.json and this run's real findings.fields into the inputs
+# below and applies the result.
+#
+# A derived finding (cell is JSON null) is NOT handled here - it has no
+# coverage cell, so tension 12's (check, cell) test does not apply to it at
+# all, and its own three-condition rule is `classify_derived` above
+# (STATE-05, not this ticket).  A caller filters null-cell findings out
+# before reaching any function below.
+#
+# The four-row table (tension 12), for a prior finding with check_id C and
+# cell K, is:
+#
+#   | Prior finding | This run | Status                                    |
+#   |----------------|----------|------------------------------------------|
+#   | present, (C,K) covered | present | recurring                         |
+#   | present, (C,K) covered | absent  | fixed                             |
+#   | present, (C,K) NOT covered | absent | unknown, carried fwd w/ first_seen|
+#   | absent         | present | new                                      |
+#
+# A finding PRESENT this run implies its own (check_id, cell) was covered
+# this run by construction - it cannot have been emitted otherwise - so the
+# "present | present" row's coverage qualifier needs no separate test: only
+# fingerprint membership in the prior set decides new versus recurring.
+# Coverage matters only on the "prior present, this run absent" side, which
+# is `findings_classify_absent` below.
+
+# `findings_classify_guard THIS_FP_SCHEMA THIS_SCAN_ROOT_ID THIS_HAS_PATH_ROOT
+#                          PRIOR_FP_SCHEMA PRIOR_SCAN_ROOT_ID`
+#
+# PRIOR_FP_SCHEMA empty means no prior state was loaded at all (the ordinary
+# first-run case - lib/state.sh's `state_loaded` returning false), handled
+# identically to a real mismatch: both make the prior set (or the relevant
+# slice of it) incomparable.
+# THIS_HAS_PATH_ROOT is 'true' when this run's OWN covered_checks include at
+# least one path-root-scoped check - i.e. its selected modules are ones
+# whose findings live in path-root cells (SAST/IaC/SCA/history).  A run that
+# never touches a path-root cell cannot be invalidated by a scan_root_id
+# mismatch, because nothing it classifies depends on scan_root_id at all
+# (tension 12: "the gate is scoped to path-root cells and to nothing else").
+#
+# Prints one of: usable | no_prior_state | fp_schema_mismatch |
+#                scan_root_id_mismatch
+findings_classify_guard() {
+  local this_fp_schema=$1 this_scan_root_id=$2 this_has_path_root=$3
+  local prior_fp_schema=$4 prior_scan_root_id=$5
+  if [[ -z $prior_fp_schema ]]; then
+    printf 'no_prior_state'
+    return 0
+  fi
+  if [[ $prior_fp_schema != "$this_fp_schema" ]]; then
+    printf 'fp_schema_mismatch'
+    return 0
+  fi
+  if [[ $this_has_path_root == true && $prior_scan_root_id != "$this_scan_root_id" ]]; then
+    printf 'scan_root_id_mismatch'
+    return 0
+  fi
+  printf 'usable'
+}
+
+# `findings_diff_usable GUARD` -> 'true' or 'false'.
+# Tension 11 stage 5: diff_usable governs the GATE only and never overrides a
+# `status` - every status below is decided by the table above and by nothing
+# else, including on a first run (no prior state), whose findings are still
+# `new`, not `unknown` (tension 11's own withdrawn-earlier-draft note).
+findings_diff_usable() {
+  if [[ $1 == usable ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+# `findings_classify_present FINGERPRINT GUARD SCOPE PRIOR_FINGERPRINTS_FILE`
+#
+# Classifies ONE finding PRESENT in this run's findings.fields.
+# PRIOR_FINGERPRINTS_FILE is one fingerprint per line (lib/state.sh's
+# `state_finding_fingerprints`, unfiltered - the exclusion below is applied
+# HERE, by scope, never by pre-filtering the file, so one file always
+# represents the whole prior set).  SCOPE is this finding's own
+# coverage-scope (path-root/target/account-region/scope-key), needed only
+# to decide whether the scan_root_id guard applies to IT specifically.
+#
+# The local variable is spelled `coverage_scope`, never the shorter `scope`
+# a first draft used - measured, not a style preference.  With `scope` as
+# the local name here (and in `findings_classify_absent` below), a
+# whole-tree `shellcheck -x` run produced two SC2100 findings on an
+# UNRELATED file, `tests/suites/dast-scope-precheck.sh` line 254-255,
+# neither of which is real (confirmed by re-running the identical
+# `shellcheck -x -s bash` invocation against that file alone, with only this
+# rename applied) - some coincidence in how `-x` merges this file's own
+# inlined source graph with that one's.  Do not rename it back.
+#
+# Prints 'new' or 'recurring'.
+findings_classify_present() {
+  local fp=$1 guard=$2 coverage_scope=$3 prior_file=$4
+  case $guard in
+    fp_schema_mismatch | no_prior_state)
+      printf 'new'
+      return 0
+      ;;
+    scan_root_id_mismatch)
+      if [[ $coverage_scope == path-root ]]; then
+        printf 'new'
+        return 0
+      fi
+      ;;
+  esac
+  local pfp
+  while IFS= read -r pfp; do
+    [[ -n $pfp ]] || continue
+    if [[ $pfp == "$fp" ]]; then
+      printf 'recurring'
+      return 0
+    fi
+  done <"$prior_file"
+  printf 'new'
+}
+
+# `findings_classify_absent CHECK_ID CELL SCOPE GUARD COVERED_NOW_FILE
+#                           [PRIOR_OLDEST_REACHING_COMMIT_TIME]
+#                           [THIS_RUN_OLDEST_COMMIT_TIME]`
+#
+# Classifies ONE PRIOR finding ABSENT from this run's findings.fields.
+# COVERED_NOW_FILE is `check_id \t cell` lines, this run's own covered pairs
+# (the identical format `classify_derived`'s COVERED_THIS_RUN already uses,
+# and `_pair_covered` above is reused unchanged - one coverage test, one
+# owner, for an ordinary finding and a composite contributor alike).
+#
+# The two trailing, optional arguments implement tension 13's SECOND layer
+# (docs/STEP7-STATE-PLAN.md STATE-04), for the SAST-HIST-* family only.
+# Every other caller - IaC, SCA, DAST, working-tree SAST - passes neither and
+# is byte-for-byte unaffected: CHECK_ID never matches `SAST-HIST-*` for them,
+# so the block below never runs.
+#
+# Layer 1, above, is unchanged and runs FIRST: an uncovered (check, cell)
+# pair is `unknown` without ever consulting the boundary - tension 13's own
+# words, "an uncovered path root gives unknown without ever consulting this
+# rule".  Layer 2 only ever narrows a layer-1 `fixed` verdict to `unknown`
+# for a history finding whose own blob predates what this run's bounded walk
+# could see; it never turns an `unknown` into a `fixed`, so the two layers
+# can never disagree (tension 13's closing line).
+#
+# PRIOR_OLDEST_REACHING_COMMIT_TIME is the absent finding's own persisted
+# `oldest_reaching_commit_time` (state/'s per-finding field).
+# THIS_RUN_OLDEST_COMMIT_TIME is THIS run's `history_boundary.oldest_commit_time`
+# for CHECK_ID (state/'s per-covered-check field) - the resolved boundary of
+# the walk that just ran, never the configured window (tension 13: "coverage
+# is measured on the commits actually reached, not on the config").
+#
+# The boundary is compared here, as a PLAIN VALUE, and is deliberately never
+# folded into CELL: a cell carries only the path root (tension 13's own
+# words), so two runs with different boundaries still describe the SAME
+# cell and layer 1 still finds it covered.  Folding the boundary into the
+# cell string is the rejected reading tension 13 case 6 exists to catch - it
+# would make cell equality fail whenever the (rolling) boundary moves, which
+# is the ordinary shape on any active repository, and so make every history
+# finding `unknown` forever.
+#
+# Either time value being empty leaves layer 2 a no-op (falls through to the
+# plain layer-1 `fixed`) rather than a comparison against nothing: a caller
+# that omits them (every non-history caller, and any test exercising layer 1
+# alone) gets layer 1's own answer unchanged.
+#
+# Prints '<status>\t<reason>'.  status is 'fixed' or 'unknown'; reason is
+# empty for 'fixed'.
+findings_classify_absent() {
+  local check_id=$1 cell=$2 coverage_scope=$3 guard=$4 covered_now=$5
+  local prior_oldest=${6:-} this_oldest_commit_time=${7:-}
+  case $guard in
+    fp_schema_mismatch)
+      printf 'unknown\tfp_schema_mismatch'
+      return 0
+      ;;
+    no_prior_state)
+      # Unreachable in ordinary use: no prior state means no prior findings
+      # to classify as absent in the first place.  Guarded here anyway so a
+      # caller that reaches this function out of order fails safe rather
+      # than falling through to a coverage test against nothing.
+      printf 'unknown\tno_prior_state'
+      return 0
+      ;;
+    scan_root_id_mismatch)
+      if [[ $coverage_scope == path-root ]]; then
+        printf 'unknown\tscan_root_id_mismatch'
+        return 0
+      fi
+      ;;
+  esac
+  if ! _pair_covered "$check_id" "$cell" "$covered_now"; then
+    printf 'unknown\tnot-covered-this-run'
+    return 0
+  fi
+  if [[ $check_id == SAST-HIST-* && -n $prior_oldest && -n $this_oldest_commit_time ]]; then
+    if [[ $prior_oldest < $this_oldest_commit_time ]]; then
+      # This run's bounded walk could not have reached the blob that produced
+      # the prior finding, so its absence proves nothing - not a rescan of a
+      # remediated blob, but a boundary that receded past it.
+      printf 'unknown\thistory_boundary_receded'
+      return 0
+    fi
+  fi
+  printf 'fixed\t'
+}
+
+# `findings_rule_digest_changed PRIOR_DIGEST THIS_DIGEST` -> 'true'/'false'.
+# Tension 12: "a rule_digest change classifies normally but flags 'rule
+# changed' in the report."  Classification itself (above) does not read this
+# at all - a rule edit is not a reason to withhold fixed/recurring/unknown,
+# only a reason to annotate the report once STATE-06 wires that in.  An
+# empty PRIOR_DIGEST (the check did not exist in the prior run at all) is
+# not a change to flag - there is nothing to compare against yet.
+findings_rule_digest_changed() {
+  local prior_digest=$1 this_digest=$2
+  if [[ -n $prior_digest && $prior_digest != "$this_digest" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
 }

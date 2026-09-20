@@ -1,0 +1,177 @@
+# tests/fixtures/image/apk-version-corpus.tsv - the COMMITTED differential
+# corpus for modules/image/distro/apk_version.sh (IMG-05).
+#
+# FORMAT: four TAB-separated columns, `A <op> B <why>`, where <op> is one of
+# `<`, `=`, `>` - deliberately `apk version -t`'s own output vocabulary, so
+# that the follow-up live differential named in the comparator's header (run
+# `apk version -t A B` per row on a networked box with apk-tools installed)
+# is a direct column diff rather than a translation.  Whole-line `#` comments
+# and blank lines are ignored, matching the record-format instinct the rest
+# of this repository uses; a value never needs escaping because no column can
+# contain a TAB.
+#
+# PROVENANCE, STATED PLAINLY.  Every row here is DERIVED from apk-tools'
+# documented version grammar and suffix ordering (report.md §2.5) and from
+# the specific cases report.md §2.4/§2.5 name.  NONE of it was harvested by
+# running `apk version -t`: scoursh is egress-restricted and the development
+# host has no `apk` binary, so a live 30k-pair harvest of the shape
+# `modules/sca/semver.sh` used for npm was not available.  This is the
+# strongest OFFLINE corpus available and it is not a substitute for that run
+# - see the comparator's own "THE OFFLINE-CORPUS LIMIT" section for the
+# follow-up hardening this owes, and for the two rows (the fractional
+# components, and `1.0 < 1.0-r0`) to scrutinise first when it happens.
+#
+# The suite asserts the MIRROR of every row too (`A < B` implies `B > A`) and
+# the reflexivity of every distinct version, so a comparator that returned a
+# constant could not pass by agreeing with one column.
+#
+# A	op	B	why
+
+# --- report.md §2.4's own measured failure: the pkgrel is NUMERIC ---
+# This is the row that disqualifies modules/sca/semver.sh (it answers `1`
+# here, because it splits on the first `-` and compares "r4" > "r10"
+# lexically) and it is the false-NEGATIVE direction: an advisory fixed in
+# -r10 would report a vulnerable -r4 package SAFE.
+1.2.3-r4	<	1.2.3-r10	pkgrel compares numerically, not lexically (report.md 2.4)
+1.2.3-r9	<	1.2.3-r10	the same one digit lower, where a lexical read also fails
+1.2.3-r0	<	1.2.3-r1	adjacent pkgrels
+1.2.3-r1	<	1.2.3-r2	adjacent pkgrels
+1.2.3-r2	<	1.2.3-r20	single vs double digit
+1.2.3-r99	<	1.2.3-r100	two vs three digits
+1.2.3-r4	=	1.2.3-r4	identical pkgrel
+1.2.3-r04	=	1.2.3-r4	a leading zero in the pkgrel is not significant - it is an integer
+1.2.4-r0	>	1.2.3-r99	an upstream bump outranks any pkgrel below it
+
+# --- report.md §2.5's pre-release case ---
+1.2.3_alpha1	<	1.2.3	a pre-release suffix sorts BELOW the bare release (report.md 2.5)
+1.2.3_alpha	<	1.2.3	the same with no suffix number
+1.2.3_beta	<	1.2.3	beta is a pre-release suffix too
+1.2.3_pre	<	1.2.3	pre is a pre-release suffix too
+1.2.3_rc1	<	1.2.3	rc is a pre-release suffix too
+1.2.3_alpha1-r0	<	1.2.3-r0	and the rule survives a pkgrel on both sides
+1.2.3_rc1-r4	<	1.2.3-r0	a pre-release with a HIGH pkgrel still loses to the release
+1.2.3_alpha1	<	1.2.3_alpha2	a suffix number compares numerically
+1.2.3_alpha9	<	1.2.3_alpha10	and numerically rather than lexically
+1.2.3_alpha	<	1.2.3_alpha1	a bare suffix sorts below the same suffix with a number
+1.2.3_alpha0	>	1.2.3_alpha	_alpha0 is NOT the same token stream as _alpha
+
+# --- report.md §2.5's post-release trap ---
+1.2.3	<	1.2.3_git20240101	a post-release suffix sorts ABOVE the bare release (report.md 2.5)
+1.2.3	<	1.2.3_cvs	cvs is a post-release suffix
+1.2.3	<	1.2.3_svn	svn is a post-release suffix
+1.2.3	<	1.2.3_hg	hg is a post-release suffix
+1.2.3	<	1.2.3_p1	p is a post-release suffix
+1.2.3_git20230101	<	1.2.3_git20240101	two post-release snapshots compare by their number
+1.2.3_p1	<	1.2.3_p2	and so do two patch-level suffixes
+
+# --- the full suffix ordering chain, adjacent pair by adjacent pair ---
+# alpha < beta < pre < rc < (none) < cvs < svn < git < hg < p
+1.0_alpha	<	1.0_beta	suffix chain step 1
+1.0_beta	<	1.0_pre	suffix chain step 2
+1.0_pre	<	1.0_rc	suffix chain step 3
+1.0_rc	<	1.0	suffix chain step 4 - the pre-release/release boundary
+1.0	<	1.0_cvs	suffix chain step 5 - the release/post-release boundary
+1.0_cvs	<	1.0_svn	suffix chain step 6
+1.0_svn	<	1.0_git	suffix chain step 7
+1.0_git	<	1.0_hg	suffix chain step 8
+1.0_hg	<	1.0_p	suffix chain step 9
+1.0_alpha	<	1.0_p	the two ends of the chain, skipping every step between
+1.0_alpha	<	1.0_rc	non-adjacent pre-release pair
+1.0_cvs	<	1.0_p	non-adjacent post-release pair
+1.0_rc	<	1.0_cvs	across the bare-release gap, with neither side bare
+
+# --- numeric, not lexical, on the dotted components ---
+1.2.10	>	1.2.9	report.md 2.5's own numeric-not-lexical case
+1.2.9	<	1.2.10	the same pair stated in the other direction
+1.9.0	<	1.10.0	the minor component, where a lexical read also fails
+9.0.0	<	10.0.0	the major component
+1.2.100	>	1.2.99	three digits against two
+1.2.3	<	2.0.0	a major bump outranks everything below it
+2.0.0	>	1.99.99	and outranks a high minor/patch
+
+# --- component count: a longer version is greater, ties equal ---
+1.0	<	1.0.0	apk is NOT semver - a trailing .0 is a real, greater component
+1.0.0	<	1.0.0.0	and again one level down
+1.2	<	1.2.1	a missing component is not an implicit zero either
+1.2.3	=	1.2.3	reflexive
+1	<	1.1	a bare major against a two-component version
+1	=	1	a bare major is a legal version on its own
+0	<	1	and zero is a legal leading component
+0.0.1	<	0.1.0	ordering inside a 0.x series
+
+# --- the optional single letter, which sorts ABOVE the bare version ---
+1.2.3	<	1.2.3a	a letter suffix is a later release than the bare version
+1.2.3a	<	1.2.3b	two letters compare by code point
+1.2.3a	<	1.2.3z	non-adjacent letters
+1.2.3a	=	1.2.3a	reflexive with a letter
+1.2.3a	<	1.2.4	a letter never outranks an upstream bump
+1.2.3a_alpha1	<	1.2.3a	the pre-release rule still applies after a letter
+1.2.3a-r1	>	1.2.3a-r0	and so does the pkgrel rule
+1.2.3	<	1.2.3a-r0	letter first, pkgrel second
+
+# --- the absent pkgrel: NOT the same token stream as -r0 ---
+# This is the second row the live differential should scrutinise first.
+1.0	<	1.0-r0	an absent pkgrel is structurally shorter, so it sorts lower
+1.0-r0	>	1.0	the same pair stated in the other direction
+1.0_git	<	1.0_git0	the identical structural rule one token further in
+
+# --- fractional components: a leading zero after a dot is significant ---
+# apk-tools' DIGIT_OR_ZERO rule. `.01` is a smaller fraction than `.1`.
+1.01	<	1.1	a leading zero makes the component a fraction, not the integer 1
+1.1	>	1.01	the same pair stated in the other direction
+1.010	<	1.02	fractions compare left to right after zero-padding
+1.0	=	1.00	trailing zeros in a fractional component do not change its value
+01.0	=	1.0	the LEADING component is a plain integer - no fractional rule there
+1.001	<	1.01	one more zero is one order of magnitude smaller
+
+# --- multiple suffixes in one version ---
+1.0_alpha1_git20240101	<	1.0_alpha2	the FIRST differing suffix decides
+1.0_alpha1_git20240101	>	1.0_alpha1	a longer suffix chain outranks its own prefix
+1.0_alpha1_git20240101	<	1.0_beta	and the first suffix still outranks the second
+1.0_pre1_p2	>	1.0_pre1	a post-release suffix after a pre-release one still adds
+1.0_pre1_p2	<	1.0	but the leading PRE-release suffix keeps the whole below the release
+
+# --- real Alpine-shaped package versions, the everyday case ---
+1.2.4-r2	<	1.2.5-r0	musl-shaped: an upstream bump with the pkgrel reset
+3.1.4-r5	<	3.1.4-r6	openssl-shaped: a pkgrel-only security rebuild
+3.1.4-r5	=	3.1.4-r5	openssl-shaped: the exact same build
+1.34.1-r5	<	1.36.1-r0	busybox-shaped: a minor bump
+2.4.57-r0	<	2.4.58-r0	apache-shaped: a patch bump
+9.0-r0	<	9.1-r0	a two-component upstream version, as several Alpine packages carry
+20240705-r0	<	20241010-r0	a date-shaped upstream version (ca-certificates-shaped)
+2.5.0_rc1-r0	<	2.5.0-r0	a release candidate against its own release
+1.21.4-r0	<	1.21.5-r0	go-shaped
+0.9.8-r0	<	1.0.0-r0	crossing the 0.x/1.x boundary
+7.88.1-r1	<	8.0.1-r0	curl-shaped: a major bump outranks a pkgrel
+
+# --- equality ties, in every shape the grammar allows ---
+1.0	=	1.0	bare
+1.0a	=	1.0a	with a letter
+1.0_rc1	=	1.0_rc1	with a pre-release suffix
+1.0_git20240101	=	1.0_git20240101	with a post-release suffix
+1.0-r3	=	1.0-r3	with a pkgrel
+1.2.3a_alpha1_git5-r7	=	1.2.3a_alpha1_git5-r7	with every grammar feature at once
+
+# --- every grammar feature at once, compared one field at a time ---
+1.2.3a_alpha1_git5-r7	<	1.2.4a_alpha1_git5-r7	the dotted component decides first
+1.2.3a_alpha1_git5-r7	<	1.2.3b_alpha1_git5-r7	then the letter
+1.2.3a_alpha1_git5-r7	<	1.2.3a_beta1_git5-r7	then the first suffix
+1.2.3a_alpha1_git5-r7	<	1.2.3a_alpha2_git5-r7	then its number
+1.2.3a_alpha1_git5-r7	<	1.2.3a_alpha1_hg5-r7	then the second suffix
+1.2.3a_alpha1_git5-r7	<	1.2.3a_alpha1_git6-r7	then its number
+1.2.3a_alpha1_git5-r7	<	1.2.3a_alpha1_git5-r8	and the pkgrel last
+
+# --- the FIELD-ORDER rule: when two versions diverge into different fields
+# of the grammar, the side that has advanced FURTHER passed the earlier field
+# with no content, and an absent field sorts low.  apk-tools itself answers
+# `=` for every row in this block (its comparison is a preorder); this is the
+# comparator's one deliberate divergence, argued in full in its header, and
+# it can only ever turn a silent SAFE into a reported finding.  These are the
+# rows the live differential will flag - expected, not a defect.
+1.0-r5	<	1.0.1-r0	pkgrel field beats components field: -r5 has no third component at all
+1.0-r0	<	1.0.0-r0	the same with a .0, so it is the field and not the value that decides
+1.0-r5	<	1.0a-r0	pkgrel field beats letter field
+1.0_git-r0	<	1.0_git1-r0	pkgrel field beats suffix-number field, so _git < _git1 survives a pkgrel
+1.0_git_p-r0	<	1.0_git1-r0	suffix-name field beats suffix-number field
+1.0_alpha-r0	<	1.0.1-r0	but rule 2b wins first: a pre-release suffix is LESS whatever field it faces
+1.0.1-r0	>	1.0_git-r0	and a real component outranks a post-release snapshot of its predecessor

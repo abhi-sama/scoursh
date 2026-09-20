@@ -123,29 +123,84 @@ _crawl_discovery_load() {
   local target=$1 path=${SCOURSH_INSTALL_ROOT:-.}/config/discovery.conf idx
   _CRAWL_D_OPENAPI='' _CRAWL_D_GRAPHQL='' _CRAWL_D_POSTMAN='' _CRAWL_D_HAR=''
   _CRAWL_D_DEPTH=3
+  # Default ON: this adds no fetch of its own (docs/INVENTORY-FORMAT.md's
+  # `source=js` rows are mined from bodies the crawl was already going to
+  # download and record as endpoints), and the passive crawl phase runs
+  # unconditionally regardless of `--intensity`, so enabling it cannot
+  # surprise an operator with more TRAFFIC than they already asked for - only
+  # a larger inventory for whatever `--intensity`/`--allow-intrusive` they
+  # already chose to probe with. `js-endpoint-discovery: false` is the
+  # additive optional key (rules/RULE-FORMAT.md §14's "additive optional key"
+  # shape, the same one `contact` in §9.6.1 already is) an operator sets when
+  # they want a strictly HAR/spec/crawl-only inventory instead.
+  _CRAWL_D_JS_DISCOVERY=true
   declare -ga _CRAWL_D_INCLUDE=()
   declare -ga _CRAWL_D_EXCLUDE=()
   _CRAWL_D_PRESENT=0
 
-  config_load_if_present "$path" discovery-input discovery || return 0
-  idx=$(records_index_of_id discovery "$target") || return 0
-  _CRAWL_D_PRESENT=1
+  if config_load_if_present "$path" discovery-input discovery; then
+    if idx=$(records_index_of_id discovery "$target"); then
+      _CRAWL_D_PRESENT=1
+      _CRAWL_D_OPENAPI=$(records_field_or discovery "$idx" openapi-path '')
+      _CRAWL_D_GRAPHQL=$(records_field_or discovery "$idx" graphql-schema-path '')
+      _CRAWL_D_POSTMAN=$(records_field_or discovery "$idx" postman-path '')
+      _CRAWL_D_HAR=$(records_field_or discovery "$idx" har-path '')
+      _CRAWL_D_DEPTH=$(records_field_or discovery "$idx" crawl-depth 3)
+      [[ $_CRAWL_D_DEPTH =~ ^[0-9]+$ ]] || _CRAWL_D_DEPTH=3
+      _CRAWL_D_JS_DISCOVERY=$(records_field_or discovery "$idx" js-endpoint-discovery true)
+      [[ $_CRAWL_D_JS_DISCOVERY == false ]] || _CRAWL_D_JS_DISCOVERY=true
 
-  _CRAWL_D_OPENAPI=$(records_field_or discovery "$idx" openapi-path '')
-  _CRAWL_D_GRAPHQL=$(records_field_or discovery "$idx" graphql-schema-path '')
-  _CRAWL_D_POSTMAN=$(records_field_or discovery "$idx" postman-path '')
-  _CRAWL_D_HAR=$(records_field_or discovery "$idx" har-path '')
-  _CRAWL_D_DEPTH=$(records_field_or discovery "$idx" crawl-depth 3)
-  [[ $_CRAWL_D_DEPTH =~ ^[0-9]+$ ]] || _CRAWL_D_DEPTH=3
+      local g
+      while IFS= read -r g; do
+        [[ -n $g ]] && _CRAWL_D_INCLUDE+=("$g")
+      done <<<"$(records_list discovery "$idx" include-path)"
+      while IFS= read -r g; do
+        [[ -n $g ]] && _CRAWL_D_EXCLUDE+=("$g")
+      done <<<"$(records_list discovery "$idx" exclude-path)"
+    fi
+  fi
 
-  local g
-  while IFS= read -r g; do
-    [[ -n $g ]] && _CRAWL_D_INCLUDE+=("$g")
-  done <<<"$(records_list discovery "$idx" include-path)"
-  while IFS= read -r g; do
-    [[ -n $g ]] && _CRAWL_D_EXCLUDE+=("$g")
-  done <<<"$(records_list discovery "$idx" exclude-path)"
+  # A missing file, or one with no record for this target, is still the
+  # normal case here - it means "no CLI override either" and falls through
+  # to the function below, which sets nothing when none of the four flags
+  # were given.  This is why the two blocks above no longer `return 0` early:
+  # a `--openapi` flag with no config/discovery.conf record at all is exactly
+  # what IMPORT-07 exists to make usable.
+  _crawl_discovery_apply_cli_overrides
   return 0
+}
+
+# `_crawl_discovery_apply_cli_overrides` (IMPORT-07) - an ephemeral, this-run-
+# only override of the four discovery.conf keys, resolved through
+# `scan.sh`'s own `_SCAN_FLAG_KIND` + `SCAN_FLAGS` chain (`--openapi`/`--har`/
+# `--postman`/`--graphql-schema`), NEVER a second ingestion mechanism: it
+# writes into the identical `_CRAWL_D_*` variables the config-file branch
+# above populates, so every consumer below this point (the four
+# `crawl_spec_*` calls in `_crawl_run_phase`) cannot tell which source a path
+# came from and needs no change. A flag wins over a config/discovery.conf
+# entry for the same key - the more specific, single-run instruction - and
+# nothing is ever written back to that file. `scan.sh`'s own
+# `_scan_check_discovery_flags` has already refused a flag given with no
+# `--target` (exit 2) before this ever runs, so `SCAN_FLAGS[target]` here, if
+# read, would always equal `$target` - it is not re-checked.
+_crawl_discovery_apply_cli_overrides() {
+  declare -p SCAN_FLAGS &>/dev/null || declare -A SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[openapi]:-} ]]; then
+    _CRAWL_D_OPENAPI=${SCAN_FLAGS[openapi]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[graphql-schema]:-} ]]; then
+    _CRAWL_D_GRAPHQL=${SCAN_FLAGS[graphql-schema]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[postman]:-} ]]; then
+    _CRAWL_D_POSTMAN=${SCAN_FLAGS[postman]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[har]:-} ]]; then
+    _CRAWL_D_HAR=${SCAN_FLAGS[har]}
+    _CRAWL_D_PRESENT=1
+  fi
 }
 
 # A specification path is resolved relative to the INSTALL ROOT when it is not
@@ -270,6 +325,7 @@ _crawl_static() {
   local -A visited=()
   local depth=0 pages=0 url kind a b
   local form_method='' form_action='' formurl='' formep=''
+  local jsurl jspath jsep jqn jqv ep_before jsquery jsbase
 
   _CRAWL_PAGES=0
   _CRAWL_PAGECAP=0
@@ -279,6 +335,8 @@ _crawl_static() {
   _CRAWL_FORMS=0
   _CRAWL_UNREACHABLE=0
   _CRAWL_GATE_REASON=''
+  _CRAWL_JS_SCANNED=0
+  _CRAWL_JS_EP_ADDED=0
   # A crawled link or form action is dropped through the shared counting
   # wrapper `dast_endpoint_keep` (modules/dast/engine.sh section 3b), reset
   # once for the whole static crawl so `_DAST_SCOPE_SKIPPED`/
@@ -349,6 +407,68 @@ _crawl_static() {
         done < <(crawl_query_names "$uquery")
       fi
 
+      # SPA endpoint discovery: a JS/source-map response never matches
+      # `*html*` below and would otherwise just be counted as non-markup and
+      # skipped - here it gets one extra look first, for URL-shaped strings
+      # its OWN code names (crawl_engine.sh section 5a has the full account
+      # of what is and is not mined, and why nothing this loop finds is ever
+      # fetched). `js-endpoint-discovery` (rules/RULE-FORMAT.md §9.6.3) is the
+      # operator's opt-out; the response is still counted as non-markup
+      # either way, so disabling it is byte-for-byte the pre-existing
+      # behaviour.
+      if crawl_body_is_js "$_CRAWL_CTYPE" "$url"; then
+        if [[ -s $body && $_CRAWL_D_JS_DISCOVERY == true ]]; then
+          crawl_js_reset
+          crawl_js_scan_body "$body" "$url"
+          _CRAWL_JS_SCANNED=$(( _CRAWL_JS_SCANNED + 1 ))
+          for jsurl in "${_CRAWL_JS_URLS[@]+"${_CRAWL_JS_URLS[@]}"}"; do
+            # THE SAME TWO-GATE SHAPE the `link` case below already has: a
+            # candidate the scanned application's OWN code named is not a URL
+            # the operator authorised, so it goes through the identical
+            # shared predicate before it is ever written to disk - an
+            # out-of-scope one (a third-party analytics/error-reporting host,
+            # say) is discarded right here and never reaches `_CRAWL_EP`.
+            if declare -F dast_endpoint_keep >/dev/null; then
+              dast_endpoint_keep "$jsurl" "${SCOURSH_DAST_TARGET:-}" || continue
+            elif ! _crawl_in_scope "$jsurl"; then
+              continue
+            fi
+            crawl_url_split "$jsurl"
+            jspath=/
+            if [[ $_CRAWL_U_BASE =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$ ]]; then
+              jspath=${BASH_REMATCH[1]:-/}
+            fi
+            _crawl_path_allowed "$jspath" || continue
+            # Captured into a LOCAL before crawl_add_endpoint runs, exactly as
+            # the page-fetch path above captures $uquery first: that function
+            # calls crawl_url_split on its own (query-less) URL argument as
+            # part of writing the row, which overwrites _CRAWL_U_QUERY/
+            # _CRAWL_U_BASE as a side effect - reading them AFTER the call
+            # always sees an empty query, silently dropping every JS-observed
+            # parameter. Caught by this feature's own adversarial end-to-end
+            # test (a literal query string that never reached parameters.json).
+            jsquery=$_CRAWL_U_QUERY
+            jsbase=$_CRAWL_U_BASE
+            ep_before=${#_CRAWL_EP[@]}
+            if crawl_add_endpoint "$target" GET "$jsbase" js "$depth" '' ''; then
+              jsep=$_CRAWL_LAST_EP_ID
+              (( ${#_CRAWL_EP[@]} > ep_before )) && _CRAWL_JS_EP_ADDED=$(( _CRAWL_JS_EP_ADDED + 1 ))
+              # A query string literally present in the mined string is an
+              # OBSERVED parameter name; nothing about its value is ever
+              # invented (docs/INVENTORY-FORMAT.md's own honesty rule for
+              # `example`).
+              if [[ -n $jsquery && -n $jsep ]]; then
+                while IFS=$'\t' read -r jqn jqv; do
+                  crawl_add_param "$jsep" "$target" GET "$jsbase" "$jqn" query js "$jqv" || true
+                done < <(crawl_query_names "$jsquery")
+              fi
+            fi
+          done
+        fi
+        _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 ))
+        continue
+      fi
+
       # Only markup is parsed.  A content type this does not recognise is
       # counted rather than guessed at: running the tag scanner over a PDF or
       # a minified bundle produces "links" that are byte sequences, and every
@@ -367,12 +487,13 @@ _crawl_static() {
       if [[ -z ${_CRAWL_CTYPE} ]]; then
         # No Content-Type at all: parse only if the bytes actually look like
         # markup, so a headerless binary is still not fed to the scanner.
-        local sniff
-        sniff=$(head -c 512 -- "$body" 2>/dev/null || true)
-        case ${sniff,,} in
-          *'<html'* | *'<!doctype html'* | *'<body'* | *'<a '* | *'<form'*) ;;
-          *) _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 )); continue ;;
-        esac
+        # crawl_body_looks_like_markup matches on the file directly (never by
+        # reading it into a bash string) because a response body is arbitrary
+        # target-controlled bytes and can legitimately contain a NUL - see
+        # that function's own header for the full defect this avoids.
+        if ! crawl_body_looks_like_markup "$body"; then
+          _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 )); continue
+        fi
       fi
 
       # The SPA heuristic is sampled on the ROOT page only - the one page whose
@@ -493,13 +614,96 @@ _crawl_static() {
 # endpoints in a fifty-route application and reports success is the failure
 # this project keeps rooting out.
 _crawl_record_spa_gap() {
-  local target=$1 pages=$2 endpoints=$3
-  local shape=''
+  local target=$1 pages=$2 endpoints=$3 jscount=${4:-0}
+  local shape='' jsnote=''
   if (( ${_CRAWL_SPA_SHAPED:-0} )); then
     shape=", and this target's own root document has script tags and almost no links, which is what a client-rendered application looks like from here"
   fi
-  run_record coverage_gap "dast/crawl: no OpenAPI, GraphQL schema, Postman collection or HAR capture was supplied for target '$(crawl_safe_text "$target" 80)' (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3), so the surface below is only what a static crawl could reach by following links: $pages page(s) fetched, $endpoints endpoint(s) known$shape. scoursh executes no JavaScript and has no browser, so a client-rendered application's routes and its XHR/fetch endpoints are INVISIBLE here and every later DAST check will report clean for them because it never saw them - that is the absence of a test, not the absence of a problem (docs/DESIGN.md §7.5). To close this, supply a spec or a HAR capture of real usage in config/discovery.conf; failing that, a SAST route extraction merged through reports/<run>/inventory/endpoints.json covers the server-side half (docs/FOUNDATION.md tension 21)."
-  run_record coverage_reduction "module=dast phase=crawl reason=no_specification_supplied target=$(crawl_safe_text "$target" 80) pages=$pages endpoints=$endpoints spa_shaped=${_CRAWL_SPA_SHAPED:-0}"
+  if (( jscount > 0 )); then
+    local verb=were
+    (( jscount == 1 )) && verb=was
+    jsnote=" $jscount of them $verb read as a literal path inside a fetched JS/source-map file rather than requested directly - WEAKER evidence than the rest (source=js, docs/INVENTORY-FORMAT.md), naming a path only, never a method or a body field a spec or HAR would carry."
+  fi
+  run_record coverage_gap "dast/crawl: no OpenAPI, GraphQL schema, Postman collection or HAR capture was supplied for target '$(crawl_safe_text "$target" 80)' (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3), so the surface below is only what a static crawl could reach by following links, plus whatever path a fetched JS bundle's own code happened to name as a literal string: $pages page(s) fetched, $endpoints endpoint(s) known$shape.$jsnote scoursh executes no JavaScript and has no browser, so a client-rendered application's routes and its XHR/fetch endpoints reached only through a computed URL, a dynamic import, or logic this scanner cannot run are still INVISIBLE here, and every later DAST check will report clean for them because it never saw them - that is the absence of a test, not the absence of a problem (docs/DESIGN.md §7.5). To close this properly, supply a spec or a HAR capture of real usage in config/discovery.conf, which is STILL the strictly better input - it carries methods, parameters and request bodies a mined string never can; failing that, a SAST route extraction merged through reports/<run>/inventory/endpoints.json covers the server-side half (docs/FOUNDATION.md tension 21)."
+  run_record coverage_reduction "module=dast phase=crawl reason=no_specification_supplied target=$(crawl_safe_text "$target" 80) pages=$pages endpoints=$endpoints spa_shaped=${_CRAWL_SPA_SHAPED:-0} js_inferred_endpoints=$jscount"
+  _crawl_nudge_spa_import "$target"
+}
+
+# ---------------------------------------------------------------------------
+# 5b. The SPA nudge (a deliberate design decision: no auto-discovery, lower
+# friction on the import path instead)
+# ---------------------------------------------------------------------------
+# Fires ONLY when the root-page heuristic actually fired (`_CRAWL_SPA_SHAPED`),
+# which is a strictly NARROWER condition than the coverage_gap above (that one
+# is recorded for every no-spec run, SPA-shaped or not). Telling an operator
+# scanning an ordinary multi-page site "this looks like a single-page app"
+# would be wrong and is exactly the kind of overstated claim §15 forbids, so
+# this reuses the same heuristic the wording above already gates on, never a
+# broader "no spec" trigger.
+#
+# This is advice, not a finding or a coverage change: it is a SECOND
+# `coverage_gap` line (so it reaches report.md/report.html's existing
+# limitations section unchanged) plus a `log_warn` (so it reaches the
+# terminal the operator is already watching, the same channel every other
+# crawl warning in this file uses). Nothing here calls `finding_emit`, alters
+# `checks_run`/`coverage_reduction` counts, or can change `scan_exit_code`'s
+# inputs - it is prose appended to a run.json/report surface that already
+# exists and was already going to be non-empty on this exact run.
+_crawl_nudge_spa_import() {
+  (( ${_CRAWL_SPA_SHAPED:-0} )) || return 0
+  local target=$1
+  local nudge
+  nudge="dast/crawl: target '$(crawl_safe_text "$target" 80)' looks like a single-page app, so its API is not reachable by following links - the only way to test it is to import a real capture of its traffic. Re-run with --har <capture> or --openapi <spec> (or set har-path/openapi-path in config/discovery.conf, rules/RULE-FORMAT.md §9.6.3); docs/USAGE.md's 'config/discovery.conf' section has the full reference. To capture a HAR in about 30 seconds: open the target in Chrome, open DevTools (F12 or Cmd+Option+I) and select the Network tab, tick 'Preserve log', browse or log in through the app as you normally would to generate traffic, then right-click any row in the request list and choose 'Save all as HAR' (or use the panel's own down-arrow export icon) to save it; then re-run scoursh with --har pointed at that file. This is guidance only: it does not add a finding, change any coverage number, or affect this run's exit code."
+  run_record coverage_gap "$nudge"
+  log_warn "$nudge"
+}
+
+# ---------------------------------------------------------------------------
+# 5a. Structured surface provenance (IMPORT-06)
+# ---------------------------------------------------------------------------
+# The `notes` record below already carries `spec_endpoints=N spec_kinds=[...]`,
+# but as prose inside a string array a consumer has to substring-scrape it -
+# report §6's own gap. This records the identical breakdown as STRUCTURED
+# per-source counts, one `source<US>count` line per (target, source) pair, so
+# lib/report.sh's `report_run_json` can render "N endpoints, M from an
+# openapi spec you supplied" without parsing prose. US (0x1f), never a space
+# or a tab, because a foreign inventory's `source` field (tension 21 - a
+# hand-written parameters.json, or a future SAST/apigw producer) is operator-
+# or producer-supplied text, not one of this file's own five literal values,
+# and the AGENTS.md DAST-11 lesson (a tab folds an empty field; a space is no
+# safer once the value itself may contain one) applies to it identically.
+# Never a total-only line: a total with no breakdown is exactly the "the scan
+# found nothing" ambiguity this ticket exists to close.
+_crawl_record_surface_provenance() {
+  local rec id target method url host path source depth status ctype body_type
+  local epid ptarget pmethod purl name location pexample
+  local -A ep_src=() par_src=()
+  for rec in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do
+    # Every positional field of the tuple must be read to keep `source` (the
+    # only one this loop uses) aligned with `_CRAWL_EP`'s own field order.
+    # shellcheck disable=SC2034
+    IFS=$'\x1f' read -r id target method url host path source depth status ctype body_type <<<"$rec"
+    ep_src[$source]=$(( ${ep_src[$source]:-0} + 1 ))
+  done
+  for rec in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do
+    # Same reason: `source` is the only field this loop uses.
+    # shellcheck disable=SC2034
+    IFS=$'\x1f' read -r id epid ptarget pmethod purl name location source pexample <<<"$rec"
+    par_src[$source]=$(( ${par_src[$source]:-0} + 1 ))
+  done
+  local s
+  if (( ${#ep_src[@]} > 0 )); then
+    while IFS= read -r s; do
+      [[ -n $s ]] || continue
+      run_record dast_surface_endpoints_by_source "$s"$'\x1f'"${ep_src[$s]}"
+    done <<<"$(printf '%s\n' "${!ep_src[@]}" | LC_ALL=C sort)"
+  fi
+  if (( ${#par_src[@]} > 0 )); then
+    while IFS= read -r s; do
+      [[ -n $s ]] || continue
+      run_record dast_surface_parameters_by_source "$s"$'\x1f'"${par_src[$s]}"
+    done <<<"$(printf '%s\n' "${!par_src[@]}" | LC_ALL=C sort)"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -649,7 +853,8 @@ _crawl_run_phase() {
   crawl_inv_write_parameters "$rundir/inventory/parameters.json"
 
   local nep=${#_CRAWL_EP[@]} npar=${#_CRAWL_PARAM[@]}
-  run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS"
+  run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS js_scanned=${_CRAWL_JS_SCANNED:-0} js_endpoints=${_CRAWL_JS_EP_ADDED:-0}"
+  _crawl_record_surface_provenance
 
   # -- 6. every bound that bit, on the surface a reader sees -----------------
   # A crawled link or form action, not an inventory row - dropped through the
@@ -687,10 +892,53 @@ _crawl_run_phase() {
   if (( ${_CRAWL_EP_TRUNCATED:-0} > 0 || ${_CRAWL_PARAM_TRUNCATED:-0} > 0 )); then
     run_record coverage_gap "dast/crawl: the inventory hit its own ceiling on target '$(crawl_safe_text "$target" 80)' - ${_CRAWL_EP_TRUNCATED:-0} endpoint(s) and ${_CRAWL_PARAM_TRUNCATED:-0} parameter(s) were discovered and DISCARDED (ceilings $_CRAWL_MAX_ENDPOINTS / $_CRAWL_MAX_PARAMS), so they are absent from every later check"
   fi
+  if (( ${_CRAWL_PARAM_INVALID_LOCATION:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_LOCATION parameter(s) on target '$(crawl_safe_text "$target" 80)' named a location outside docs/INVENTORY-FORMAT.md §3's frozen vocabulary and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_location target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_LOCATION:-0}"
+  fi
+  if (( ${_CRAWL_PARAM_INVALID_HEADER_NAME:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_HEADER_NAME header-location parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a name that is not an RFC 7230 token and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_header_name target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}"
+  fi
+  # A control byte (C0 or DEL) in a name/value/method/URL/source lifted out of
+  # an OpenAPI/HAR/Postman document would corrupt the 0x1f delimiter the
+  # in-memory endpoint/parameter tuple uses internally once `crawl_json_unescape`
+  # turns its JSON escape into the raw byte - shifting every field after it and,
+  # left unchecked, reaching `http_request_header` and aborting the whole run
+  # (exit 5). `crawl_add_endpoint`/`crawl_add_param` reject such a row before it
+  # is ever built rather than silently rewriting it.
+  if (( ${_CRAWL_EP_CONTROL_BYTE:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_EP_CONTROL_BYTE endpoint(s) on target '$(crawl_safe_text "$target" 80)' carried a C0 control byte or DEL in their method, URL, source, status, or content-type and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=endpoint_control_byte target=$(crawl_safe_text "$target" 80) count=${_CRAWL_EP_CONTROL_BYTE:-0}"
+  fi
+  if (( ${_CRAWL_PARAM_CONTROL_BYTE:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_CONTROL_BYTE parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a C0 control byte or DEL in their name, value, method, URL, or source and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_control_byte target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_CONTROL_BYTE:-0}"
+  fi
+  # IMPORT-03: an OpenAPI/Swagger requestBody's $ref chain that loops or nests
+  # past the resolver's bound, and a 3.1 oneOf/anyOf resolved from only its
+  # first subschema, both cost a real body field - counted rather than the
+  # silent drop the resolver's own header describes.
+  if (( ${_CRAWL_SPEC_REF_UNRESOLVED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_SPEC_REF_UNRESOLVED} \$ref chain(s) in the OpenAPI/Swagger document for target '$(crawl_safe_text "$target" 80)' could not be resolved - a loop, an external/unsupported reference target, or nesting past the resolver's depth bound - so the body field(s) they would have described are absent from this run's inventory"
+    run_record coverage_reduction "module=dast phase=crawl reason=openapi_ref_unresolved target=$(crawl_safe_text "$target" 80) count=${_CRAWL_SPEC_REF_UNRESOLVED}"
+  fi
+  if (( ${_CRAWL_SPEC_POLY_UNSUPPORTED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_SPEC_POLY_UNSUPPORTED} OpenAPI 3.1 oneOf/anyOf construct(s) for target '$(crawl_safe_text "$target" 80)' were resolved using only their FIRST subschema, so a body field that exists only in a later branch is absent from this run's inventory"
+    run_record coverage_reduction "module=dast phase=crawl reason=openapi_polymorphism_first_subschema target=$(crawl_safe_text "$target" 80) count=${_CRAWL_SPEC_POLY_UNSUPPORTED}"
+  fi
+  # IMPORT-04: a HAR entry naming a non-http(s) scheme, or one this run could
+  # not re-base onto its own authorised base-url, used to be a silent
+  # `continue` - now counted the same way an invalid location or header name
+  # already is above.
+  if (( ${_CRAWL_HAR_DROPPED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_HAR_DROPPED} HAR entrie(s) for target '$(crawl_safe_text "$target" 80)' named a non-http(s) URL or one this run could not re-base onto '$(crawl_safe_text "$base" 80)' and were DISCARDED rather than inventoried"
+    run_record coverage_reduction "module=dast phase=crawl reason=har_entry_unusable target=$(crawl_safe_text "$target" 80) count=${_CRAWL_HAR_DROPPED}"
+  fi
 
   # -- 7. the SPA gap, which is this ticket's own acceptance criterion -------
   if [[ -z $spec_kinds ]]; then
-    _crawl_record_spa_gap "$target" "$_CRAWL_PAGES" "$nep"
+    _crawl_record_spa_gap "$target" "$_CRAWL_PAGES" "$nep" "${_CRAWL_JS_EP_ADDED:-0}"
   fi
 
   if (( nep == 0 )); then

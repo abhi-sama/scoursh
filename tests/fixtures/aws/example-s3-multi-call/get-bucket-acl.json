@@ -1,0 +1,15 @@
+{
+    "Owner": {
+        "DisplayName": "example",
+        "ID": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
+    },
+    "Grants": [
+        {
+            "Grantee": {
+                "Type": "Group",
+                "URI": "http://acs.amazonaws.com/groups/global/AllUsers"
+            },
+            "Permission": "READ"
+        }
+    ]
+}

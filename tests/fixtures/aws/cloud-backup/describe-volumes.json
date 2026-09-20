@@ -1,0 +1,6 @@
+{
+    "Volumes": [
+        {"VolumeId": "vol-0000000000000001", "State": "in-use", "AvailabilityZone": "eu-west-2a", "Size": 8},
+        {"VolumeId": "vol-0000000000000002", "State": "in-use", "AvailabilityZone": "eu-west-2a", "Size": 20}
+    ]
+}

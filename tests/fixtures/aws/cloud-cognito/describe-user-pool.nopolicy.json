@@ -1,0 +1,23 @@
+{
+    "UserPool": {
+        "Id": "eu-west-2_nopolicy01",
+        "Name": "scoursh-fixture-default-policy-pool",
+        "DeletionProtection": "ACTIVE",
+        "MfaConfiguration": "ON",
+        "UserPoolAddOns": {
+            "AdvancedSecurityMode": "ENFORCED"
+        },
+        "AdminCreateUserConfig": {
+            "AllowAdminCreateUserOnly": true
+        },
+        "AccountRecoverySetting": {
+            "RecoveryMechanisms": [
+                {
+                    "Priority": 1,
+                    "Name": "admin_only"
+                }
+            ]
+        },
+        "Arn": "arn:aws:cognito-idp:eu-west-2:123456789012:userpool/eu-west-2_nopolicy01"
+    }
+}

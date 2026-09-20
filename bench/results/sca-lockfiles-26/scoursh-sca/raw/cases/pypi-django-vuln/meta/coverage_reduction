@@ -1,0 +1,2 @@
+module=sca reason=no_check_registry_on_disk_yet
+module=sca reason=single_worker jobs=4 manifests=1

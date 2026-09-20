@@ -1,0 +1,6 @@
+{
+    "clusters": [
+        "scoursh-fixture-eks-bad-cluster",
+        "scoursh-fixture-eks-good-cluster"
+    ]
+}

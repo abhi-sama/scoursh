@@ -39,7 +39,11 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh ->
 # lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and traps.
-# shellcheck source=modules/dast/active/inject_engine.sh
+# -x back-edge cut (modules/dast/active/inject_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -65,6 +69,7 @@ id: scanner
 requests-per-second: 5000
 request-budget: 20000
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
 config_scanner_load "$W/scanner.conf"
 

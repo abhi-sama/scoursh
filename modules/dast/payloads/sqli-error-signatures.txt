@@ -45,6 +45,13 @@ sqlite3\.OperationalError
 unrecognized token:
 SQL logic error
 
+# A dev-mode Node/Express default error handler renders a BARE stack trace -
+# file paths and line numbers only, no driver err.message text at all - so
+# none of the driver-message signatures above ever match it. The Sequelize
+# SQLite dialect's own module path is specific enough not to appear on an
+# unrelated crash (confirmed against a real Juice Shop 20.1.1 500 page).
+sequelize/lib/dialects/sqlite
+
 # --- Cross-driver / generic ---
 Syntax error or access violation
 java\.sql\.SQLException

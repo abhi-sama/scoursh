@@ -1,0 +1,114 @@
+# modules/cloud/aws/live/checks-dynamodb.rules - the §8.1 DynamoDB read-only
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP6-CLOUD-PLAN.md
+# CLOUD-16).  Owned by modules/cloud/aws/live/dynamodb.sh; ids are all
+# `CLOUD-DYNAMODB-*`.
+#
+# A SEPARATE FILE FROM `checks.rules`, for the identical reason
+# checks-rds.rules gives in its own header: step 6's tier-2 service PRs are
+# genuinely parallel, simultaneously in-flight peers rather than the
+# sequential bundles `checks.rules`'s own header describes, so this ticket
+# takes the `checks-<service>.rules` escape hatch that header names rather
+# than appending to a file every sibling PR would also be appending to.
+#
+# `coverage-scope: account-region`, and EVERY RECORD BELOW LANDS IN THE
+# `<account_id>/<region>` CELL - `dynamodb` is `regional` in
+# `_CLOUD_SERVICES` (DynamoDB has no S3-shaped global namespace call; every
+# table and every VPC endpoint lives in exactly one region), so the cell the
+# pass visits and the region a finding cites are the same value. See
+# modules/cloud/aws/live/dynamodb.sh's own header.
+#
+# NO RECORD BELOW CARRIES A `cis:` VALUE, and that absence is deliberate
+# rather than an oversight (docs/CIS-MAPPINGS.md §1; the same honest-absence
+# decision checks-rds.rules documents for two of its own four checks). CIS AWS
+# Foundations Benchmark v3.0.0 has no DynamoDB section at all - data/cis-
+# mappings's full transcribed table (see that file's own header) carries
+# sections 1, 2.1 (S3), 2.2 (EBS), 2.3 (RDS), 2.4 (EFS), 3 (logging/
+# monitoring) and 5 (networking), and DynamoDB is not among them. Inventing a
+# control number here to satisfy a "must cite CIS" habit is the overstated-
+# coverage failure docs/DESIGN.md §15 forbids; an unmapped finding still
+# carries its CWE and OWASP category.
+#
+# CLOUD-DYNAMODB-PUBLIC_ENDPOINT_POLICY-01 IS `confidence: medium`, NOT
+# `high`, AND THAT IS DELIBERATE.  Every other record in this file (and in
+# checks-rds.rules, and in checks.rules) reads a TYPED field straight off an
+# API response - a boolean, an enum string, a documented sentinel value like
+# a snapshot's `restore` attribute naming `all`. This one instead pattern-
+# matches the TEXT of a VPC endpoint's policy document for AWS's own default
+# "Full Access" shape, because no evaluator API exists for a VPC endpoint
+# policy the way `get-bucket-policy-status` exists for S3 - see
+# modules/cloud/aws/live/dynamodb_engine.sh's own header for the full
+# reasoning. `confidence: medium` states that ceiling honestly rather than
+# claiming the same certainty a typed-field read earns.
+#
+# The type tag is `config-read` on every record, plus `quick`
+# (docs/DESIGN.md §5's "passive + config-read, no active probes") -
+# `compliance` is omitted from all three, since none carries a `cis` value.
+
+id: CLOUD-DYNAMODB-PUBLIC_ENDPOINT_POLICY-01
+title: DynamoDB VPC Gateway endpoint policy is left at the AWS default Full Access shape
+script: aws/live/dynamodb.sh
+severity: high
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a scoped endpoint policy to this VPC Gateway endpoint
+  naming the specific principals (IAM roles/users), actions and table ARNs it
+  is meant to serve, rather than leaving AWS's own generated default in
+  place. The default policy grants Principal "*", Action "*", Resource "*"
+  with no Condition narrowing it, so any principal that can reach the
+  endpoint from inside the VPC can use it to call any DynamoDB action against
+  any table in this account and region - it is not an internet exposure, but
+  it is a wider set of callers than an operator who deliberately attached an
+  endpoint policy likely intended. A policy that legitimately keeps a
+  wildcard Principal or Action narrowed by a real Condition (aws:SourceVpc,
+  aws:PrincipalOrgID) is not this finding.
+references: CWE-284
+references: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+
+id: CLOUD-DYNAMODB-NO_ENCRYPTION-01
+title: DynamoDB table has no explicit encryption-at-rest configuration
+script: aws/live/dynamodb.sh
+severity: low
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Every DynamoDB table is encrypted at rest by default with an
+  AWS-owned key whether or not this is configured, so this finding is not
+  about missing encryption - it is about the absence of a SEPARATE,
+  AUDITABLE key. Enable SSE with an AWS-managed key
+  (update-table --sse-specification Enabled=true,SSEType=KMS - no key to
+  create or manage, just alias/aws/dynamodb) or a customer-managed key where
+  a defined rotation schedule or key-policy separation of duties is
+  required. Either gives the table a key policy an operator controls and a
+  CloudTrail event each time the key is used, neither of which the default
+  AWS-owned key produces.
+references: CWE-311
+references: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/EncryptionAtRest.html
+
+id: CLOUD-DYNAMODB-NO_BACKUPS-01
+title: DynamoDB table has point-in-time recovery disabled
+script: aws/live/dynamodb.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable point-in-time recovery
+  (update-continuous-backups --point-in-time-recovery-specification
+  PointInTimeRecoveryEnabled=true). Without it, this table can only be
+  restored from a manual on-demand backup, if one happens to exist, rather
+  than to any second within the last 35 days - so an accidental overwrite, a
+  bad application deploy, or a compromised credential that damages this
+  table's data is recoverable only as far back as the last manual backup.
+  PITR costs storage proportional to the table's own change rate and needs no
+  downtime to turn on.
+references: CWE-693
+references: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery.html

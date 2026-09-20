@@ -1,0 +1,40 @@
+{
+    "graphqlApis": [
+        {
+            "name": "scoursh-fixture-plain-key-api",
+            "apiId": "abcdefapikey01",
+            "authenticationType": "API_KEY",
+            "arn": "arn:aws:appsync:us-east-1:123456789012:apis/abcdefapikey01",
+            "uris": {
+                "GRAPHQL": "https://abcdefapikey01.appsync-api.us-east-1.amazonaws.com/graphql"
+            }
+        },
+        {
+            "name": "scoursh-fixture-iam-api",
+            "apiId": "abcdefiamauth02",
+            "authenticationType": "AWS_IAM",
+            "arn": "arn:aws:appsync:us-east-1:123456789012:apis/abcdefiamauth02",
+            "uris": {
+                "GRAPHQL": "https://abcdefiamauth02.appsync-api.us-east-1.amazonaws.com/graphql"
+            }
+        },
+        {
+            "name": "scoursh-fixture-cognito-api",
+            "apiId": "abcdefcognito03",
+            "authenticationType": "AMAZON_COGNITO_USER_POOLS",
+            "arn": "arn:aws:appsync:us-east-1:123456789012:apis/abcdefcognito03",
+            "uris": {
+                "GRAPHQL": "https://abcdefcognito03.appsync-api.us-east-1.amazonaws.com/graphql"
+            }
+        },
+        {
+            "name": "scoursh-fixture-denied-api",
+            "apiId": "abcdefdenied04",
+            "authenticationType": "API_KEY",
+            "arn": "arn:aws:appsync:us-east-1:123456789012:apis/abcdefdenied04",
+            "uris": {
+                "GRAPHQL": "https://abcdefdenied04.appsync-api.us-east-1.amazonaws.com/graphql"
+            }
+        }
+    ]
+}

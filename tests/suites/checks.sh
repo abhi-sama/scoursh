@@ -76,13 +76,31 @@ assert_eq 1 "${#CHECKS_REGISTRY_SETS[@]}" 'exactly one file matched modules/sast
 assert_eq 2 "$(records_count "$SAST_SET")" 'the fixture pack has 2 pattern rules'
 
 t_case 'a module with no fixture directory at all finds nothing (silent no-op, not an error)'
-checks_registry_load cloud reg_cloud
+# `cloud` used to be this case's example, but tests/fixtures/checks-registry/
+# now ships modules/cloud/aws/live/checks.rules (4 records - see
+# tests/suites/sarif-rules.sh), so it no longer demonstrates an absent module
+# dir.  `sca` is used instead because it is a real, documented absence:
+# checks_registry_load's own header comment says sca ships no `*.rules` at
+# all, since it is a table lookup against data/advisories.db rather than a
+# pattern-rule engine - not an accident of this fixture tree.
+# The assert_file_absent below is an INDEPENDENT filesystem check, never
+# routed through checks_registry_load itself, so this case cannot go vacuous
+# the same way silently again: if a modules/sca/ fixture dir is ever added,
+# this line fails loudly (rather than the count below quietly passing for the
+# wrong reason) and says to pick a different absent module.
+assert_file_absent "$FIXTURE_ROOT/modules/sca" \
+  'modules/sca has no fixture directory - if this ever starts existing, this case needs a different module to keep testing "missing dir is a silent no-op"'
+checks_registry_load sca reg_sca
 assert_eq 0 "${#CHECKS_REGISTRY_SETS[@]}" \
-  'no modules/cloud/ under the fixture root - fails under "checks_registry_load errors on a missing module dir"'
+  'no modules/sca/ under the fixture root - fails under "checks_registry_load errors on a missing module dir"'
 
 t_case 'an unknown module name finds nothing rather than dying'
 checks_registry_load bogus-module reg_bogus
 assert_eq 0 "${#CHECKS_REGISTRY_SETS[@]}" 'checks_module_dir has no row for it'
+
+t_case 'checks_module_dir network resolves modules/network - the NET module identity'
+assert_eq modules/network "$(checks_module_dir network)" \
+  'the scan.sh subcommand is "network" even though the MODULE enum/check-id prefix is NET (rules/RULE-FORMAT.md §9.1.1)'
 
 unset SCOURSH_INSTALL_ROOT
 

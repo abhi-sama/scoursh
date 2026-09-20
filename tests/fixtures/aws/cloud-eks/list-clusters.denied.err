@@ -1,0 +1,1 @@
+An error occurred (AccessDeniedException) when calling the ListClusters operation: User is not authorized to perform: eks:ListClusters

@@ -1,0 +1,6 @@
+{
+    "ImageId": "ami-badpublic1",
+    "LaunchPermissions": [
+        {"Group": "all"}
+    ]
+}

@@ -1,0 +1,22 @@
+{
+    "IdentityPoolId": "eu-west-2:22222222-2222-2222-2222-222222222222",
+    "Roles": {
+        "authenticated": "arn:aws:iam::123456789012:role/Cognito_hardenedpoolAuth_Role"
+    },
+    "RoleMappings": {
+        "cognito-idp.eu-west-2.amazonaws.com/eu-west-2_hardpool01:hardclient000000000000000": {
+            "Type": "Rules",
+            "AmbiguousRoleResolution": "Deny",
+            "RulesConfiguration": {
+                "Rules": [
+                    {
+                        "Claim": "custom:tenant",
+                        "MatchType": "Equals",
+                        "Value": "acme",
+                        "RoleARN": "arn:aws:iam::123456789012:role/Cognito_acme_Role"
+                    }
+                ]
+            }
+        }
+    }
+}

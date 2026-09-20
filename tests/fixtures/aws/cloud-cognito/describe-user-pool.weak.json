@@ -1,0 +1,42 @@
+{
+    "UserPool": {
+        "Id": "eu-west-2_weakpool01",
+        "Name": "scoursh-fixture-weak-pool",
+        "Policies": {
+            "PasswordPolicy": {
+                "MinimumLength": 6,
+                "RequireUppercase": false,
+                "RequireLowercase": true,
+                "RequireNumbers": true,
+                "TemporaryPasswordValidityDays": 30
+            }
+        },
+        "DeletionProtection": "INACTIVE",
+        "MfaConfiguration": "OFF",
+        "UserPoolAddOns": {
+            "AdvancedSecurityMode": "OFF"
+        },
+        "AdminCreateUserConfig": {
+            "AllowAdminCreateUserOnly": false
+        },
+        "AccountRecoverySetting": {
+            "RecoveryMechanisms": [
+                {
+                    "Priority": 1,
+                    "Name": "verified_phone_number"
+                },
+                {
+                    "Priority": 2,
+                    "Name": "verified_email"
+                }
+            ]
+        },
+        "AutoVerifiedAttributes": [
+            "email"
+        ],
+        "UsernameAttributes": [
+            "email"
+        ],
+        "Arn": "arn:aws:cognito-idp:eu-west-2:123456789012:userpool/eu-west-2_weakpool01"
+    }
+}

@@ -1,0 +1,11 @@
+{
+    "analyzers": [
+        {
+            "arn": "arn:aws:access-analyzer:us-east-1:123456789012:analyzer/scoursh-fixture-analyzer",
+            "name": "scoursh-fixture-analyzer",
+            "type": "ACCOUNT",
+            "status": "ACTIVE",
+            "createdAt": "2023-01-01T00:00:00Z"
+        }
+    ]
+}

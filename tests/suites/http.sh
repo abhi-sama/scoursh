@@ -644,38 +644,112 @@ assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/incomplete_reason" 2>/dev/null || 
 unset SCOURSH_CONFIG_REQUEST_BUDGET
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
-printf '\n-- tension 16: the circuit breaker --\n'
+printf '\n-- the 5xx-failure ceiling is 200, MEASURED against a real target rather than guessed --\n'
 
-# Status is chosen by PATH so a single transport stub can serve both the
-# failing and the succeeding request in one interleaved sequence.
+# docs/FOUNDATION.md tension 16's amendment records the measurement this
+# pins: re-deriving discovery's own backup-suffix candidates against a real,
+# ordinary target found 180 of 369 (49%) answer 500, so a default below that
+# (10, or the 50 an operator tried by hand, or even 100) is not a hypothetical
+# undershoot - it was observed. 200 is also bounded from ABOVE: at the
+# default 4 requests/second and the 60s window floor, at most ~240 requests
+# of any kind fit in one rolling window, so a default at or beyond that
+# ceiling could never open the counter at all under default settings, which
+# is the disable-by-a-different-route failure mode the window bounds already
+# refuse. This is why 200 is the shipped default rather than "a much larger
+# number" - a bigger default buys nothing past ~240, and the real target this
+# was measured against is proof enough that 200 has margin above what an
+# ordinary application actually produces.
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-5xx-failures 2>/dev/null
+assert_eq 200 "$_HTTP_EFF_LIMIT" \
+  'the effective 5xx-failure threshold is 200 on an unedited install - FAILS if the ceiling and the §9.6.1 schema default (both meant to be 200) have drifted apart'
+
+printf '\n-- tension 16: the circuit breaker (transport-failure and 5xx-failure counters, split by the breaker-5xx-semantics fix) --\n'
+
+# Status/failure is chosen by PATH so one transport stub serves three
+# interleaved sequences: a well-formed 5xx (an answer, just a weak one), a
+# genuine transport-level failure (no usable response at all - the stub
+# signals this the same way a real curl failure does, with a non-zero
+# return), and a plain success.
 _test_transport_by_path() {
   printf '%s %s\n' "$1" "$3" >>"$TRANSPORT_LOG"
   case $5 in
-    /fail) printf '503\n\n' ;;
+    /fail-5xx) printf '503\n\n' ;;
+    /fail-transport) return 1 ;;
     *) printf '200\n\n' ;;
   esac
 }
 
+printf '\n-- the operator-measured bug this fix closes: a routine 5xx no longer counts toward the TRANSPORT threshold at all --\n'
+
+# PR #298 shipped ONE counter: a well-formed 5xx counted toward the same low,
+# transport-shaped default (10 failures/60s) a genuinely dead target trips.
+# Measured on a real run against an ordinary application that 5xxs on a
+# handful of unmatched/malformed routes (exactly what docs/DESIGN.md §7.2's
+# content-discovery and method-enumeration phases probe): 11 of 11 counted
+# failures were 500 STATUS RESPONSES, zero transport, and the run aborted
+# before any injection phase ran. Lowering the TRANSPORT threshold to 1 and
+# sending several 5xx responses proves they are now invisible to it - FAILS
+# under the pre-fix single counter, where the first 5xx below would have
+# opened the breaker immediately.
 _limits_reset
 : >"$TRANSPORT_LOG"
 SCOURSH_HTTP_TRANSPORT=_test_transport_by_path
-# Lowering the threshold is a tunable in the SAFE direction (a more sensitive
-# breaker), which is why the ceiling clamps only upwards.  It keeps this case
-# to four requests instead of nineteen.
-export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=1
+for _i in 1 2 3 4 5; do
+  rc=0
+  http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
+  assert_eq 0 "$rc" "5xx response #$_i does not trip the transport-failure breaker, whose threshold this run lowered to 1"
+done
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+
+printf '\n-- but a SUSTAINED run of 5xx still trips its OWN, separate, much-higher threshold --\n'
+
+# tension 16 itself is why 5xx cannot simply be excluded from the breaker
+# altogether (the option this fix rejected): "each worker sees only its own
+# share of the 5xx responses ... a target that is comprehensively down" is
+# the exact scenario the breaker exists to catch, and a target that 5xxs on
+# EVERYTHING is that scenario. So the counter still exists - it is just
+# SEPARATE from the transport one, and its own threshold (not
+# circuit-breaker-failures) is what a real DAST run raises for a target that
+# answers unmatched paths with a 5xx.
+_limits_reset
+: >"$TRANSPORT_LOG"
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=3
 rc=0
-http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'one 5xx is recorded, not fatal'
 rc=0
-http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'two 5xx responses, still below the configured threshold of 3, do not abort the run'
 rc=0
 http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+( http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null ) 2>"$W/breaker-die-5xx.err" || rc=$?
 assert_eq 5 "$rc" \
-  'the THIRD failure inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters"), and docs/STEP5-DAST-PLAN.md states it as "10 failures in a 60s window"'
+  'the THIRD 5xx inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters")'
+
+# The abort message is the ONLY thing an operator sees at the moment the run
+# stops, so it is where the lever to raise has to be named - a fact buried
+# only in docs/USAGE.md's "Conservative DAST limits" prose is a fact an
+# operator mid-incident will not go read. It names the 5XX-SPECIFIC flag BY
+# ITS REAL SPELLING (never the transport flag - raising the wrong one would
+# do nothing), states the CURRENT effective threshold, and states the
+# judgement call rather than just the lever: reaching even the higher
+# threshold can still mean the target is comprehensively broken, in which
+# case raising it further only hides that.
+BREAKER_DIE_5XX=$(cat "$W/breaker-die-5xx.err")
+assert_contains "$BREAKER_DIE_5XX" '--circuit-breaker-5xx-failures' \
+  'the 5xx breaker-open message names the --circuit-breaker-5xx-failures flag by its real spelling, not the transport flag and not a paraphrase'
+assert_contains "$BREAKER_DIE_5XX" '--circuit-breaker-window' \
+  'the message names the --circuit-breaker-window flag by its real spelling'
+assert_contains "$BREAKER_DIE_5XX" 'currently 3' \
+  'the message states the CURRENT effective threshold (3, this test lowered it), not the schema default (200)'
+assert_contains "$BREAKER_DIE_5XX" 'docs/USAGE.md' \
+  'the message points at the doc that carries the full "Conservative DAST limits" guidance rather than trying to restate all of it inline'
+assert_contains "$BREAKER_DIE_5XX" 'comprehensively broken' \
+  'the message states the judgement an operator must make before reaching for the flag - FAILS on a version that names the lever with no caveat, which reads as "always safe to raise this" and would turn a real outage into a wider window that just delays the same abort'
 
 TRANSPORT_BEFORE=$(cat "$TRANSPORT_LOG")
 rc=0
@@ -684,6 +758,42 @@ assert_eq 5 "$rc" \
   'once the breaker is open every later request in the run exits 5, including one that would have succeeded - tension 16 makes the abort flag a fan-out signal every worker checks BEFORE every request, not a per-caller return value'
 assert_eq "$TRANSPORT_BEFORE" "$(cat "$TRANSPORT_LOG")" \
   'and that request never reached the transport - the breaker stops traffic, it does not merely report it'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
+
+printf '\n-- the HARD CONSTRAINT: a target that TRULY stops answering still trips the ORIGINAL, low, transport threshold --\n'
+
+# The fix above must not have bought its false-positive relief by weakening
+# the breaker against a genuinely dead target. A transport-level failure (no
+# usable response at all) is UNCHANGED: same key, same conservative default,
+# same rolling-window behaviour, still the most sensitive signal the breaker
+# has.
+_limits_reset
+: >"$TRANSPORT_LOG"
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+rc=0
+http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null || rc=$?
+assert_eq 1 "$rc" \
+  'one transport failure is recorded and reported to the CALLER as an ordinary failed request (exit 1) - it does not abort the RUN, which is the distinction "not fatal" draws here (a 5xx never even returns non-zero, since it is a normal HTTP response)'
+rc=0
+http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null || rc=$?
+assert_eq 1 "$rc" 'two transport failures, still below the configured threshold of 3, do not abort the run'
+rc=0
+http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
+assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
+rc=0
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) 2>"$W/breaker-die-transport.err" || rc=$?
+assert_eq 5 "$rc" \
+  'the THIRD transport failure inside the window trips the breaker and exits 5, exactly as it did before this fix - a target that genuinely stops answering must still stop the run'
+
+BREAKER_DIE_TRANSPORT=$(cat "$W/breaker-die-transport.err")
+assert_contains "$BREAKER_DIE_TRANSPORT" '--circuit-breaker-failures' \
+  'the transport breaker-open message names the --circuit-breaker-failures flag (not the 5xx one) by its real spelling'
+assert_contains "$BREAKER_DIE_TRANSPORT" 'currently 3' \
+  'the message states the CURRENT effective transport threshold'
+assert_contains "$BREAKER_DIE_TRANSPORT" 'genuinely down or unreachable' \
+  'the message states that a transport-level failure is the strongest evidence the breaker has - it is not the weaker, higher-threshold 5xx signal'
+assert_contains "$BREAKER_DIE_TRANSPORT" '--circuit-breaker-5xx-failures' \
+  'the message also names the SEPARATE 5xx counter, so an operator whose target answers with 5xx rather than truly failing to answer knows which flag actually applies to them'
 unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
 SCOURSH_HTTP_TRANSPORT=_test_transport
 
@@ -743,15 +853,19 @@ assert_at_least_ms 2000 $(( T1 - T0 )) \
 _limits_reset
 : >"$W/wA.log"
 : >"$W/wB.log"
-export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+# The worker's own /fail path answers 503 (a well-formed 5xx), so this races
+# the 5XX counter specifically - the transport counter's cross-process
+# sharing is pinned independently below via direct
+# _http_breaker_record_failure calls (which default to the transport class).
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=3
 rcA=0
 bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 2 "$W/wA.log" || rcA=$?
-assert_eq 0 "$rcA" 'the first worker process records two failures, below the threshold, and exits cleanly'
+assert_eq 0 "$rcA" 'the first worker process records two 5xx failures, below the threshold, and exits cleanly'
 rcB=0
 bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 1 "$W/wB.log" || rcB=$?
 assert_eq 5 "$rcB" \
-  'a SECOND, INDEPENDENT process issuing the third failure trips the breaker and exits 5 - FAILS under per-process breaker state, where this process starts its count at zero, sees one failure, and never trips. That is tension 16 exactly: "eight workers each below threshold keep hammering a target that is comprehensively down"'
-unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  'a SECOND, INDEPENDENT process issuing the third 5xx failure trips the breaker and exits 5 - FAILS under per-process breaker state, where this process starts its count at zero, sees one failure, and never trips. That is tension 16 exactly: "eight workers each below threshold keep hammering a target that is comprehensively down"'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
 
 _limits_reset
 : >"$W/wA.log"
@@ -812,10 +926,10 @@ export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=2
 # against rules/RULE-FORMAT.md 9.6.1's `^(0|[1-9][0-9]*)$` shape for this key.
 export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=10000000000000000000
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
-assert_eq 0 "$rc" 'the first failure under an absurd window is recorded, not fatal'
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) || rc=$?
+assert_eq 1 "$rc" 'the first failure under an absurd window is recorded, not fatal'
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) || rc=$?
 assert_eq 5 "$rc" \
   'a circuit-breaker-window ABOVE the 64-bit range still trips the breaker at the configured threshold - FAILS while the window is clamped upwards only, where the oversized literal wraps, the rolling-window cutoff lands in the future, every stored failure stamp is pruned on every call, and one schema-valid config value silently disables the breaker entirely'
 unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
@@ -2056,5 +2170,111 @@ t_case 'a request with no header and no body still uses the SAME single curl inv
 ) >/dev/null 2>&1
 assert_contains "$(cat "$ARGV_OUT")" '-K' \
   'the plain path takes the identical command line - FAILS under a second, header-free curl branch, which is the first place a request with no identifying User-Agent could appear (the "exactly ONE curl invocation" case above is what keeps that structural)'
+
+printf -- '\n-- tension 20 Tier B: guarantee mode, and the DEFAULT path staying unchanged --\n'
+# =============================================================================
+# Section 7a's relay redirection. Like the credential case above, these run
+# the REAL transport against the stub `curl` on PATH, because what is under
+# test is how `_http_transport_default` INVOKES curl - a stubbed
+# SCOURSH_HTTP_TRANSPORT would prove nothing about the flag it passes.
+# Nothing leaves the machine: the stub is a shell script and no relay is
+# started here (tests/suites/run-sandboxed.sh owns the real relay).
+
+t_case 'the DEFAULT path pins with --resolve, exactly as it did before guarantee mode existed'
+: >"$ARGV_OUT"
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT SCOURSH_HTTP_RELAY_MAP
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1
+DEFAULT_ARGV=$(cat "$ARGV_OUT")
+assert_contains "$DEFAULT_ARGV" '--resolve' \
+  'with no SCOURSH_HTTP_RELAY_MAP the transport still passes --resolve - asserted on curl'"'"'s REAL argv rather than on a branch "not being taken", because a claim that a branch was skipped is equally satisfied by a branch that ran and did nothing'
+assert_contains "$DEFAULT_ARGV" 'good.fixture.example:443:93.184.216.34' \
+  'and pins it to the address the gate itself approved, closing the TOCTOU window - the byte-for-byte unchanged default'
+assert_not_contains "$DEFAULT_ARGV" '--connect-to' \
+  'and NEVER --connect-to - FAILS if guarantee mode is ever on by default, which would silently route every ordinary scan through a relay that does not exist'
+
+t_case 'guarantee mode swaps that ONE pin for --connect-to, and nothing else about the command line'
+: >"$ARGV_OUT"
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_HTTP_RELAY_MAP='good.fixture.example 443 93.184.216.34 41999'
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1
+RELAY_ARGV=$(cat "$ARGV_OUT")
+assert_contains "$RELAY_ARGV" '--connect-to' 'guarantee mode uses --connect-to'
+assert_contains "$RELAY_ARGV" 'good.fixture.example:443:127.0.0.1:41999' \
+  'redirecting to the relay while keeping the ORIGINAL host:port on the left - which is what preserves SNI, the Host header and certificate validation (--resolve could not do this: it maps a name to an ADDRESS and cannot change the port, and a relay listens on an ephemeral port that is never the target'"'"'s)'
+assert_not_contains "$RELAY_ARGV" '--resolve' \
+  'and the --resolve pin is REPLACED, not accompanied - two pins for one connection is two answers to "where does this go"'
+assert_contains "$RELAY_ARGV" '-K' \
+  'everything else about the command line is untouched - same single curl invocation, same stdin config, so "every request carries the identifying User-Agent" stays structural in guarantee mode too'
+
+t_case 'the map SEEDS the pinned resolution cache, which is what makes guarantee mode usable at all'
+# Inside the sandbox DNS is kernel-denied, so a host that the stub resolver
+# does not know stands in for one the scan cannot resolve for itself. Without
+# the seed http_request dies at exit 3 before any transport is reached.
+: >"$ARGV_OUT"
+seed_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_HTTP_RELAY_MAP='good.fixture.example 443 198.51.100.9 41998'
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  # The stub resolver is deliberately removed, so any resolution at all must
+  # come from the map.
+  unset SCOURSH_HTTP_RESOLVE
+  # The cache is cleared and the map re-read here, AFTER the resolver is gone,
+  # so the only surviving source of an address is the map itself.
+  _HTTP_RESOLVE_CACHE=()
+  while IFS=' ' read -r _h _p _a _rp; do
+    [[ -n $_h ]] && _HTTP_RESOLVE_CACHE[$_h]=$_a
+  done <<<"$SCOURSH_HTTP_RELAY_MAP"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1 || seed_rc=$?
+assert_eq 0 "$seed_rc" \
+  'a request succeeds with NO resolver available at all, because the wrapper already resolved the host outside the sandbox and handed the address in - FAILS if the ADDR column is dropped from the map, in which case guarantee mode dies at exit 3 ("DNS resolution failed after the gate had approved it") on its very first request'
+assert_contains "$(cat "$ARGV_OUT")" '127.0.0.1:41998' 'and it still went through the relay'
+
+t_case 'a (host, port) with no relay row is exit 3, naming the reason - never a silent fall-back to --resolve'
+miss_rc=0
+miss_out=$(
+  # shellcheck disable=SC2030,SC2031
+  (
+    unset SCOURSH_HTTP_TRANSPORT
+    export SCOURSH_HTTP_RELAY_MAP='other.fixture.example 443 198.51.100.9 41997'
+    http_relay_map_load
+    export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+    PATH="$STUB:$PATH"
+    http_request GET 'https://good.fixture.example/plain'
+  ) 2>&1
+) || miss_rc=$?
+assert_eq "$SCOURSH_EXIT_SCOPE" "$miss_rc" \
+  'exit 3. Both readings are SAFE - a direct connection would be refused by the kernel anyway - so the difference is entirely honesty: returning a transport failure instead would be recorded as a breaker failure and read to an operator as "the target did not answer", which is a control that did not run wearing the appearance of a clean result'
+assert_contains "$miss_out" 'no relay for' \
+  'and the message names the actual reason, including the two shapes that reach it legitimately (an allow-subdomains match and an IPv6 target, neither of which the wrapper can enumerate ahead of time)'
+
+t_case 'http_relay_active is the ONE answer to "is guarantee mode on"'
+SCOURSH_HTTP_RELAY_MAP='' http_relay_map_load
+assert_status 1 'an empty map means OFF' http_relay_active
+SCOURSH_HTTP_RELAY_MAP='h 1 2.2.2.2 3' http_relay_map_load
+assert_status 0 'a parsed map means ON' http_relay_active
+malformed_rc=0
+( SCOURSH_HTTP_RELAY_MAP='h notaport 2.2.2.2 3' http_relay_map_load ) >/dev/null 2>&1 || malformed_rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$malformed_rc" \
+  'a malformed row is REFUSED, never skipped - a silently-dropped row is a relay the scan is later told does not exist, reported as a scope failure whose real cause is a typo in the wrapper'
+SCOURSH_HTTP_RELAY_MAP='' http_relay_map_load
+unset SCOURSH_HTTP_RELAY_MAP
+SCOURSH_HTTP_RESOLVE=_test_resolve
 
 t_summary 'http'

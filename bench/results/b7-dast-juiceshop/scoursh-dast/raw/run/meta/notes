@@ -1,0 +1,11 @@
+command=dast
+module=dast target=dast-test-target coverage-scope=target cell=dast-test-target intensity=active authed=true
+module=dast phase=auth target=dast-test-target identity=a mode=form state=authenticated
+module=dast phase=auth target=dast-test-target identity=b mode=form state=authenticated
+module=dast phase=crawl target=dast-test-target pages=13 endpoints=13 parameters=0 imported=0 spec_endpoints=0 spec_kinds=[] forms=0
+module=dast phase=crawl scope_refused_links=2 target=dast-test-target reasons=['https://fonts.googleapis.com:443' has no entry in config/scope.conf; 'https://fonts.gstatic.com:443' has no entry in config/scope.conf] (each was dropped before any request; docs/FOUNDATION.md tension 19)
+module=dast phase=crawl non_markup_responses=12 target=dast-test-target (recorded as endpoints, not parsed for links)
+module=dast phase=cookies target=dast-test-target identity=a authenticated_pass=1
+module=dast phase=cookies target=dast-test-target endpoints_fetched=13 cookies_seen=0 - no response set a cookie, so there was no cookie flag to check. This is a real negative over the surface inspected, bounded by the coverage records for this phase.
+module=dast phase=methods target=dast-test-target identity=a authenticated_pass=1
+module=dast phase=xxe_ssrf target=dast-test-target identity=a authenticated_probe=1

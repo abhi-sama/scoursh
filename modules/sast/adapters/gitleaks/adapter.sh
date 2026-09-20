@@ -42,6 +42,20 @@
 # duplicate that mechanism's job with a different fingerprint profile and a
 # different truncation/coverage story, rather than complementing it.
 #
+# CHECKED, NOT ASSUMED, FOR THE SAME UPSTREAM-DRIFT REASON `semgrep`'s and
+# `trivy`'s own adapters record in their own headers (docs/ADAPTERS.md §7a):
+# `gitleaks detect --help` on the real vendored 8.30.1 binary carries no
+# telemetry/metrics/version-check/update flag of any kind - there is nothing
+# analogous to semgrep's `--metrics`/trivy's `--disable-telemetry` to pass,
+# because gitleaks offers none - and every flag `gitleaks_run` below passes
+# (`--no-banner --no-git --exit-code --source --config --report-format
+# --report-path`) still exists on that release exactly as documented.
+# Verified rather than assumed: a real run of the exact invocation below was
+# sampled with `lsof -p <pid>` every 20ms for its lifetime (the same
+# technique used for the other two adapters) - zero TCP/UDP descriptors were
+# ever observed.  Re-run the same check after any future gitleaks upgrade;
+# do not infer "no egress" merely from an unchanged `--help` output.
+#
 # shellcheck shell=bash
 #
 # SC2329: several `_gitleaks_*` helpers are only reachable through the three

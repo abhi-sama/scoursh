@@ -1,0 +1,19 @@
+# tests/aws-readonly-allow.txt - the read-only AWS lint's exception file
+# (docs/FOUNDATION.md tension 23 item 4, docs/STEP6-CLOUD-PLAN.md CLOUD-01/
+# CLOUD-03).
+#
+# Exact "service operation" pairs, one per line, with a justification
+# comment.  tests/lint-aws-readonly.sh's check 4 fails on any entry that no
+# longer appears in the code, so this file can never rot into a blanket
+# permission - every line here corresponds to a real, current aws_ro call
+# site.  lib/awscli.sh's aws_ro() reads the identical file at runtime (its own
+# awscli_allowlisted()): an operation is only ever permitted here AND there,
+# never by either alone.
+#
+# Do NOT add "sts get-caller-identity" here: the frozen `get` prefix already
+# admits it, and an entry this lint's check 4 finds a caller for anyway is
+# still an entry the exception mechanism owes no justification for - it would
+# be pure check-4 liability with nothing to explain (docs/FOUNDATION.md
+# tension 23's own worked example says so explicitly).
+
+sts assume-role # docs/DESIGN.md §8.1's multi-account iteration (--assume-role, docs/STEP6-CLOUD-PLAN.md CLOUD-02): assumes a read-only role in each org member account. Not a read verb, and required.
