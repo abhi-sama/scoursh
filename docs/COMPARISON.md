@@ -84,7 +84,7 @@ Also shipping, and relevant when comparing against a specialist toolchain:
 - **Guided mode** - a bare `scan.sh` walks you through composing a real command and can print the
   exact non-interactive equivalent.
 - **Test rigour** - `tests/run-tests.sh --list` is the source of truth for the current suite/linter
-  count (141 suites, 7 linters as of this writing); 47% of the codebase is tests.
+  count (142 suites, 7 linters as of this writing); roughly 45% of shell code is tests.
 
 ## Declared limits
 
