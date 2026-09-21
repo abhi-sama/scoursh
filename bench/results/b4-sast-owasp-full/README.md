@@ -51,15 +51,17 @@ It is excluded from this leg entirely, not run at any severity.
 | Path | What |
 |---|---|
 | `SAMPLE-MANIFEST` | how the corpus set was built (see above - it is the full 2,740) |
-| `<tool>/raw/` | the tool's own output, byte for byte |
+| `<tool>/raw/` | the tool's output, with Semgrep rule message and metadata removed after normalisation because they are not redistributable |
 | `<tool>/normalised.jsonl` | the harness's record shape |
 | `<tool>/MANIFEST` | version, corpus commit, exact gate, claimed scope, wall clock |
 | `scorecard-all-findings.md` / `.json` | every finding counted (`--min-severity any`) |
 | `scorecard-high-and-critical.md` | the `--min-severity high` column |
 
-Raw outputs carry one mechanical change (`--portable-paths`): the absolute
-scan-root prefix is rewritten to `<SCAN_ROOT>` and the `bench/` prefix to
-`<BENCH>`, recorded in each MANIFEST. Nothing else was edited.
+Raw outputs carry mechanical publication-safety changes recorded in each
+MANIFEST: `--portable-paths` rewrites the absolute scan-root prefix to
+`<SCAN_ROOT>` and the `bench/` prefix to `<BENCH>`; Semgrep output also removes
+`extra.message` and `extra.metadata` after normalisation, so its rule text is
+not redistributed.
 
 ## How to reproduce
 

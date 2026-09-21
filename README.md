@@ -350,7 +350,7 @@ Then turn each on:
   is impossible.
 - gitleaks' default `gitleaks.toml` and binary are small enough to push, but a ~20MB binary blob checked
   into git history forever is still worth avoiding on general principle.
-- semgrep's default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0", which
+- semgrep's default ruleset, if you ever obtain one, ships under Semgrep's rules licence, which
   explicitly forbids redistribution - committing it to this (Apache-2.0, public) repository would be a
   license violation, not just bloat.
 

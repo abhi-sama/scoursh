@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bench/run-tool.sh - run one tool against one corpus, preserving its raw
-# output verbatim and emitting the normalised records beside it.
+# output (subject to documented publication-safe sanitisation) and emitting
+# the normalised records beside it.
 #
 #   bench/run-tool.sh --tool scoursh --sample sast-192 --out bench/results/smoke
 #   bench/run-tool.sh --tool semgrep --root /abs/path --corpus my-corpus --out …
@@ -35,6 +36,8 @@ BENCH_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 BENCH_LIB_DIR=$BENCH_ROOT/lib
 # shellcheck source=bench/lib/normalise.sh
 source "$BENCH_LIB_DIR/normalise.sh"
+# shellcheck source=bench/lib/sanitize.sh
+source "$BENCH_LIB_DIR/sanitize.sh"
 # shellcheck source=bench/lib/corpus.sh
 source "$BENCH_LIB_DIR/corpus.sh"
 
@@ -144,6 +147,14 @@ main() {
   "${tool}_normalise" "$dest/raw" "$root" |
     bench_records_to_jsonl "$tool" "$version" "$corpus" >"$dest/normalised.jsonl"
 
+  # Semgrep metadata and messages are rule text under a licence that forbids
+  # redistribution.  Normalisation above has already extracted every field
+  # the scorecard reads; strip the restricted fields before this output can be
+  # committed or handed to another reader.
+  if [[ $tool == semgrep || $tool == semgrep-default ]]; then
+    bench_sanitize_semgrep_raw "$dest/raw/semgrep.json"
+  fi
+
   {
     printf 'tool: %s\n' "$tool"
     printf 'version: %s\n' "$version"
@@ -155,6 +166,9 @@ main() {
     printf 'records: %s\n' "$(wc -l <"$dest/normalised.jsonl" | tr -d ' ')"
     printf 'claims-categories: %s\n' "$("${tool}_scope" | tr '\n' ' ' | sed 's/ $//')"
     [[ -n $truth ]] && printf 'ground-truth: %s\n' "$truth"
+    if [[ $tool == semgrep || $tool == semgrep-default ]]; then
+      printf 'sanitised-output: removed extra.message and extra.metadata after normalisation; Semgrep rule text is not redistributed\n'
+    fi
     printf 'gate: %s\n' "$(_gate_line "$tool")"
     printf 'note: runtime is a WALL CLOCK over %s file(s), not a rate - see the\n' "$nfiles"
     printf '  header of bench/run-tool.sh for why a single total on a small corpus\n'

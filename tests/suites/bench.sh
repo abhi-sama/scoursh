@@ -44,6 +44,8 @@ US=$'\x1f'
 source "$BENCH/lib/json.sh"
 # shellcheck source=bench/lib/normalise.sh
 source "$BENCH/lib/normalise.sh"
+# shellcheck source=bench/lib/sanitize.sh
+source "$BENCH/lib/sanitize.sh"
 # shellcheck source=bench/lib/corpus.sh
 source "$BENCH/lib/corpus.sh"
 # shellcheck source=bench/lib/truth.sh
@@ -555,6 +557,21 @@ if [[ -d $ROOT/bench/results ]]; then
 fi
 assert_eq '' "$leaks" 'a committed result must not embed an operator home directory - bench/run-tool.sh --portable-paths rewrites the scan-root and bench/ prefixes to <SCAN_ROOT> and <BENCH>, and this is what catches a result committed without it'
 
+t_case 'no tracked file redistributes the Semgrep rules licence text'
+# Keep the forbidden string split in this source: this test guards every
+# tracked path, including itself, so spelling it literally here would make the
+# guard permanently fail.
+restricted='Semgrep Rules'
+restricted+=" License"
+restricted_hits=''
+if restricted_hits=$(git -C "$ROOT" grep -l -I -e "$restricted"); then
+  :
+else
+  rc=$?
+  assert_eq 1 "$rc" 'git grep reports no match with status 1'
+fi
+assert_eq '' "$restricted_hits" 'the Semgrep rules licence text is absent from every tracked file; vendored engine paths are gitignored and therefore cannot be committed accidentally'
+
 t_case 'the README states the must-not-publish rules, which are the point of the harness'
 readme=$(cat "$ROOT/bench/README.md")
 assert_contains "$readme" 'test fixtures' 'no fixture-measured numbers'
@@ -581,6 +598,20 @@ assert_contains "$recs" "BenchmarkTest00001.java${US}72${US}22${US}high${US}java
   "a CWE-22 ERROR finding: the CWE is reduced from semgrep's prose spelling and ERROR maps to high"
 assert_contains "$recs" "${US}326${US}medium${US}" 'a WARNING maps to medium on the common scale'
 assert_contains "$recs" "${US}89${US}" 'the SQL-injection CWE survives the prose spelling'
+
+t_case 'Semgrep rule text is stripped only after normalisation'
+# The normaliser needs metadata.cwe, but the resulting normalised records are
+# all the scorecard reads.  Put both restricted shapes into a scratch copy,
+# normalise it, then ensure sanitisation leaves no redistributable rule text.
+mkdir -p "$W/raw-semgrep-sanitise"
+jq '.results[0].extra.message = "rule message" |
+    .results[0].extra.metadata.licence = ("Semgrep Rules" + " License v1.0")' \
+  "$FIX/semgrep-sample.json" >"$W/raw-semgrep-sanitise/semgrep.json"
+recs_before=$(semgrep_normalise "$W/raw-semgrep-sanitise" '/nonexistent-root')
+bench_sanitize_semgrep_raw "$W/raw-semgrep-sanitise/semgrep.json"
+assert_eq 6 "$(printf '%s\n' "$recs_before" | grep -c .)" 'normalisation recorded every fixture finding before sanitisation'
+assert_eq 0 "$(jq '[.results[] | select(.extra.message? or .extra.metadata?)] | length' "$W/raw-semgrep-sanitise/semgrep.json")" 'every result loses extra.message and extra.metadata'
+assert_eq 0 "$(jq '[.results[] | select((.extra | tostring) | contains(("Semgrep Rules") + " License"))] | length' "$W/raw-semgrep-sanitise/semgrep.json")" 'no restricted rules licence text remains in the raw JSON'
 
 t_case 'the semgrep adapter emits a record for a finding with NO cwe at all'
 python3 - "$W/raw-semgrep/semgrep.json" <<'PY' 2>/dev/null || printf 'SKIPPED: no python3\n'
