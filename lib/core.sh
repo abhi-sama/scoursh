@@ -1225,7 +1225,9 @@ core_on_err() {
   # Nothing here may itself fail (tension 4 rule 5), so it is printf only.
   printf '%s error scoursh: command failed (status %s) at %s:%s: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$src" "$line" "$cmd" >&2
-  return "$status"
+  # An unhandled command failure is an incomplete run, never the findings
+  # gate's exit 1. `die` disables this trap for intentional 2/3/4/5 exits.
+  exit "$SCOURSH_EXIT_INCOMPLETE"
 }
 
 core_on_signal() {

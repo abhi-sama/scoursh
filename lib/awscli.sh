@@ -47,11 +47,11 @@ source "${BASH_SOURCE[0]%/*}/core.sh"
 # 1. Configuration
 # ---------------------------------------------------------------------------
 : "${SCOURSH_AWSCLI_BIN:=aws}"
-# tests/aws-readonly-allow.txt is scoursh's own exception list (tension 23 item
+# data/aws-readonly-allow.txt is scoursh's own exception list (tension 23 item
 # 4), resolved against the install root like every other shipped file
 # (tension 26) - never against the scan root, which is a property of the tree
 # being scanned and has nothing to do with it.
-: "${SCOURSH_AWSCLI_ALLOWLIST:=$SCOURSH_INSTALL_ROOT/tests/aws-readonly-allow.txt}"
+: "${SCOURSH_AWSCLI_ALLOWLIST:=$SCOURSH_INSTALL_ROOT/data/aws-readonly-allow.txt}"
 
 # The response cache (tension 16's fourth piece of shared state).  It lives in
 # the scratch directory rather than under reports/<run>/ because it is
@@ -813,7 +813,7 @@ aws_ro_paged() {
 # only the subshell, so a refusal is swallowed and the caller sees a crash-
 # shaped diagnostic instead of the real one.
 #
-# `sts get-caller-identity` needs NO entry in tests/aws-readonly-allow.txt: the
+# `sts get-caller-identity` needs NO entry in data/aws-readonly-allow.txt: the
 # frozen `get` prefix already admits it, and an entry that no code needs is
 # exactly what the lint's check 4 exists to reject.  Do not seed one.
 aws_ro_account_id_set() {

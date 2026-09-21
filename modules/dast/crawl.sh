@@ -137,6 +137,13 @@ _crawl_discovery_load() {
   declare -ga _CRAWL_D_INCLUDE=()
   declare -ga _CRAWL_D_EXCLUDE=()
   _CRAWL_D_PRESENT=0
+  if [[ -d $(dirname -- "$path") ]]; then
+    _CRAWL_D_CONFIG_DIR=$(cd -- "$(dirname -- "$path")" && pwd -P)
+  else
+    _CRAWL_D_CONFIG_DIR=$(dirname -- "$path")
+  fi
+  _CRAWL_D_OPENAPI_SOURCE=config _CRAWL_D_GRAPHQL_SOURCE=config
+  _CRAWL_D_POSTMAN_SOURCE=config _CRAWL_D_HAR_SOURCE=config
 
   if config_load_if_present "$path" discovery-input discovery; then
     if idx=$(records_index_of_id discovery "$target"); then
@@ -187,28 +194,45 @@ _crawl_discovery_apply_cli_overrides() {
   declare -p SCAN_FLAGS &>/dev/null || declare -A SCAN_FLAGS=()
   if [[ -n ${SCAN_FLAGS[openapi]:-} ]]; then
     _CRAWL_D_OPENAPI=${SCAN_FLAGS[openapi]}
+    _CRAWL_D_OPENAPI_SOURCE=cli
     _CRAWL_D_PRESENT=1
   fi
   if [[ -n ${SCAN_FLAGS[graphql-schema]:-} ]]; then
     _CRAWL_D_GRAPHQL=${SCAN_FLAGS[graphql-schema]}
+    _CRAWL_D_GRAPHQL_SOURCE=cli
     _CRAWL_D_PRESENT=1
   fi
   if [[ -n ${SCAN_FLAGS[postman]:-} ]]; then
     _CRAWL_D_POSTMAN=${SCAN_FLAGS[postman]}
+    _CRAWL_D_POSTMAN_SOURCE=cli
     _CRAWL_D_PRESENT=1
   fi
   if [[ -n ${SCAN_FLAGS[har]:-} ]]; then
     _CRAWL_D_HAR=${SCAN_FLAGS[har]}
+    _CRAWL_D_HAR_SOURCE=cli
     _CRAWL_D_PRESENT=1
   fi
 }
 
-# A specification path is resolved relative to the INSTALL ROOT when it is not
-# absolute, the same convention every other `config/*.conf` path key follows.
+# A path supplied on the command line is resolved from the current working
+# directory. A path from config/discovery.conf is config-directory-relative in
+# a packaged install, while a checkout keeps the historical install-root
+# behaviour until the installed-layout resolver lands.
 _crawl_resolve_input_path() {
-  local p=$1
+  local p=$1 source=${2:-config} base
   [[ -n $p ]] || { printf ''; return 0; }
-  if [[ $p == /* ]]; then printf '%s' "$p"; else printf '%s/%s' "${SCOURSH_INSTALL_ROOT:-.}" "$p"; fi
+  if [[ $p == /* ]]; then
+    printf '%s' "$p"
+    return 0
+  fi
+  if [[ $source == cli ]]; then
+    base=$(pwd -P)
+  elif [[ -f ${SCOURSH_INSTALL_ROOT:-.}/.scoursh-packaged ]]; then
+    base=${_CRAWL_D_CONFIG_DIR:-${SCOURSH_INSTALL_ROOT:-.}/config}
+  else
+    base=${SCOURSH_INSTALL_ROOT:-.}
+  fi
+  printf '%s/%s' "$base" "$p"
 }
 
 # ---------------------------------------------------------------------------
@@ -767,7 +791,7 @@ _crawl_run_phase() {
   local spec_count=0 spec_kinds='' f
   local -a spec_failures=()
 
-  f=$(_crawl_resolve_input_path "$_CRAWL_D_OPENAPI")
+  f=$(_crawl_resolve_input_path "$_CRAWL_D_OPENAPI" "$_CRAWL_D_OPENAPI_SOURCE")
   if [[ -n $f ]]; then
     if [[ ! -r $f ]]; then
       spec_failures+=("openapi:unreadable")
@@ -778,7 +802,7 @@ _crawl_run_phase() {
       spec_failures+=("openapi:$_CRAWL_SPEC_ERROR")
     fi
   fi
-  f=$(_crawl_resolve_input_path "$_CRAWL_D_POSTMAN")
+  f=$(_crawl_resolve_input_path "$_CRAWL_D_POSTMAN" "$_CRAWL_D_POSTMAN_SOURCE")
   if [[ -n $f ]]; then
     if [[ ! -r $f ]]; then
       spec_failures+=("postman:unreadable")
@@ -789,7 +813,7 @@ _crawl_run_phase() {
       spec_failures+=("postman:$_CRAWL_SPEC_ERROR")
     fi
   fi
-  f=$(_crawl_resolve_input_path "$_CRAWL_D_HAR")
+  f=$(_crawl_resolve_input_path "$_CRAWL_D_HAR" "$_CRAWL_D_HAR_SOURCE")
   if [[ -n $f ]]; then
     if [[ ! -r $f ]]; then
       spec_failures+=("har:unreadable")
@@ -800,7 +824,7 @@ _crawl_run_phase() {
       spec_failures+=("har:$_CRAWL_SPEC_ERROR")
     fi
   fi
-  f=$(_crawl_resolve_input_path "$_CRAWL_D_GRAPHQL")
+  f=$(_crawl_resolve_input_path "$_CRAWL_D_GRAPHQL" "$_CRAWL_D_GRAPHQL_SOURCE")
   if [[ -n $f ]]; then
     if [[ ! -r $f ]]; then
       spec_failures+=("graphql:unreadable")

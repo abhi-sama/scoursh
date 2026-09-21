@@ -1,4 +1,4 @@
-# tests/aws-readonly-allow.txt - the read-only AWS lint's exception file
+# data/aws-readonly-allow.txt - the read-only AWS runtime/lint exception file
 # (docs/FOUNDATION.md tension 23 item 4, docs/STEP6-CLOUD-PLAN.md CLOUD-01/
 # CLOUD-03).
 #

@@ -947,6 +947,20 @@ assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/search"' \
 assert_contains "$PARJSON" '"name": "q"' 'and its query parameter is in parameters.json instead'
 assert_contains "$PARJSON" '"name": "page"' 'both of them'
 
+t_case 'a packaged discovery.conf resolves a relative specification beside that config file'
+mkdir -p "$FIX/config/specs"
+cp "$FIXTURES/specs/openapi.json" "$FIX/config/specs/packaged-openapi.json"
+cat >"$FIX/config/discovery.conf" <<'EOF'
+id: crawl-fixture
+openapi-path: specs/packaged-openapi.json
+EOF
+: >"$FIX/.scoursh-packaged"
+_crawl_scan "$W/run-packaged-relative"
+assert_eq 0 "$_RC" 'a packaged relative config path is read successfully'
+assert_contains "$(_slurp "$W/run-packaged-relative/inventory/endpoints.json")" '"path": "/pets"' \
+  'the OpenAPI document was found relative to config/discovery.conf, not the install root'
+rm -f "$FIX/.scoursh-packaged" "$FIX/config/discovery.conf"
+
 t_case 'the crawl phase records structured per-source surface counts (IMPORT-06), not only the notes[] prose'
 SURF_EP=$(_slurp "$W/run-basic/meta/dast_surface_endpoints_by_source")
 SURF_PAR=$(_slurp "$W/run-basic/meta/dast_surface_parameters_by_source")

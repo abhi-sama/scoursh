@@ -97,7 +97,16 @@ else
   RUN_NETNS_MAIN=0
 fi
 
-RUN_NETNS_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+_netns_self=${BASH_SOURCE[0]}
+while [[ -L $_netns_self ]]; do
+  _netns_link=$(readlink -- "$_netns_self")
+  case $_netns_link in
+    /*) _netns_self=$_netns_link ;;
+    *) _netns_self=$(dirname -- "$_netns_self")/$_netns_link ;;
+  esac
+done
+RUN_NETNS_DIR=$(cd -- "$(dirname -- "$_netns_self")/.." && pwd -P)
+unset -v _netns_self _netns_link
 # -x back-edge cut: lib/core.sh
 # is already inlined elsewhere in this file's own source graph, and shellcheck
 # re-expands EVERY source edge it follows.  Cutting this one loses no checking

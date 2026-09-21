@@ -50,7 +50,7 @@
 # SC2016: assertion prose quotes header, meta-tag and filename syntax literally.
 # SC2030/SC2031: a prefix `VAR=val cmd` before a subprocess is DELIBERATELY
 #   scoped to that one invocation.
-# shellcheck disable=SC2016,SC2030,SC2031
+# shellcheck disable=SC2016,SC2030,SC2031,SC2034
 #
 # WHY EVERY `source .../banner.sh` BELOW CARRIES `# shellcheck source=/dev/null`,
 # AND WHY THAT IS NOT LAZINESS.  This suite sources the phase script five times,
@@ -90,6 +90,18 @@ mkdir -p "$W"
 
 FIXDB=$ROOT/tests/fixtures/dast/versions.db
 FIXDIR=$ROOT/tests/fixtures/dast/banner
+
+printf '\n== versions.db override compatibility ==\n'
+t_case 'the canonical versions.db override wins, while both historic names remain aliases'
+SCOURSH_VERSIONS_DB=$W/canonical-versions.db
+SCOURSH_DAST_VERSIONS_DB=$W/dast-alias.db
+SCOURSH_SCA_VERSIONS_DB=$W/sca-alias.db
+assert_eq "$W/canonical-versions.db" "$(banner_db_path)" \
+  'SCOURSH_VERSIONS_DB is the shared reader/writer override'
+unset SCOURSH_VERSIONS_DB SCOURSH_DAST_VERSIONS_DB
+assert_eq "$W/sca-alias.db" "$(banner_db_path)" \
+  'the historic SCA writer override remains a reader compatibility alias'
+unset SCOURSH_SCA_VERSIONS_DB
 
 # ---------------------------------------------------------------------------
 # Scope + the two stubs that keep this suite off the network.

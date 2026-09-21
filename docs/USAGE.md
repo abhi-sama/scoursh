@@ -30,7 +30,10 @@ document: read the tables below for the exact per-flag behaviour behind that one
 
 ## Commands
 
-`scoursh` is a single entry point, `scan.sh`, with one subcommand per surface it scans.
+`scoursh` is a single entry point, `scan.sh` in a checkout and `scoursh` when
+installed, with one subcommand per surface it scans. `scoursh --version` prints
+the installed version and `scoursh paths` prints its resolved install, config,
+data, state, and reports locations.
 Every run that gets as far as dispatching its command writes `run.json` into its output directory,
 whether or not any findings were produced.
 A run that refuses first - a missing required input, a scope violation, a `--paranoid` host with no
@@ -1356,9 +1359,10 @@ authorised - it can never become a way to scan a host you did not (docs/FOUNDATI
 ["Per-command flags"](#per-command-flags)) override the matching key above for a single invocation,
 ephemerally - nothing is written to `config/discovery.conf`. Each requires `--target` naming the
 target the override applies to (exit 2 otherwise, the same rule `--i-own-target` enforces), and a
-relative path is resolved against the install root exactly as this file's own paths are. Prefer the
-file for anything you want to keep re-running the same way; reach for a flag when you are trying one
-spec or capture once.
+relative CLI path is resolved from the current working directory. In an installed copy, a relative
+path recorded in `config/discovery.conf` is resolved from that config file's directory; a checkout
+keeps its historic install-root-relative interpretation. Prefer the file for anything you want to
+keep re-running the same way; reach for a flag when you are trying one spec or capture once.
 
 ### `config/images.conf` - required only for `image` (unless `--source` is given)
 

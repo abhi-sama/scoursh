@@ -407,7 +407,8 @@ A lint in `tests/` enforces rules 1, 2, and 5 by grep.
    18), because this trap erases the scratch dir on the very signal tension 18's resume test uses.
 
    The `ERR` trap reports `${BASH_SOURCE[0]}:${LINENO}` and `$BASH_COMMAND`, must contain no command
-   that can itself fail, and re-raises the original status.
+   that can itself fail, and exits `5` (`incomplete`) rather than re-raising an arbitrary unexpected
+   status. This keeps a failed command from colliding with the findings gate's exit `1`.
    `die` removes the `ERR` trap before exiting, so an intentional exit is not re-reported as an error.
 
 **Consequence for the build.**
@@ -3871,7 +3872,7 @@ holds even if the lint is wrong.
    positives by construction.
 4. **A small, reviewed exception file** for operations that are legitimately needed and are not read
    verbs.
-   `tests/aws-readonly-allow.txt` holds exact `service operation` pairs with a justification comment,
+   `data/aws-readonly-allow.txt` holds exact `service operation` pairs with a justification comment,
    seeded with `sts assume-role` (required by §8.1 multi-account) and `sts get-caller-identity` (which
    the prefix allows anyway, listed for clarity).
    The lint fails on any call not covered by the prefix allowlist **or** this file, **and** fails on any
@@ -4331,6 +4332,15 @@ rather than by the shell implicitly, against scoursh's own **install root** - th
 `scan.sh`.
 That is a different root from the **scan root** of tension 12, which is a property of the tree being
 scanned; the two are never interchangeable and are named differently for that reason.
+
+**Packaging amendment (2026-09-21).** The discovery-input paths in
+`config/discovery.conf` keep this install-root-relative interpretation in a
+checkout, preserving existing configuration. In a packaged install (identified
+by its `.scoursh-packaged` marker), they resolve relative to the config file
+that names them; equivalent `--openapi`/`--har`/`--postman`/`--graphql-schema`
+CLI paths resolve from the operator's current working directory. This is the
+narrow exception needed to keep an installed copy from resolving operator data
+inside its immutable install tree.
 
 One parser, `lib/records.sh`, serves all of it.
 One linter covers all of it, so a typo in `scanner.conf` fails the same way a typo in a rule pack does,
@@ -5858,7 +5868,7 @@ read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD
 through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
 at step 1 as a no-op stub over an empty set of call sites and removes its matching logic from the
 "still to write" list - `lib/awscli.sh` has since landed too, so what is left of CLOUD-03 is seeding
-`tests/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
+`data/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
 against the first real `aws_ro` call sites once the live scripts start landing - and states that the
 landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. Step 6 was gated on
 step 3, step 4 (SCA + IaC), and step 5 (DAST) all being complete on `dev`, per that plan's own status
