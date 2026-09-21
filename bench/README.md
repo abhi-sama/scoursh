@@ -7,8 +7,8 @@ This directory is tickets **B1 (harness)**, **B2 (corpus manifest)** and
 **B3 (scorer)** of the benchmark plan, plus the **B4 (SAST leg)** and
 **B5 (SCA leg)** measurements built on top of them. The remaining
 per-category legs (B6 IaC/secrets, …) and the published page (B9) are
-follow-ups; **no number produced here is published anywhere in `docs/` yet,
-and that is deliberate.**
+follow-ups in this historical introduction. B9 has since published the committed measurements in
+[`docs/COMPARISON.md`](../docs/COMPARISON.md).
 
 ---
 

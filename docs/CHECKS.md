@@ -30,8 +30,8 @@ needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 networ
 
 - 🟢 **No external data** - works on just `--path` (code) or `--target` (a running app). Active DAST
   needs a reachable target + `--i-own-target`.
-- 🔵 **Needs the advisory DB** - requires `data/advisories.db` (built with `tools/vendor-engines.sh
-  advisories`).
+- 🔵 **Needs advisory data** - dependency checks require `data/advisories.db` (built with
+  `tools/vendor-engines.sh advisories`); banner-version checks read `data/versions.db` banner rows.
 - 🟣 **Optional engine depth** - `--use-engines` adds vendored Semgrep/Trivy/Gitleaks. Boosts depth,
   not new categories.
 - 🟠 **Needs AWS credentials** - resolvable via profile, environment, or instance role
@@ -185,7 +185,7 @@ that stores a forged response, a process-wide object every other request reads),
 | `DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01` 🔴 also needs `--allow-intrusive` | Prototype pollution (error-based and confirmed-reflected) - both attempt a write into a shared, process-wide object |
 | `DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01` | Host-header reflection into body or redirect authority |
 | `DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01` | Exposed sensitive/backup files, content discovery, directory listing |
-| `DAST-METHOD-TRACE / WRITE / CONNECT-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
+| `DAST-METHOD-TRACE_ENABLED / WRITE_ADVERTISED / CONNECT_ADVERTISED-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
 
 ## DAST — authorization, tokens, rate limits & GraphQL 🟢 no external data
 
@@ -258,7 +258,7 @@ arithmetic - the identical `DAST-BANNER-OUTDATED_COMPONENT-01` convention above,
 ## SCA — dependency CVEs 🔵 advisory DB
 
 Known-vulnerable dependencies from your lockfiles. This is the one surface that needs the vendored
-`data/advisories.db` (built with `tools/vendor-engines.sh advisories bulk --all`); without it, SCA
+`data/advisories.db` (built with `tools/vendor-engines.sh advisories bulk --accept-unverified --all`); without it, SCA
 reports that no advisory data was available rather than a false all-clear.
 
 | Check | Ecosystem |
@@ -290,7 +290,7 @@ the two and this module's own stated gaps.
 |---|---|
 | `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` | Installed apk package matches a known advisory for the image's Alpine release |
 | `IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` | Installed dpkg package matches a known advisory for the image's Debian/Ubuntu release (resolved against the `Source:` package where one is declared) |
-| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` (needs `sqlite3` on `PATH`) | Installed rpm package matches a known advisory for the image's RHEL/Fedora release |
+| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` | rpm matching is not supported on real images: their binary database yields the declared `rpm_db_binary_format` coverage gap |
 | `IMAGE-LANGDEP-VULNERABLE_DEP-01` | A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) found at a bounded set of conventional manifest locations inside the image's own rootfs matches a known advisory - reuses `sca`'s own tree-walkers, re-emitted under this id and the image's own `image-id` cell rather than `module=sca` |
 | `IMAGE-CFG-RUNS_AS_ROOT-01` | Image config declares no non-root `User` - the *effective* runtime user across every merged base layer, not one Dockerfile's own `USER` line |
 | `IMAGE-CFG-EXPOSED_PORTS-01` | Image config declares one or more exposed ports (informational) |

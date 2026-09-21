@@ -56,7 +56,7 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `scan.sh <command> --help` now prints that command's own accepted flags (generated from the
   parser's own flag table, so it cannot list a flag the parser would reject) and a plainly-stated
   build status, derived from the same on-disk check `scan_dispatch` itself uses wherever one exists.
-- **`--format audit` - a fifth, opt-in format value.** `report_audit` writes `report-audit.html`
+- **`--format audit` - the one opt-in format value (not in the default list).** `report_audit` writes `report-audit.html`
   alongside `report.html`, never replacing it: a per-category (sast/sca/iac/dast/cloud/network/image)
   coverage report that lists every registered check in exactly one of four states - found something, ran and
   found nothing, did not run (with the recorded reason), or unaccounted - with full not-covered
@@ -103,8 +103,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 - **Step 6 (Cloud / AWS CSPM) is complete for the live-checks half.** `lib/awscli.sh`'s `aws_ro`
   chokepoint, `modules/cloud/aws/run.sh`'s dispatch entry point (account-authorization record +
   enabled-region iteration, `--assume-role` for multi-account), and all 30 `docs/DESIGN.md` §8.1
-  services (`modules/cloud/aws/live/*.sh`) have landed - 112 checks total, CIS AWS Foundations
-  Benchmark v3.0.0 and OWASP mapped, feeding the compliance report step 10 already ships. Every AWS
+  services (`modules/cloud/aws/live/*.sh`) have landed - 112 checks total, every one OWASP-mapped and
+  the 22 with a corresponding CIS AWS Foundations Benchmark v3.0.0 control citing it, feeding the
+  compliance report step 10 already ships. Every AWS
   call goes through `aws_ro`, which refuses anything that is not read-only; access-denied, opted-out,
   or throttled services are recorded as a coverage reduction, never folded into a clean pass. The
   `posture/` phase (`docs/DESIGN.md` §8.7's SSO/edge/session drift checks, POSTURE-02 through
@@ -113,10 +114,12 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   three remaining posture tickets, is in
   [`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md).
 - **`COMPOSITE-TOKEN-HIJACK` is now seeded** in `rules/derived.rules` (findings F5/F20, open since step
-  1, are cleared): DAST supplies one contributor and the cloud module landing above supplies the
-  other, so the composite finding this correlates is live rather than an intentionally-unseeded gap.
+  1, are cleared): DAST supplies two contributors and cloud supplies the third, so its predicate is
+  tested. It does not yet fire in a real run: open finding F21 records that the AppSync contributor has
+  no endpoint host with which to correlate a DAST target.
 - **Network / host scanning is complete.** `modules/network/` (NET-01 through NET-11, see
-  [`AGENTS.md`](AGENTS.md)'s "Network module (NET)" section for the full landing detail) ships
+  [`AGENTS.md`](AGENTS.md)'s "Network module (NET)" section for the full landing detail; NET-12 also
+  landed, while optional Tier 4 NET-13..15 remains unstarted) ships
   `scan.sh network --target NAME`: service-posture scanning over the listener set
   `config/scope.conf`'s `base-url`/`extra-host` entries declare for that target - three-state
   reachability verification, banner/HTTP service and version disclosure, TLS posture on non-web
@@ -130,8 +133,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   landing detail) ships `scan.sh image --image ID [--source PATH]`: offline installed-package
   enumeration and CVE matching against a `docker save` tarball or OCI image-layout directory the
   operator supplies - never a registry pull, the same offline-database model SCA already lives in.
-  Covers apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH`; its absence is a declared
-  coverage reduction, never a silent clean pass), language dependencies found inside the image's own
+  Covers apk and dpkg packages end to end. Real rpm databases are binary RPM headers scoursh does not
+  decode, so rpm images report the declared `IMAGE-COV-UNKNOWN_DISTRO-01` (`rpm_db_binary_format`)
+  rather than package matches; it also covers language dependencies found inside the image's own
   rootfs (reusing `sca`'s tree-walkers), and config-blob checks (effective runtime user, exposed
   ports, mutable base-image reference). Correlates with `modules/iac/dockerfile.rules` findings for
   the same image via `rules/derived.rules` when `config/images.conf` names the Dockerfile that built
@@ -142,7 +146,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 
 ## Not yet started
 
-Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above.
+Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above. Remaining work is
+the cloud `posture/` phase (POSTURE-02..04), optional network Tier 4 (NET-13..15), and DAST's opt-in
+live user-enumeration probe.
 This section used to track one gap in an already-shipped feature - a macOS enforcement mechanism
 behind `--paranoid`'s detector - and that has since landed too (`tools/run-sandboxed.sh`'s three
 tiers; see "Landed" above). It is empty for the moment.
@@ -187,7 +193,7 @@ scheduled on its own.
   "Recently fixed" below.
   (`--format` used to be a fifth: it was parsed and the resolved format list was then discarded, so
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
-  `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
+  `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the six
   `--format` values, and are written on every run regardless of what `--format` asked for; `sarif`
   selects `report_sarif` like every other value and, as of SARIF-06, writes a complete document -
   see "Recently fixed" below and [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output).)
@@ -289,8 +295,8 @@ Network / host scanning still carries two deliberate, stated exclusions rather t
 patch-level inference (banner-version matching cannot see a distribution's backported fixes) and UDP
 (no connect handshake, so "open" and "filtered" are indistinguishable without a per-service payload).
 Container image scanning likewise carries stated exclusions rather than unbuilt work - no
-full-rootfs materialisation, no running-container/runtime inspection, and rpm needs `sqlite3` on
-`PATH` or it is a declared coverage reduction. See [`docs/CHECKS.md`](docs/CHECKS.md) and
+full-rootfs materialisation, no running-container/runtime inspection, and rpm package databases have
+binary headers scoursh does not decode, so real rpm images are a declared coverage reduction. See [`docs/CHECKS.md`](docs/CHECKS.md) and
 `docs/DESIGN.md` §15 for both.
 
 ## Maintenance note: this file is not generated

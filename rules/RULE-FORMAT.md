@@ -818,6 +818,7 @@ patterns do.
 | `cis` | optional | repeatable | no | As §9.1. |
 | `severity-floor` | optional | single | no | As §9.1. |
 | `severity-ceiling` | optional | single | no | As §9.1. |
+| `fix-cli` | optional | single | no | A deterministic remediation command, when the check can safely supply one. |
 
 A script check has no `pattern`, `dialect`, `files`, or `context-*` key; those are `E017` here.
 
@@ -922,7 +923,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `fail-on` | single | no | Severity name or `none` | `none` |
 | `min-confidence` | single | no | `high` `medium` `low` | `low` |
 | `redact-secrets` | single | no | `true` or `false` | `true` |
-| `formats` | repeatable | no | `json` `sarif` `html` `md` | all four |
+| `formats` | repeatable | no | `json` `sarif` `html` `md` `audit` `agent` | `json` `sarif` `html` `md` `agent` |
 | `max-matches-per-file` | single | no | Positive integer | `200` |
 | `evidence-max-bytes` | single | no | Positive integer | `512` |
 | `scratch-dir` | single | no | Absolute path | `${TMPDIR:-/tmp}` |
@@ -1500,7 +1501,7 @@ A schema that needs "unset" uses the literal token `none` (§5.3).
 ## 13. Linter checks
 
 `tests/lint-rules.sh` implements every check below and exits non-zero if any error fires.
-Warnings are reported and do not fail unless `--strict`.
+Warnings are reported but do not fail the linter; they are shown only when `SCOURSH_SHOW_RULE_WARNINGS=true`.
 
 ### Syntax (from §3 to §7)
 
