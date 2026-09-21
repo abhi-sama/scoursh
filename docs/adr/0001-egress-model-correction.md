@@ -1,5 +1,9 @@
 # ADR 0001: Correct the egress model - egress-restricted, not air-gapped
 
+> **Implementation addendum (2026-09-21).** Approved raw TCP/TLS probe paths authorize connections through
+> `lib/http.sh`'s `http_authorize_raw_connection`. Optional engine vendoring remains an offline preparation
+> step, never scan-time egress.
+
 - **Status:** Accepted
 - **Date:** 2026-08-15
 

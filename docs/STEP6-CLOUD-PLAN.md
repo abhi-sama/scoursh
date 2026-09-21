@@ -1,5 +1,9 @@
 # Step 6 (Cloud / AWS) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This is a historical landing plan. CLOUD-01..34 and POSTURE-01
+> have landed: current cloud behavior is implemented under `modules/cloud/aws/` and documented in
+> [`docs/USAGE.md`](USAGE.md). POSTURE-02..04 remain unbuilt.
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that step 6 - `docs/DESIGN.md` §13's "`regions.sh` iteration -> live read-only checks

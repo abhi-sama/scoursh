@@ -1,5 +1,10 @@
 # scoursh foundation - design-tension register
 
+> **Current-status note (2026-09-21).** This register preserves both design resolutions and their
+> implementation history. For current operator-facing behavior use [`docs/USAGE.md`](USAGE.md); where a
+> tension says a proposed feature is not implemented, that statement is intentional unless a later dated
+> status note says otherwise.
+
 > This is the register of design tensions found by reading `docs/DESIGN.md` adversarially, as an
 > implementer who has to write the thing in bash.
 > Each entry states the tension, why it bites, the options that were considered, the **RESOLUTION**, and
@@ -44,6 +49,9 @@
 | 24 | Runtime freeze: bash and coreutils portability | §4, §10 |
 | 25 | Offline version matching for SCA | §6.5 |
 | 26 | One record format for human-authored config | §11 |
+| 27 | Adapter integration and vendoring | §6.4, §9 |
+| 28 | Egress model correction | §2, §12 |
+| 29 | Documentation and verification evidence | §12 |
 
 ---
 
@@ -2807,9 +2815,12 @@ The worker id is `$BASHPID` plus the work-unit index, so it is unique even if a 
 > `$( ... )` is the subshell's pid and differs on every call, which silently gives every finding a shard
 > of its own.
 
-`--keep-shards` is redefined accordingly: it means **do not delete the shard and unit directories after
-a successful merge**.  Without it they are removed once the merge has completed, which is the only point
-at which they are genuinely redundant.
+> **Implementation status (2026-09-21): resolved in design, not implemented.** `--keep-shards` is not
+> a shipped CLI flag. Shards live in the run directory, but the proposed deletion behavior below has not
+> been implemented.
+
+`--keep-shards` is redefined accordingly in this design: it would mean **do not delete the shard and unit
+directories after a successful merge**. Without it they would be removed once the merge completed.
 
 At end of run, `scan.sh` merges every shard into `reports/<run>/findings.jsonl`, sorted by
 `(module, check_id, fingerprint)` under `LC_ALL=C`.
@@ -2943,7 +2954,10 @@ unit_key = lowercase_hex_sha256( "uk/1" \0 module \0 check_id \0 scope_1 \0 scop
 | Cloud live | `account_id`, `region`, `service` |
 | Posture | `control_id` (the `POSTURE-*` check id), `scope_key` |
 
-Each worker appends `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to
+> **Implementation status (2026-09-21): resolved in design, not implemented.** The unit journal and
+> `--resume` are not shipped; `reports/<run>/units/` is currently created empty.
+
+Each worker would append `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to
 `reports/<run>/units/<worker-id>.jsonl`, using the same per-worker shard mechanism as tension 17, so the
 journal needs no locking either.
 
@@ -3696,7 +3710,10 @@ sast -> sca -> iac -> cloud -> dast
 ```
 
 DAST last, deliberately.
-For the standalone case, `--from-run <dir>` imports a previous run's inventory, which lets a fast DAST
+> **Implementation status (2026-09-21): resolved in design, not implemented.** `--from-run` is not a
+> shipped flag; the following paragraph records the intended standalone-inventory design.
+
+For the standalone case, `--from-run <dir>` would import a previous run's inventory, letting a fast DAST
 loop reuse a nightly full run's route extraction without re-running SAST.
 Imported inventory is recorded in `run.json` with its source run id, because inventory from a stale
 source is a coverage claim that needs an audit trail.

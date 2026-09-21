@@ -162,8 +162,8 @@ follow directly from that section, restated here because they are easy to miss:
   and never reach an adapter's findings; whether an adapter's findings appear in a run is governed
   entirely by `--use-engines` plus that adapter's own `<engine>_detect` (§3), independent of every other
   filter. `lib/checks.sh`'s own header now states this boundary explicitly. `state/`'s
-  `covered_checks` interaction is still open - `state/` itself does not exist yet (§13 step 7) - and is
-  left for whichever ticket builds it.
+  `covered_checks` intentionally excludes adapter findings: adapter ids are runtime-produced rather than
+  registry-selected checks, while persistent state is implemented in `lib/state.sh`.
 
 ## 7. Graceful degradation is mandatory, not best-effort
 

@@ -1,5 +1,8 @@
 # Step 5 (DAST) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This historical plan is complete. Current DAST behavior lives in
+> `modules/dast/` and [`docs/USAGE.md`](USAGE.md); the ticket narratives below preserve the build record.
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that step 5 - `docs/DESIGN.md` §13's dependency-ordered "`lib/http.sh` -> `auth.sh` (§7.0)
@@ -1525,7 +1528,7 @@ which is not a passive check at §7.1's tier.
 
 | # | Ticket | Depends on |
 |---|---|---|
-| DAST-12 (**landed**) | `active/discovery.sh` - content discovery | DAST-01/02/04. **No wordlist is committed to this repository** - this ticket vendors its own, in-repo and read from disk under §12's `tests/fixtures/`-style vendoring rule, so unlike DAST-09 it carries no `vendor-engines.sh` dependency and no missing-data degradation path. |
+| DAST-12 (**landed**) | `active/discovery.sh` - content discovery | DAST-01/02/04. No content-discovery wordlist ships in this repository: an operator vendors it offline and may point `SCOURSH_DAST_DISCOVERY_WORDLIST` at it. Its absence is a recorded coverage gap; fixed sensitive-path and backup techniques still run. |
 | DAST-13 **(landed)** | `active/methods.sh` - HTTP method enumeration | DAST-01/02/04. See the landing note below. |
 
 #### What DAST-13 (`active/methods.sh`) shipped, and the four things about it that are easy to get backwards

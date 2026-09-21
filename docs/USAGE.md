@@ -81,7 +81,7 @@ scan.sh <command> [options]
 | `--live` | cloud, all | live - runs all 30 AWS service checks against the resolved account/regions |
 | `--profile NAME` | cloud, all | live - selects a named AWS CLI profile |
 | `--regions all\|us-east-1,...` | cloud, all | live - narrows the enabled-region list; an explicit list is not validated against the account |
-| `--assume-role ARN` | cloud, all | live - scans a second account via STS, recorded in `run.json`'s authorization block |
+| `--assume-role ARN` | cloud, all | live - assumes the role in every active AWS Organization member account, recorded in `run.json`'s authorization block |
 | `--i-own-account ID` | cloud, all | live - optional affirmation; when given, must match the resolved account id (mismatch is exit 2) |
 | `--image ID` | image, all | live as a gate (`scan_die_usage`, exit 2, if missing on `image`), and the scan it gates now runs; `all` skips `image` entirely (a declared coverage reduction) when it is absent |
 | `--source PATH` | image, all | live; overrides `config/images.conf`'s configured path for this run only, with the `docker-archive`/`oci-layout` shape inferred from the filesystem when `ID` has no config record at all |
@@ -836,7 +836,7 @@ is arithmetic, not safety).  The budget can be raised but never removed, and BOT
 have their own threshold raised but never be disabled - `--circuit-breaker-failures N` (transport-level
 failures) and `--circuit-breaker-5xx-failures N` (well-formed 5xx responses) plus `--i-own-target` are
 the flags for that. The second is the one that matters against a target that answers an unmatched path
-with a 5xx rather than a 404: its own default (100) is already generous enough to absorb that during
+with a 5xx rather than a 404: its own default (200) is already generous enough to absorb that during
 discovery/methods for most applications without raising anything, since a 5xx no longer counts toward
 the transport-failure counter at all.
 
@@ -1360,7 +1360,7 @@ file yet; those are called out in the Notes column.
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
 | `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |
 | `circuit-breaker-failures` | positive integer | `10` | live | Transport-level failures (no usable response at all - connection refused, timeout, reset, or a malformed status line) within the window below; reaching it aborts the run at exit 5. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-failures N` is the dedicated CLI flag for `dast`/`all` (same shape as `--requests-per-second`/`--request-budget`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES`). |
-| `circuit-breaker-5xx-failures` | positive integer | `100` | live | A SEPARATE counter for well-formed 5xx responses within the same window - a 5xx is a real answer and individually weaker evidence of an outage than a transport failure, so its own threshold is much higher. Reaching it aborts the run at exit 5 exactly as the transport counter does. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-5xx-failures N` is the dedicated CLI flag for `dast`/`all`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES`. |
+| `circuit-breaker-5xx-failures` | positive integer | `200` | live | A SEPARATE counter for well-formed 5xx responses within the same window - a 5xx is a real answer and individually weaker evidence of an outage than a transport failure, so its own threshold is much higher. Reaching it aborts the run at exit 5 exactly as the transport counter does. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-5xx-failures N` is the dedicated CLI flag for `dast`/`all`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES`. |
 | `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window, shared by both counters above. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |

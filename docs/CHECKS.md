@@ -30,8 +30,8 @@ needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 networ
 
 - 🟢 **No external data** - works on just `--path` (code) or `--target` (a running app). Active DAST
   needs a reachable target + `--i-own-target`.
-- 🔵 **Needs the advisory DB** - requires `data/advisories.db` (built with `tools/vendor-engines.sh
-  advisories`).
+- 🔵 **Needs advisory data** - dependency checks require `data/advisories.db` (built with
+  `tools/vendor-engines.sh advisories`); banner-version checks read `data/versions.db` banner rows.
 - 🟣 **Optional engine depth** - `--use-engines` adds vendored Semgrep/Trivy/Gitleaks. Boosts depth,
   not new categories.
 - 🟠 **Needs AWS credentials** - resolvable via profile, environment, or instance role
@@ -185,7 +185,7 @@ that stores a forged response, a process-wide object every other request reads),
 | `DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01` 🔴 also needs `--allow-intrusive` | Prototype pollution (error-based and confirmed-reflected) - both attempt a write into a shared, process-wide object |
 | `DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01` | Host-header reflection into body or redirect authority |
 | `DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01` | Exposed sensitive/backup files, content discovery, directory listing |
-| `DAST-METHOD-TRACE / WRITE / CONNECT-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
+| `DAST-METHOD-TRACE_ENABLED / WRITE_ADVERTISED / CONNECT_ADVERTISED-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
 
 ## DAST — authorization, tokens, rate limits & GraphQL 🟢 no external data
 
@@ -258,7 +258,7 @@ arithmetic - the identical `DAST-BANNER-OUTDATED_COMPONENT-01` convention above,
 ## SCA — dependency CVEs 🔵 advisory DB
 
 Known-vulnerable dependencies from your lockfiles. This is the one surface that needs the vendored
-`data/advisories.db` (built with `tools/vendor-engines.sh advisories bulk --all`); without it, SCA
+`data/advisories.db` (built with `tools/vendor-engines.sh advisories bulk --accept-unverified --all`); without it, SCA
 reports that no advisory data was available rather than a false all-clear.
 
 | Check | Ecosystem |
@@ -277,9 +277,9 @@ Offline installed-package enumeration and CVE matching against a **built** conta
 registry pull. Runs on `./scan.sh image --image ID` (optionally `--source PATH` to override the path
 `config/images.conf` records for that id), where `ID` names an `id` record in `config/images.conf`
 pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory
-(`source: oci-layout`) the operator has already exported. `tar` is the only new binary this needs;
-rpm additionally needs `sqlite3` on `PATH` (its package database is a binary format text tools can't
-read - `requires-cmd: sqlite3`, a declared coverage reduction rather than a silent skip when absent).
+(`source: oci-layout`) the operator has already exported. `tar` is the only new binary this needs. apk
+and dpkg matching work; real rpm databases are detected but their binary RPM headers are not decoded,
+so they report the declared `rpm_db_binary_format` coverage reduction.
 This is the **built-artifact** counterpart to `modules/iac/dockerfile.rules`: the Dockerfile check
 reads what was *written*, this reads what actually *shipped* - the base image's own packages, drift
 between a digest-pinned Dockerfile and a months-old build, and the effective runtime user across every
@@ -290,19 +290,19 @@ the two and this module's own stated gaps.
 |---|---|
 | `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` | Installed apk package matches a known advisory for the image's Alpine release |
 | `IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` | Installed dpkg package matches a known advisory for the image's Debian/Ubuntu release (resolved against the `Source:` package where one is declared) |
-| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` (needs `sqlite3` on `PATH`) | Installed rpm package matches a known advisory for the image's RHEL/Fedora release |
+| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` | rpm matching is not supported on real images: their binary database yields the declared `rpm_db_binary_format` coverage gap |
 | `IMAGE-LANGDEP-VULNERABLE_DEP-01` | A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) found at a bounded set of conventional manifest locations inside the image's own rootfs matches a known advisory - reuses `sca`'s own tree-walkers, re-emitted under this id and the image's own `image-id` cell rather than `module=sca` |
 | `IMAGE-CFG-RUNS_AS_ROOT-01` | Image config declares no non-root `User` - the *effective* runtime user across every merged base layer, not one Dockerfile's own `USER` line |
 | `IMAGE-CFG-EXPOSED_PORTS-01` | Image config declares one or more exposed ports (informational) |
 | `IMAGE-CFG-MUTABLE_BASE_REF-01` | Image's own recorded base-image reference is a mutable tag rather than a content digest |
 | `IMAGE-COV-NO_ADVISORY_DB-01` | No advisory rows for this image's distro release - nothing was matched (exit 4 when `image` is the selected command) |
-| `IMAGE-COV-UNKNOWN_DISTRO-01` | No recognised package database (apk/dpkg/rpm) found in any layer - e.g. a distroless/scratch image |
+| `IMAGE-COV-UNKNOWN_DISTRO-01` | No recognised package database found in any layer (e.g. a distroless/scratch image), or an rpm database whose binary headers cannot be decoded |
 | `IMAGE-COV-LAYER_UNREADABLE-01` | One or more layers or archive members could not be read |
 | `IMAGE-COV-LANGDEPS_NOT_SCANNED-01` | Language-dependency scanning found no manifest at any declared candidate location, or no advisory data |
 
 Every `VULNERABLE_OS_PACKAGE`/`VULNERABLE_DEP` finding needs a real, differential-tested version
 comparator per package manager (`modules/sca/semver.sh` is npm-only by measured decision - it mismatches
-7 of 12 real OS version pairs, including a false negative - so apk/dpkg/rpm each ship their own).
+7 of 12 real OS version pairs, including a false negative - so apk and dpkg each ship their own).
 `distro_release_unknown` (no `/etc/os-release`)
 is its own declared reduction, never a silent guess at "latest": Alpine advisories are keyed per
 release, and guessing produces false negatives on older images.
