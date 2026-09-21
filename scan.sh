@@ -2853,7 +2853,7 @@ _scan_record_config() {
     fail-on history-max-commits history-window-days http-timeout jobs
     lock-stale-seconds max-matches-per-file max-redirects min-confidence
     mutex-timeout-seconds redact-secrets request-budget requests-per-second
-    scratch-dir state-retain-runs tls-expiry-warn-days
+    scratch-dir state-retain-runs tls-expiry-warn-days advisory-max-age-days
   )
   for key in "${single_keys[@]+"${single_keys[@]}"}"; do
     case $key in

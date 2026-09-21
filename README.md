@@ -140,7 +140,9 @@ tools/vendor-engines.sh advisories bulk --all --accept-unverified
 ```
 
 This resolves OSV.dev's published export for all six ecosystems, verifies each archive's transport,
-and writes `data/advisories.db`. `--accept-unverified` acknowledges an unpinned (transport-
+and writes `data/advisories.db`. `versions.db` is a separate, small banner-only catalogue built with
+`tools/vendor-engines.sh advisories banner`; it no longer duplicates SCA or image data. `--accept-unverified`
+acknowledges an unpinned (transport-
 authenticated, not content-pinned) fetch. `bulk --all` covers the six SCA ecosystems only (and image
 language dependencies). OS-package matching needs its distro namespace, imported with
 `tools/vendor-engines.sh advisories alpine|debian|ubuntu|redhat`; DAST/network version-lookup checks
@@ -153,6 +155,9 @@ available and **exits 4** rather than a false all-clear. `tools/vendor-engines.s
 script in this repository permitted to touch the network, and it is never invoked during a scan. Full
 walkthrough, including measured import size/time and the `range_only_skipped` coverage caveat:
 [`docs/USAGE.md`](docs/USAGE.md#dependency-data-dataadvisoriesdb).
+
+Refresh advisory data weekly on the networked build host; scans only read local files and record a
+coverage reduction once data exceeds the 30-day default freshness limit.
 
 ### 2. Per-surface scans
 

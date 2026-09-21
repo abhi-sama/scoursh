@@ -298,6 +298,7 @@ _image_run_module() {
             input=1
           fi
         else
+          image_report_advisory_staleness "$image_id"
           # IMG-06 wired real apk enumeration + matching for Alpine; IMG-09
           # added the mirror-image dpkg branch for Debian/Ubuntu; this
           # ticket adds a third, rpm, branch for RHEL/Fedora - all three

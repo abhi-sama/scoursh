@@ -1332,7 +1332,7 @@ _report_authorization_json() {
 # reader, so the two can never drift on which keys exist.
 readonly -a _REPORT_CONFIG_KEYS=(
   circuit-breaker-5xx-failures circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
-  fail-on formats history-max-commits history-window-days http-timeout jobs
+  fail-on formats history-max-commits history-window-days http-timeout jobs advisory-max-age-days
   lock-stale-seconds max-matches-per-file max-redirects min-confidence
   mutex-timeout-seconds paranoid-allow recommended-header redact-secrets
   request-budget requests-per-second scratch-dir state-retain-runs

@@ -454,6 +454,45 @@ now_epoch() {
   fi
 }
 
+# --- advisory-data freshness -------------------------------------------------
+# Advisory databases are generated outside a scan.  Their # generated: stamp is
+# deliberately parsed here, with the other portable clock primitives, so SCA,
+# image and banner consumers cannot drift on what "30 days old" means.
+_advisory_days_from_civil() {
+  local y=$1 m=$2 d=$3 era yoe doy doe
+  (( m <= 2 )) && y=$(( y - 1 ))
+  if (( y >= 0 )); then era=$(( y / 400 )); else era=$(( (y - 399) / 400 )); fi
+  yoe=$(( y - era * 400 ))
+  if (( m > 2 )); then doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 )); else doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 )); fi
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  printf '%s' $(( era * 146097 + doe - 719468 ))
+}
+
+# `advisory_data_freshness PATH MAX_AGE_DAYS` sets the generated timestamp,
+# whole-day age and state (`fresh`, `stale`, or `unknown`).  Unknown is never
+# guessed: an old-looking name or filesystem mtime is not advisory provenance.
+advisory_data_freshness() {
+  local path=$1 max_age_days=$2 line='' stamp='' generated now age
+  ADVISORY_DATA_GENERATED=''
+  ADVISORY_DATA_AGE_DAYS=''
+  ADVISORY_DATA_FRESHNESS=unknown
+  [[ -r $path ]] || return 1
+  while IFS= read -r line; do
+    case $line in '# generated: '*) stamp=${line#'# generated: '}; break ;; esac
+  done <"$path"
+  [[ $stamp =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$ ]] || return 0
+  generated=$(_advisory_days_from_civil "$(( 10#${BASH_REMATCH[1]} ))" "$(( 10#${BASH_REMATCH[2]} ))" "$(( 10#${BASH_REMATCH[3]} ))")
+  generated=$(( generated * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]} ))
+  now=${SCOURSH_ADVISORY_NOW_EPOCH:-$(now_epoch)}
+  [[ $now =~ ^[0-9]+$ ]] || return 0
+  age=$(( (now - generated) / 86400 ))
+  (( age < 0 )) && age=0
+  ADVISORY_DATA_GENERATED=$stamp
+  ADVISORY_DATA_AGE_DAYS=$age
+  if (( age > max_age_days )); then ADVISORY_DATA_FRESHNESS=stale; else ADVISORY_DATA_FRESHNESS=fresh; fi
+  return 0
+}
+
 # Nanoseconds since the epoch.  SCOURSH_CLOCK_NS records whether the underlying
 # source is genuinely sub-second, so the rate limiter's arithmetic and the
 # msleep probe both know what they are working with.

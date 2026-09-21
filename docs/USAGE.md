@@ -890,12 +890,57 @@ network, and it is never called during a scan. It needs `python3` and `curl` on 
 neither is a `scan.sh` runtime dependency.
 
 Measured on a clean checkout: **~2 minutes**, **~290 MB downloaded** (OSV.dev's six per-ecosystem
-export archives), **~940 MB written** to `data/advisories.db` and `data/versions.db` combined. The
+export archives), with the large output written once to `data/advisories.db`. `data/versions.db` is
+a separate banner-only catalogue and is not a second copy of SCA/image rows. The
 archives themselves are not kept - they live under `$SCOURSH_SCRATCH` and are erased when the command
 exits, successfully or not. It ends by printing a per-ecosystem table (ecosystem, grade, rows
 imported, and a `range_only_skipped` percentage) - that table, not silence, is how you know it worked.
 A failed ecosystem is marked `FAILED` there and the command exits non-zero, rather than leaving you
 with a database that silently covers less than it claims.
+
+#### Refresh weekly
+
+Run the build on a networked host every week. A scan never refreshes data itself; SCA, image, DAST, and
+network version consumers record `coverage_reduction reason=advisory_data_stale` once their relevant
+database's `# generated:` stamp is older than `advisory-max-age-days` (default `30`). This does
+not change findings or the exit code. Set the limit in `config/scanner.conf` or with
+`SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS`.
+
+```cron
+# Every Sunday at 03:15 on the networked build host.
+15 3 * * 0 cd /opt/scoursh && tools/vendor-engines.sh advisories bulk --accept-unverified --all >>/var/log/scoursh-advisories.log 2>&1
+```
+
+If your estate uses banner matching, schedule its operator-selected IDs too:
+
+```cron
+30 3 * * 0 cd /opt/scoursh && SCOURSH_ADVISORY_BANNER_IDS='CVE-…' tools/vendor-engines.sh advisories banner >>/var/log/scoursh-advisories.log 2>&1
+```
+
+On macOS, save the following as
+`~/Library/LaunchAgents/com.scoursh.advisories.plist`, then load it with
+`launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.scoursh.advisories.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.scoursh.advisories</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/sh</string><string>-lc</string>
+    <string>cd /opt/scoursh &amp;&amp; tools/vendor-engines.sh advisories bulk --accept-unverified --all</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Weekday</key><integer>0</integer><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/var/log/scoursh-advisories.log</string>
+  <key>StandardErrorPath</key><string>/var/log/scoursh-advisories.log</string>
+</dict></plist>
+```
+
+Adjust `/opt/scoursh` and the log path for the account that runs the job. Add a separate job or command
+for the operator-selected banner IDs when banner matching is in use.
 
 There are two ways to build it - bulk, above, which is what you almost certainly want, and one
 advisory at a time, below, when you already know the specific IDs you care about.
@@ -929,7 +974,7 @@ tools/vendor-engines.sh advisories --all
 See [`tools/vendor-engines.sh advisories --help`](../tools/vendor-engines.sh) for the full list of
 per-ecosystem environment variables.
 
-**`scan.sh image` reads the same two files, through four more ecosystems that are deliberately NOT
+**`scan.sh image` reads `data/advisories.db`, through four more ecosystems that are deliberately NOT
 part of `--list`/`--all`/`bulk --all` above: `alpine`, `debian`, `ubuntu`, and `redhat`.** Each is
 its own named subcommand, one-advisory-at-a-time only (no bulk import exists for these yet - a stated
 gap, not an oversight):
@@ -964,7 +1009,7 @@ dependency with a well-known CVE, even immediately after a fresh, successful imp
 limitation of npm's own OSV.dev export today, not a broken build.
 
 **The gotcha: do not scan `data/` itself with `sast` or `all --path .` after building the database.**
-`data/advisories.db` and `data/versions.db` together land at roughly 940 MB. If your `--path` includes
+`data/advisories.db` is the large file; `data/versions.db` remains a small banner-only catalogue. If your `--path` includes
 this repository's own `data/` directory (for example, `./scan.sh all --path .` run from a checkout
 where you just built the database), `sast` will walk that multi-hundred-megabyte binary file like any
 other source file, producing noise and a very slow run for no security value. Point `--path` at real
@@ -1372,6 +1417,7 @@ file yet; those are called out in the Notes column.
 | `state-retain-runs` | positive integer | `30` | live | Every scanning run prunes `state/` to this many most-recent runs plus `state/latest.json`. See [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline). |
 | `history-window-days` | positive integer | `365` | live | Bounds `sast --history`. |
 | `history-max-commits` | positive integer | `5000` | live | Bounds `sast --history`. |
+| `advisory-max-age-days` | positive integer | `30` | live | SCA, image package, and DAST/network banner consumers record a coverage reduction when their readable advisory data is older than this `# generated:` stamp limit. Findings and exit codes are unchanged. Override with `SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS`. |
 | `lock-stale-seconds` | positive integer | `30` | inert | The staleness rule is real, but reads `SCOURSH_LOCK_STALE_SECONDS`. |
 | `mutex-timeout-seconds` | positive integer | `120` | inert | The timeout is real, but reads `SCOURSH_MUTEX_TIMEOUT_SECONDS`. |
 | `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |

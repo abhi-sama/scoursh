@@ -140,8 +140,8 @@ Commands:
   --list            list every registered engine adapter
   --all             vendor every registered engine adapter
   <engine>          vendor one registered engine adapter by name
-  advisories ...    resolve SCA advisory data into data/advisories.db and
-                     data/versions.db (docs/FOUNDATION.md tension 25) - a
+  advisories ...    resolve SCA and image advisory data into data/advisories.db
+                     (docs/FOUNDATION.md tension 25) - a
                      SEPARATE command namespace, never an <engine> name; run
                      'advisories --help' for its own usage.  'advisories
                      bulk <ecosystem>' imports a whole ecosystem at once and
@@ -346,12 +346,9 @@ veng_vendor_all() {
 # ---------------------------------------------------------------------------
 
 VENG_ADVISORIES_DB=${SCOURSH_SCA_ADVISORIES_DB:-$VENG_DIR/data/advisories.db}
-VENG_VERSIONS_DB=${SCOURSH_SCA_VERSIONS_DB:-$VENG_DIR/data/versions.db}
-# The two summary side tables docs/FOUNDATION.md tension 25's
-# summary-normalisation amendment adds, mirroring the pair above exactly
-# (modules/sca/engine.sh's sca_advisory_summaries_db_path and
-# modules/dast/passive/banner_engine.sh's banner_summaries_db_path read
-# these same two env-var overrides).
+VENG_VERSIONS_DB=${SCOURSH_DAST_VERSIONS_DB:-$VENG_DIR/data/versions.db}
+# The summary side tables mirror their owning data namespaces: SCA/image rows
+# use advisory-summaries.db; banner rows alone use version-summaries.db.
 VENG_SUMMARIES_DB=${SCOURSH_SCA_SUMMARIES_DB:-$VENG_DIR/data/advisory-summaries.db}
 VENG_VERSION_SUMMARIES_DB=${SCOURSH_DAST_VERSION_SUMMARIES_DB:-$VENG_DIR/data/version-summaries.db}
 
@@ -374,8 +371,8 @@ usage: tools/vendor-engines.sh advisories <command>
 
 Resolves real SCA advisory data (docs/DESIGN.md §6.5's six ecosystems) via
 OSV.dev (https://osv.dev) into pre-expanded, exact-version rows for
-data/advisories.db and data/versions.db (docs/FOUNDATION.md tension 25's
-frozen TSV schema) - and, separately, data/versions.db's OWN `banner`
+data/advisories.db (docs/FOUNDATION.md tension 25's frozen TSV schema) - and,
+separately, data/versions.db's OWN `banner`
 namespace (docs/VERSIONS-DB.md §3-§5), the known-vulnerable-version catalogue
 modules/dast/passive/banner.sh reads for a banner-matched product with no
 SCA-ecosystem manifest at all (a bare web server, a TLS library, a CMS).  Run
@@ -399,10 +396,11 @@ Commands:
                        data/advisories.db, and is deliberately not part of
                        --list/--all/'bulk --all' (see veng_advisories_banner's
                        own header for why).
-  alpine              expand data/advisories.db's (and data/versions.db's)
+  alpine              expand data/advisories.db's
                        per-release Alpine namespace (Alpine:vX.Y) from
                        SCOURSH_ADVISORY_ALPINE_IDS - the container-image
-                       module's own importer (IMG-03).  Writes BOTH files,
+                       module's own importer (IMG-03).  Writes
+                       data/advisories.db only,
                        unlike 'banner', and is likewise deliberately not part
                        of --list/--all/'bulk --all' (see veng_advisories_alpine's
                        own header for why).
@@ -418,7 +416,7 @@ Commands:
                        last rpm ticket): a single FLAT 'Red Hat' namespace
                        (no per-release suffix, unlike 'alpine'/'debian'/
                        'ubuntu') from SCOURSH_ADVISORY_REDHAT_IDS.  Writes
-                       BOTH data/advisories.db and data/versions.db, and
+                       data/advisories.db, and
                        covers rhel/centos/rocky/almalinux/fedora images
                        alike (modules/image/engine.sh's
                        image_distro_ecosystem_resolve).
@@ -1333,15 +1331,46 @@ _veng_advisories_write_summaries_db() {
   log_info "vendor-engines: advisories: wrote $rows total summary row(s) to ${db#"$VENG_DIR"/}"
 }
 
+# _veng_versions_prune_to_banner - removes legacy SCA/image namespaces from
+# versions.db. Older releases wrote a duplicate of advisories.db; retaining
+# those rows after a refresh would defeat the split even though no consumer
+# reads them. Banner rows remain sorted and uncompressed for db_lookup_exact.
+_veng_versions_prune_to_banner() {
+  mkdir -p "$SCOURSH_SCRATCH/advisories"
+  local body=$SCOURSH_SCRATCH/advisories/banner-body.$$.tsv ids=$SCOURSH_SCRATCH/advisories/banner-ids.$$.txt generated=''
+  local tmp=$SCOURSH_SCRATCH/advisories/versions.$$.tsv sum_body=$SCOURSH_SCRATCH/advisories/version-summaries.$$.tsv sum_tmp=$SCOURSH_SCRATCH/advisories/version-summaries-out.$$.tsv
+  : >"$body"
+  if [[ -e $VENG_VERSIONS_DB ]]; then
+    generated=$(awk '/^# generated: / { print; exit }' "$VENG_VERSIONS_DB")
+    [[ -n $generated ]] || generated="# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    awk -F'\t' '!/^#/ && $1 == "banner" { print }' "$VENG_VERSIONS_DB" >"$body"
+    {
+      printf '# scoursh versions.db - generated by tools/vendor-engines.sh advisories (docs/FOUNDATION.md tension 25)\n'
+      printf '%s\n' "$generated"
+      printf '# source: OSV.dev (https://osv.dev); banner namespace only\n'
+      TMPDIR=$SCOURSH_SCRATCH LC_ALL=C sort -u -- "$body"
+    } >"$tmp"
+    mv -f -- "$tmp" "$VENG_VERSIONS_DB"
+  fi
+  [[ -e $VENG_VERSION_SUMMARIES_DB ]] || return 0
+  awk -F'\t' '!/^#/ && $1 == "banner" { print $4 }' "$body" >"$ids"
+  awk -F'\t' -v idsfile="$ids" '
+    BEGIN { while ((getline id < idsfile) > 0) wanted[id] = 1; close(idsfile) }
+    !/^#/ && ($1 in wanted) { print }
+  ' "$VENG_VERSION_SUMMARIES_DB" >"$sum_body"
+  {
+    printf '# scoursh version-summaries.db - banner namespace only, generated by tools/vendor-engines.sh advisories\n'
+    printf '# generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    TMPDIR=$SCOURSH_SCRATCH LC_ALL=C sort -u -- "$sum_body"
+  } >"$sum_tmp"
+  mv -f -- "$sum_tmp" "$VENG_VERSION_SUMMARIES_DB"
+}
+
 # _veng_advisories_run DB_ECOSYSTEM - the per-ecosystem driver every
 # veng_advisories_<ecosystem> function below delegates to: reads the
 # operator-supplied id list, expands each advisory, then writes the result
-# into BOTH data/advisories.db and data/versions.db - tension 25's own
-# text ("data/versions.db ... uses the same shape and the same rule")
-# gives both files an identical schema and an identical write path here -
-# and, per tension 25's summary-normalisation amendment, into BOTH
-# data/advisory-summaries.db and data/version-summaries.db too, from the
-# same accumulated .summaries companion file.
+# into data/advisories.db and, per tension 25's summary-normalisation
+# amendment, data/advisory-summaries.db. versions.db is banner-only.
 # Scoped to the six docs/DESIGN.md §6.5 SCA ecosystems only:
 # veng_advisories_banner (below) is the versions.db-only `banner` namespace's
 # own driver, deliberately NOT this one, since modules/sca/ never reads a
@@ -1372,9 +1401,8 @@ _veng_advisories_run() {
   done
 
   _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$rows_new"
-  _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$rows_new"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
-  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_versions_prune_to_banner
 }
 
 veng_advisories_npm()      { _veng_advisories_run npm; }
@@ -1452,14 +1480,8 @@ veng_advisories_banner() {
 # transforms it" gap the same way veng_advisories_banner closed the
 # banner-catalogue one. Writes `Alpine:vX.Y` rows to data/advisories.db (the
 # same file and the SAME db_lookup_exact lookup modules/sca/ and now
-# modules/image/ both read through) AND data/versions.db, mirroring the SIX
-# SCA ecosystems above rather than `banner` - unlike a banner row, an Alpine
-# row is exactly the "one per exact affected OS package version" shape
-# modules/image/ actually reads, so it belongs in data/advisories.db too,
-# and both files get it for the identical "same shape, same rule" reason
-# tension 25 already gives the six ecosystems (docs/VERSIONS-DB.md §2:
-# nothing reads the versions.db copy of an SCA-ecosystem row today either -
-# this is that same, already-accepted redundancy, not a new one).
+# modules/image/ both read through). versions.db is banner-only, so no image
+# OS-package row is written there.
 #
 # Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, and reached from
 # its own `alpine` case in veng_advisories_main instead - the identical
@@ -1514,9 +1536,8 @@ veng_advisories_alpine() {
   # one distinct Alpine:vX.Y key, and the replace-scope has to be the whole
   # `Alpine:` namespace decided once - see that function's own header.
   _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Alpine:' "$rows_new"
-  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Alpine:' "$rows_new"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
-  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_versions_prune_to_banner
 }
 
 # veng_advisories_debian - the eighth advisory importer (IMG-09, the
@@ -1573,9 +1594,8 @@ veng_advisories_debian() {
   # call - rows_new can carry more than one distinct Debian:N key, and the
   # replace-scope has to be the whole `Debian:` namespace decided once.
   _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Debian:' "$rows_new"
-  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Debian:' "$rows_new"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
-  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_versions_prune_to_banner
 }
 
 # veng_advisories_ubuntu - Ubuntu's sibling to veng_advisories_debian
@@ -1607,9 +1627,8 @@ veng_advisories_ubuntu() {
   done
 
   _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Ubuntu:' "$rows_new"
-  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Ubuntu:' "$rows_new"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
-  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_versions_prune_to_banner
 }
 
 # veng_advisories_redhat - the container-image module's rpm advisory
@@ -1625,12 +1644,9 @@ veng_advisories_ubuntu() {
 # RHEL stream inside the rpm RELEASE field itself), so it needs none of
 # alpine/debian/ubuntu's ':*' prefix sentinel or
 # `_veng_advisories_write_db_prefix` machinery. It reads
-# SCOURSH_ADVISORY_REDHAT_IDS and writes exact-match `Red Hat` rows to BOTH
-# data/advisories.db and data/versions.db through the identical
-# `_veng_advisories_run` driver npm/pypi/maven/Go/RubyGems/composer already
-# share - the same "same shape and the same rule" reasoning
-# veng_advisories_alpine's own header gives for writing both files, unlike
-# `banner`'s versions.db-only shape.
+# SCOURSH_ADVISORY_REDHAT_IDS and writes exact-match `Red Hat` rows to
+# data/advisories.db through the same `_veng_advisories_run` driver the six
+# language ecosystems use. versions.db is banner-only.
 #
 # Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, reached from its
 # own `redhat` case in veng_advisories_main instead - the identical reason
@@ -2143,9 +2159,8 @@ _veng_bulk_one() {
   _veng_advisories_reject_tab_lf provenance "$provenance"
 
   _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$tsv" "$provenance"
-  _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$tsv" "$provenance"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$tsv.summaries"
-  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$tsv.summaries"
+  _veng_versions_prune_to_banner
 
   # A raw skip COUNT does not tell a first-time operator how much of the
   # ecosystem they actually got - measured here: npm's own OSV.dev export is
