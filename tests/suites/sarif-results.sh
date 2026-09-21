@@ -317,6 +317,10 @@ if (( HAVE_PY )); then
   assert_file_exists "$D/locations/net.txt" 'and the listener artifact genuinely exists'
   LN=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['physicalLocation']['region']['startLine']")
   assert_ne '' "$LN" 'net location carries a region.startLine into the generated artifact'
+  NET_KIND=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['logicalLocations'][0]['kind']")
+  NET_FQN=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['logicalLocations'][0]['fullyQualifiedName']")
+  assert_eq listener "$NET_KIND" 'net SARIF derives a listener logical kind without persisting it'
+  assert_eq 't1:listener.example:8443/tcp' "$NET_FQN" 'net SARIF derives the listener fqn from frozen location fields'
 else
   _t_ok 'python3 unavailable, case 1/2/4 location checks skipped'
 fi

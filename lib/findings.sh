@@ -1355,10 +1355,6 @@ _finding_default_logical() {
       finding_set logical_kind control
       finding_set logical_fqn "${_F[loc_control_id]:-}"
       ;;
-    net)
-      finding_set logical_kind listener
-      finding_set logical_fqn "${_F[loc_target]:-}:${_F[loc_host]:-}:${_F[loc_port]:-}/${_F[loc_transport]:-}"
-      ;;
     image)
       finding_set logical_kind image
       finding_set logical_fqn "image ${_F[loc_image_id]:-}: ${_F[check_id]:-}"
