@@ -20,16 +20,14 @@
 # outbound connections on a timer and aborts the run on the first destination
 # it observes outside the allowlist.  A sufficiently short-lived connection
 # can open and close between two samples and never be observed at all.
-# `tools/run-in-netns.sh` (NETNS-01) is the actual guarantee: a network
+# `tools/run-in-netns.sh` (NETNS-01) is the Linux guarantee: a network
 # namespace whose only route is the declared scope makes an out-of-scope
-# connection categorically impossible rather than merely observable.  That
-# tool is LINUX-ONLY and has no macOS equivalent, so on macOS the detector
-# below is the only egress control this project offers - there is no
-# stronger tier to fall back on, and nothing here should be read as
-# implying parity with Linux.  The `lsof` backend added for macOS is a
+# connection categorically impossible rather than merely observable.  On
+# macOS, `tools/run-sandboxed.sh` provides the corresponding stronger
+# Seatbelt-based option.  The `lsof` backend added for macOS is still a
 # SAMPLER, exactly like `ss`: it has the identical blind spot (a connection
 # that opens and closes between two polls is never observed) and buys no
-# stronger promise than `ss` already did.  This framing is
+# stronger promise than the sandbox wrapper.  This framing is
 # recorded into every run's `run.json` (via `coverage_gap`, read by both
 # lib/report.sh limitations sections) whenever --paranoid is engaged, so the
 # report never overstates what the mechanism proved (docs/DESIGN.md §15).

@@ -885,6 +885,12 @@ t_case 'AC: a no-fixed-version pypi advisory is flagged accept-risk (urllib3), a
 assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: true' 'urllib3 (empty fixed_versions in the fixture db) is accept-risk'
 assert_contains "$PY_POETRY_FINDINGS" 'fixed_versions: none published' 'the empty fixed_versions field renders as "none published"'
 assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: false' 'requests (has a fixed version) is NOT accept-risk'
+t_case 'the real PyPI emitter writes machine-readable dependency type and fixed versions'
+PY_POETRY_FIELDS=$(cat "$W/run-py-python-poetry/findings.fields")
+assert_contains "$PY_POETRY_FIELDS" 'dep_type=direct' \
+  'the direct requests finding carries dep_type for agent-fix.json'
+assert_contains "$PY_POETRY_FIELDS" 'fix_fixed_versions=2.20.0' \
+  'the fixed requests finding carries fix_fixed_versions for agent-fix.json'
 t_case 'poetry.lock: an unmatched-but-known pinned version (certifi) feeds the roll-up'
 assert_contains "$PY_POETRY_FINDINGS" 'SCA-COV-UNKNOWN_VERSION-01' 'the roll-up fired'
 assert_contains "$PY_POETRY_FINDINGS" 'SCA: 1 pinned dependency version' 'exactly one unresolved case (certifi@2019.11.28) is counted'

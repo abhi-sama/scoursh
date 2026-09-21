@@ -535,9 +535,10 @@ Global:
                               a usable `strace`, or `lsof` is available.
                               `lsof` is what makes this work on macOS. A
                               sufficiently short-lived connection can still
-                              evade detection - tools/run-in-netns.sh is the
-                              actual guarantee, and it is Linux-only with no
-                              macOS equivalent. See docs/FOUNDATION.md
+                              evade detection. tools/run-in-netns.sh is the
+                              Linux guarantee; on macOS,
+                              tools/run-sandboxed.sh provides the stronger
+                              Seatbelt-based option. See docs/FOUNDATION.md
                               tension 20.)
   --use-engines             (opt in to optional vendored engine adapters,
                               e.g. semgrep for sast - docs/ADAPTERS.md. Only
@@ -602,6 +603,10 @@ Global:
   --min-confidence LEVEL    (high|medium|low; default low)
   --baseline FILE
   --out DIR                 (default: reports/<timestamp>)
+  --guided                  (interactive setup when stdin and stderr are
+                              terminals; nothing scans until confirmation)
+  --print-command           (print the validated command and exit without
+                              creating a run directory)
 
 Exit codes: 0 clean/below gate * 1 findings at/above --fail-on *
 2 usage error * 3 scope violation * 4 missing required input *
@@ -1852,6 +1857,11 @@ _scan_guide_run() {
   elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
     _guide_g2_local_followups "$cmd" \
       || die "$SCOURSH_EXIT_USAGE" "--path was asked twice and neither answer resolved to a readable directory; nothing was run and nothing is waiting for input - re-run with a valid --path instead"
+  fi
+
+  if [[ $cmd == cloud ]]; then
+    die "$SCOURSH_EXIT_USAGE" \
+      "--guided cloud cannot safely configure an AWS account scan yet; nothing was run. Use 'scan.sh cloud --live' directly after choosing the intended AWS credentials and profile."
   fi
 
   local -A flags=()

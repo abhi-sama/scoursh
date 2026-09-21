@@ -1355,6 +1355,10 @@ _finding_default_logical() {
       finding_set logical_kind control
       finding_set logical_fqn "${_F[loc_control_id]:-}"
       ;;
+    image)
+      finding_set logical_kind image
+      finding_set logical_fqn "image ${_F[loc_image_id]:-}: ${_F[check_id]:-}"
+      ;;
     # sca and derived always set their own logical identity before
     # finding_emit is called (modules/sca/, the composite path in this file) -
     # nothing to default.

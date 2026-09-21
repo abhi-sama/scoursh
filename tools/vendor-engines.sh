@@ -129,7 +129,8 @@ usage: tools/vendor-engines.sh <command>
 Populates modules/<module>/adapters/<engine>/bin/ and .../rules/ with a
 vendored, offline engine binary and local ruleset (docs/ADAPTERS.md), by
 fetching from the network.  Run this BY HAND, ONCE, ON A NETWORKED BOX; the
-result is committed to git and every real scan then runs fully offline.
+result stays local and gitignored; every real scan then uses those local,
+vendored assets without fetching them again.
 
 This script is never invoked by scan.sh or by any file under lib/ or
 modules/ - see this file's own header for why, and
