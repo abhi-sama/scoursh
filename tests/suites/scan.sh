@@ -550,33 +550,32 @@ unset _guide_mod _guide_want _guide_got
 # not-built explanation" branch (`_guide_g1_explain_not_built`, still present
 # in scan.sh for the day a module regresses or a new one is added ahead of
 # its own run.sh) therefore has NO module left to exercise it through this
-# menu - it is unreachable on this codebase's own real tree today, and this
-# case is re-expressed around cloud's real, current behaviour rather than
-# left pinning a defect that no longer exists.  Coverage for the loop-back
+# menu - it is unreachable on this codebase's own real tree today. This case
+# now pins cloud's real guided-mode refusal instead. Coverage for the loop-back
 # MECHANISM itself (re-asking and returning to G1) still lives in the
 # bad-`--path` case further below, which reaches it via a bad answer rather
 # than an unbuilt module.
-t_case "picking item 5 (cloud, now built) proceeds past G1 with its own partial-guided-setup note, never the not-built loop-back - the menu's fixed 7 items never reorder"
+t_case "picking item 5 (cloud, now built) refuses guided setup before a scan because it cannot safely compose --live"
 GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
 rm -rf "$GUIDE_CLOUD_LOOP_DIR"
 mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
 cd "$GUIDE_CLOUD_LOOP_DIR"
-assert_status 0 \
-  "item 5 (cloud) proceeds past G1 into G8 (no local-surface G2/G3 questions apply to cloud); G8 '1' (no CI gate) then G9 '3' (Cancel) exits 0 with nothing scanned - fails if the menu numbering shifted cloud out of its fixed slot, or if picking it still bounced back to G1" \
-  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n'
+assert_status 2 \
+  "item 5 (cloud) refuses before G8/G9 so guided mode cannot silently omit --live - fails if it still proceeds to a no-op cloud run" \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n'
 cd "$ROOT"
 assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'cancelling from the guided flow never creates a run directory'
 
 GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
 cd "$GUIDE_CLOUD_LOOP_DIR"
-( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
 cd "$ROOT"
 assert_not_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version' \
   'cloud is built now, so the not-built loop-back explanation is never shown - fails if picking cloud still looped back to G1'
-assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'guided setup for this is partial - see below' \
-  "cloud's menu row still names its OWN, real limitation (guided setup beyond scan type is partial) - fails under a status word that cannot distinguish this from an ordinary refusal"
-assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'Cancelled.  Nothing was scanned.' \
-  'Cancel at G9, reached only because cloud proceeded past G1, prints the ordinary cancellation message, never a guided-specific one'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" '--guided cloud cannot safely configure an AWS account scan yet' \
+  'the refusal explains that guided cloud cannot silently omit --live'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" "scan.sh cloud --live" \
+  'the refusal gives the safe direct invocation'
 
 t_case 'sca with no advisories.db explains and still proceeds - the operator may proceed, per this ticket'"'"'s own G1 wording'
 GUIDE_SCA_DIR=$W/guide-sca-dir

@@ -1331,7 +1331,7 @@ _report_authorization_json() {
 # object.  scan.sh's `_scan_record_config` is the writer; this is the only
 # reader, so the two can never drift on which keys exist.
 readonly -a _REPORT_CONFIG_KEYS=(
-  circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
+  circuit-breaker-5xx-failures circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
   fail-on formats history-max-commits history-window-days http-timeout jobs
   lock-stale-seconds max-matches-per-file max-redirects min-confidence
   mutex-timeout-seconds paranoid-allow recommended-header redact-secrets
@@ -3972,7 +3972,7 @@ report_locations() {
     finding_decode "$line"
     local mod=${_DF[module]:-} check=${_DF[check_id]:-} write=0 fallback=0
     case $mod in
-      dast | cloud | posture | derived | image) write=1 ;;
+      dast | cloud | posture | derived | image | net) write=1 ;;
       sast)
         if [[ $check == SAST-HIST-* ]] \
           && ! _locations_history_resolves "${_DF[loc_path]:-}"; then
@@ -4371,7 +4371,7 @@ _sarif_result_location() {
       fi
       _SARIF_LOC_LINE=${_DF[loc_line]:-}
       ;;
-    dast | cloud | posture | derived | image)
+    dast | cloud | posture | derived | image | net)
       _SARIF_LOC_URI="locations/$module.txt"
       _SARIF_LOC_LINE=${_DF[loc_line]:-}
       ;;

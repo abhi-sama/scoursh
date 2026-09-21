@@ -891,7 +891,7 @@ finding_decode "$(/usr/bin/grep 'check_id=POSTURE-A-B-01' "$d/findings.fields")"
 assert_eq control "${_DF[logical_kind]}" 'defaults to kind=control'
 assert_eq POSTURE-EDGE-WAF_GEO-01 "${_DF[logical_fqn]}" 'defaults to <loc_control_id>'
 
-t_case 'net profile: target host port transport - NET-02 identity only, no logical-default arm yet'
+t_case 'net profile: target host port transport defaults to a listener identity'
 new_run sarif01-net
 d=$SCOURSH_RUN_DIR
 finding_new
@@ -916,6 +916,9 @@ finding_decode "$(/usr/bin/grep 'check_id=NET-PORT-UNEXPECTED_LISTENER-01' "$d/f
 assert_eq net "${_DF[module]}" 'module round-trips through the merge as net'
 assert_eq lab "${_DF[loc_target]}" 'loc_target round-trips'
 assert_eq 8443 "${_DF[loc_port]}" 'loc_port round-trips - the component no other profile has a slot for'
+assert_eq listener "${_DF[logical_kind]}" 'net defaults to a listener logical kind'
+assert_eq 'lab:target.example:8443/tcp' "${_DF[logical_fqn]}" \
+  'net defaults to target:host:port/transport for its generated SARIF location'
 
 t_case 'sca profile: an emitters own logical identity is never overwritten'
 new_run sarif01-sca
