@@ -471,6 +471,13 @@ _advisory_days_from_civil() {
 # `advisory_data_freshness PATH MAX_AGE_DAYS` sets the generated timestamp,
 # whole-day age and state (`fresh`, `stale`, or `unknown`).  Unknown is never
 # guessed: an old-looking name or filesystem mtime is not advisory provenance.
+#
+# SC2034: these three globals are this function's published output contract,
+# read by SCA, image, and banner consumers across the source-file boundary.
+# A command substitution would lose the assignments, so callers intentionally
+# read the globals after a direct invocation; shellcheck's per-file analysis
+# cannot see those reads.
+# shellcheck disable=SC2034
 advisory_data_freshness() {
   local path=$1 max_age_days=$2 line='' stamp='' generated now age
   ADVISORY_DATA_GENERATED=''
