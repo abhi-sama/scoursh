@@ -48,7 +48,7 @@ data/version-summaries.db
 # modules/*/adapters/*/vendor.sh), on the same "generated, on a networked
 # box, never during a scan, never in this repository" footing as the two
 # databases above.  Some of these rulesets carry a non-redistributable
-# licence (e.g. Semgrep's own Semgrep Rules License v1.0, which forbids
+# licence (for example, Semgrep's own rules licence, which forbids
 # distributing the rules or making them available to others as a service) -
 # committing one from a PUBLIC checkout would republish it under scoursh's
 # own Apache-2.0 licence.  Reproducibility is the pinned version + digest an

@@ -54,7 +54,9 @@ bench/fetch-corpus.sh owasp-benchmark
 bench/make-sample.sh owasp-benchmark sast-192 --per-class 12 \
   --categories 'sqli cmdi ldapi pathtraver crypto hash weakrand xss'
 
-# 3. Run each tool.  Raw output is preserved verbatim beside the normalised form.
+# 3. Run each tool.  Raw output is preserved beside the normalised form, except
+#    Semgrep's redistribution-restricted `extra.message` and `extra.metadata`:
+#    those are removed after normalisation and before the output can be committed.
 #    Add --portable-paths for a result you intend to COMMIT: it rewrites the
 #    absolute scan-root prefix to <SCAN_ROOT> and the bench/ prefix to <BENCH>,
 #    so a committed artefact does not embed an operator's home directory.
@@ -91,7 +93,7 @@ a cached, not freshly pulled, vulnerability database on this host).
 | `fetch-sca-corpus.sh` | builds the SCA leg's lockfile corpus from `sca-advisories.lock` |
 | `make-sample.sh` | a balanced, deterministic sample of a fetched (git-cloned) corpus |
 | `make-slice.sh` | a scan root that is a subset of a fetched corpus, so every tool sees one surface |
-| `run-tool.sh` | run one tool, preserve raw output, emit normalised records |
+| `run-tool.sh` | run one tool, preserve publication-safe raw output, emit normalised records |
 | `score.sh` | the scorecard renderer (markdown or JSON) |
 | `lib/json.sh` | a depth- and string-aware JSON flattener |
 | `lib/normalise.sh` | the normalised record shape and its one JSON writer |

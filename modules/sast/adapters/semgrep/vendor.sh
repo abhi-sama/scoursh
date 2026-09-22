@@ -73,7 +73,7 @@ semgrep_vendor() {
 
   log_info "vendor-engines: semgrep $version vendored into ${adapter_dir#"$SCOURSH_INSTALL_ROOT"/}"
   log_info '  do NOT commit bin/ or rules/ - both are gitignored by design (the ruleset is'
-  log_info '  under Semgrep Rules License v1.0, which forbids redistribution). Every real'
+  log_info "  under Semgrep's rules licence, which forbids redistribution). Every real"
   log_info '  scan from here on runs fully offline against exactly these bytes; the version'
   log_info '  + sha256 pin above is what reproduces them, not a git commit of the bytes.'
   log_info '  Run scan.sh sast --use-engines once against a real target next - adapter.sh'

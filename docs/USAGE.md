@@ -469,7 +469,7 @@ checking the bytes in:
   merely unwise, it is refused outright.
 - gitleaks' binary and ruleset are small enough to push (~20MB total), but a binary blob checked into
   git history forever is worth avoiding on general principle even when it fits.
-- semgrep's own default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0",
+- semgrep's own default ruleset, if you ever obtain one, ships under Semgrep's rules licence,
   which explicitly forbids redistribution - committing it into this Apache-2.0, public repository would
   be a license violation, not just bloat.
 
