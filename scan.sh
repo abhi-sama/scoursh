@@ -2178,6 +2178,31 @@ _scan_pf_check_writable_dir() {
   return 0
 }
 
+# `_scan_preflight_output_state` - the small, early part of preflight that
+# must succeed before `run_init` can create a report directory.  Keep the
+# complete accumulating preflight below `run_init`: it may legitimately record
+# facts about an interactive scope authorisation into this run's meta/ files.
+# This gate is intentionally limited to paths whose failure used to be noticed
+# only after a scan had already run.
+_scan_preflight_output_state() {
+  local -a problems=()
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | network | image | all)
+      _scan_pf_check_writable_dir "$_SCAN_OUT_DIR" report || problems+=("$_SCAN_PF_MSG")
+      _scan_pf_check_writable_dir "$(state_default_dir)" state || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  if (( ${#problems[@]} > 0 )); then
+    local msg="preflight refused to start: ${#problems[@]} problem(s) found before any module ran -"
+    local p
+    for p in "${problems[@]+"${problems[@]}"}"; do
+      msg+=$'\n  - '"$p"
+    done
+    die "$SCOURSH_EXIT_INPUT" "$msg"
+  fi
+}
+
 # `_scan_pf_warn_declared_skips` - the non-fatal, informational half:
 # surfaces (via log_warn, at second zero) the two declared-skip conditions
 # named in this section's own header above. Deliberately never adds to the
@@ -3048,15 +3073,16 @@ scan_main() {
 
   _SCAN_OUT_DIR=${SCAN_FLAGS[out]:-"$SCOURSH_INSTALL_ROOT/reports/$(now_iso | tr ':' '-')"}
 
-  # Preflight before run_init ensures an unwritable output or state location
-  # is reported as exit 4 before any module can scan.  It also keeps every
-  # other knowable precondition in the existing accumulating gate.
+  # Output/state writability must be known before run_init creates the run
+  # directory, so those failures are exit 4 before any module can scan.  The
+  # complete accumulating preflight remains after run_init because an
+  # interactive scope authorisation records auditable metadata in this run.
   # A test or embedding caller can invoke scan_main more than once in one
   # process; clear the preceding run so a preflight die cannot refresh or
   # append facts to that old run before this invocation has its own directory.
   SCOURSH_RUN_DIR=''
   SCOURSH_RUN_ID=''
-  _scan_preflight
+  _scan_preflight_output_state
   run_init "$_SCAN_OUT_DIR"
   run_record notes "command=$SCAN_COMMAND"
   # Reset for THIS invocation - scan_main may run more than once in one
@@ -3217,6 +3243,11 @@ scan_main() {
   # than exit 5 or a silent 0.
   # shellcheck disable=SC2034
   local incomplete=0 gate=0 input=0 path
+
+  # The complete preflight still runs in its established position: after
+  # configuration has resolved and the run can record an interactive scope
+  # authorisation, but before the first scan_dispatch call.
+  _scan_preflight
 
   case $SCAN_COMMAND in
     sast | sca | iac)

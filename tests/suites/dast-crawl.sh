@@ -957,7 +957,7 @@ EOF
 : >"$FIX/.scoursh-packaged"
 _crawl_scan "$W/run-packaged-relative"
 assert_eq 0 "$_RC" 'a packaged relative config path is read successfully'
-assert_contains "$(_slurp "$W/run-packaged-relative/inventory/endpoints.json")" '"path": "/pets"' \
+assert_contains "$(_slurp "$W/run-packaged-relative/inventory/endpoints.json")" '"path": "/api/v2/pets"' \
   'the OpenAPI document was found relative to config/discovery.conf, not the install root'
 rm -f "$FIX/.scoursh-packaged" "$FIX/config/discovery.conf"
 

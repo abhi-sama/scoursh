@@ -758,7 +758,9 @@ _owasp_filtered_reasons() {
   list=$(
     for k in "${!_RPTOW_FILTERED_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do
@@ -990,7 +992,9 @@ _cis_not_applicable_reasons() {
   list=$(
     for k in "${!_RPTCIS_NAPP_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do
@@ -1005,7 +1009,9 @@ _cis_filtered_reasons() {
   list=$(
     for k in "${!_RPTCIS_FILTERED_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do

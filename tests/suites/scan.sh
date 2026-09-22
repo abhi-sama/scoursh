@@ -1976,7 +1976,7 @@ t_case 'output and state write failures are preflight input failures, never a fi
 OUT_AS_FILE=$W/output-is-file
 : >"$OUT_AS_FILE"
 SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER assert_status 4 \
-  'an output path that is a file is refused before run_init or dispatch' \
+  'an output path that is a file is refused before dispatch' \
   _run_main sast --path . --out "$OUT_AS_FILE"
 ROOT_STATE_BLOCKED=$W/root-state-blocked
 mkdir -p "$ROOT_STATE_BLOCKED/config"
