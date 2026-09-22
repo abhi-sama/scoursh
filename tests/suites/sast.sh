@@ -128,6 +128,99 @@ assert_eq 0 "$(records_field pyset "$idx" context-window)" \
   'shipped python.rules yaml.load rule carries context-window: 0 - fails if it were ever reverted to the pre-fix 2'
 
 # =============================================================================
+printf -- '\n-- §8.3 PCRE degradation: skipped, never covered --\n'
+# =============================================================================
+PCRE_RULES=$W/pcre.rules
+PCRE_FIX=$W/pcre-fixture
+mkdir -p "$PCRE_FIX"
+printf 'pcre-token\n' >"$PCRE_FIX/pcre.txt"
+cat >"$PCRE_RULES" <<'RULEEOF'
+id: SAST-PCRE-SKIP-01
+title: PCRE capability fixture
+severity: high
+confidence: high
+cwe: none
+owasp: none
+pattern: (?=pcre-token)pcre-token
+dialect: pcre
+files: *.txt
+tags: static
+remediation: Test fixture only.
+
+id: SAST-ERE-CONTROL-01
+title: ERE control fixture
+severity: high
+confidence: high
+cwe: none
+owasp: none
+pattern: pcre-token
+dialect: ere
+files: *.txt
+tags: static
+remediation: Test fixture only.
+RULEEOF
+
+t_case '§8.3: a PCRE record without a capable engine is skipped, not covered, while ERE still runs'
+_pcre_ids_found() {
+  local rundir=$1 line
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    finding_decode "$line"
+    printf '%s\n' "${_DF[check_id]}"
+  done <"$rundir/findings.fields"
+}
+
+run_init "$W/pcre-run"
+SCOURSH_PATH_ROOT=$(path_root_cell "$PCRE_FIX")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$PCRE_FIX")
+SCOURSH_SAST_MAX_MATCHES_PER_FILE=200
+records_load "$PCRE_RULES" pattern-rule pcreset >/dev/null
+CHECKS_REGISTRY_SETS=(pcreset)
+sast_index_checks
+PCRE_IDS=(SAST-PCRE-SKIP-01 SAST-ERE-CONTROL-01)
+
+# core_has_pcre caches the capability value. Force its documented unavailable
+# state so this is deterministic on both GNU-PCRE and BSD hosts.
+_pcre_cap_was_set=false
+if [[ -n ${SCOURSH_CAP_PCRE+x} ]]; then
+  _pcre_cap_was_set=true
+  _pcre_cap_before=$SCOURSH_CAP_PCRE
+fi
+SCOURSH_CAP_PCRE=none
+sast_scan_tree "$PCRE_FIX" "${PCRE_IDS[@]}"
+findings_merge "$SCOURSH_RUN_DIR"
+sast_record_checks_run sast "${PCRE_IDS[@]}"
+
+# Stub only the state writer boundary: this proves the real
+# sast_record_coverage caller excludes the skipped id without requiring this
+# unit suite to create a persistent state/ fixture.
+PCRE_COVERED=''
+state_add_covered() { PCRE_COVERED+="${PCRE_COVERED:+,}$1"; }
+sast_record_coverage "$SCOURSH_PATH_ROOT" "${PCRE_IDS[@]}"
+unset -f state_add_covered
+if [[ $_pcre_cap_was_set == true ]]; then
+  SCOURSH_CAP_PCRE=$_pcre_cap_before
+else
+  unset SCOURSH_CAP_PCRE
+fi
+unset _pcre_cap_was_set _pcre_cap_before
+
+assert_not_contains "$(_pcre_ids_found "$SCOURSH_RUN_DIR")" 'SAST-PCRE-SKIP-01' \
+  'the unavailable PCRE rule emits no finding'
+assert_contains "$(_pcre_ids_found "$SCOURSH_RUN_DIR")" 'SAST-ERE-CONTROL-01' \
+  'the ERE control still runs over the same file'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/skipped_checks")" 'check=SAST-PCRE-SKIP-01 reason=pcre-unavailable' \
+  'run.json input records the exact pcre-unavailable skip reason'
+assert_not_contains "$(cat "$SCOURSH_RUN_DIR/meta/checks_run")" 'SAST-PCRE-SKIP-01' \
+  'a skipped PCRE rule is not claimed as run'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/checks_run")" 'SAST-ERE-CONTROL-01' \
+  'the ERE control is claimed as run'
+assert_not_contains "$PCRE_COVERED" 'SAST-PCRE-SKIP-01' \
+  'the skipped PCRE rule is excluded from covered_checks, so prior findings become unknown'
+assert_contains "$PCRE_COVERED" 'SAST-ERE-CONTROL-01' \
+  'the ERE control remains covered'
+
+# =============================================================================
 printf -- '\n-- true-positive detection, one pack at a time --\n'
 # =============================================================================
 _scan_one_pack() {

@@ -575,6 +575,73 @@ assert_not_contains "$(run_dir_bytes "$W/gate/run")" "$CANARY_GATE" \
   'nor did the scope-violation finding carry it into any file'
 
 # ---------------------------------------------------------------------------
+# I5. Every config/auth.conf value is an exact redaction source.
+# ---------------------------------------------------------------------------
+t_case 'I5. an auth.conf value never reaches logs, evidence, reports, run.json, or agent-fix output'
+# This canary deliberately does not resemble a token, password, URL credential,
+# or any other shipped redaction pattern.  The assertion therefore proves the
+# §9.6.2 registration path rather than a coincidental generic shape match.
+AUTH_CANARY='cobalt-kiwi-marble-27'
+AUTHCONF=$W/auth-redaction/config/auth.conf
+mkdir -p "${AUTHCONF%/*}"
+cat >"$AUTHCONF" <<EOF
+id: fixture-target.authredaction
+mode: bearer
+token: $AUTH_CANARY
+notes: $AUTH_CANARY is an operator-only auth value.
+EOF
+chmod 600 "$AUTHCONF"
+
+# auth_engine owns the schema load and is therefore the only correct place to
+# register parsed values with redact().  Loading records directly here would
+# test a helper while leaving the real DAST path unexercised.
+# shellcheck source=modules/dast/auth_engine.sh
+source "$ROOT/modules/dast/auth_engine.sh"
+new_run authconf
+SCOURSH_REDACT_SECRETS=false
+dast_auth_load "$AUTHCONF"
+
+# The broader presentation preference is deliberately false: auth.conf values
+# are always secret under §9.6.2, so this must still mask them.  Put the same
+# value through the two generic writers and a finding's target-derived fields
+# to cover logs, meta/run.json, evidence, and every report projection.
+auth_log=$W/authconf.err
+log_info "auth config fixture carries $AUTH_CANARY" 2>"$auth_log"
+run_record coverage_gap "dast auth fixture could not use $AUTH_CANARY"
+finding_new
+finding_set check_id DAST-HDR-CSP_MISSING-01
+finding_set module dast
+finding_set title "auth fixture $AUTH_CANARY"
+finding_set base_severity medium
+finding_set cwe CWE-200
+finding_set owasp A05:2021
+finding_set exposure external
+finding_set auth none
+finding_set remediation "replace $AUTH_CANARY"
+finding_set cell fixture-target
+finding_set loc_target fixture-target
+finding_set loc_method GET
+finding_set loc_path_template "/auth/$AUTH_CANARY"
+finding_set logical_kind endpoint
+finding_set logical_fqn "auth/$AUTH_CANARY"
+finding_set_evidence "auth evidence $AUTH_CANARY"
+finding_emit
+findings_merge "$SCOURSH_RUN_DIR"
+SCOURSH_FORMATS=json,sarif,html,md,audit,agent report_all "$SCOURSH_RUN_DIR" >"$W/authconf.out" 2>"$W/authconf.report.err"
+
+for f in findings.jsonl findings.json findings.fields report.md report.html report.sarif report-audit.html agent-fix.json run.json meta/coverage_gap; do
+  body=''
+  [[ -f $SCOURSH_RUN_DIR/$f ]] && body=$(cat "$SCOURSH_RUN_DIR/$f")
+  assert_not_contains "$body" "$AUTH_CANARY" "$f carries no config/auth.conf value"
+done
+assert_not_contains "$(run_dir_bytes "$SCOURSH_RUN_DIR")" "$AUTH_CANARY" \
+  'no artifact anywhere in the run directory carries the auth.conf value'
+assert_not_contains "$(cat "$auth_log")$(cat "$W/authconf.out")$(cat "$W/authconf.report.err")" "$AUTH_CANARY" \
+  'no log or report writer stderr carries the auth.conf value'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/agent-fix.json")" '<redacted:AUTH_CONF:' \
+  'agent-fix output retains a redaction placeholder rather than dropping the finding'
+
+# ---------------------------------------------------------------------------
 # J. Every form modules/sast/rules/secrets.rules DETECTS is also redacted.
 # ---------------------------------------------------------------------------
 t_case 'J. no credential form the secrets pack detects survives in the clear'

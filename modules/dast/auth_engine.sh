@@ -270,6 +270,13 @@ dast_auth_load() {
   local path=${1:-}
   [[ -n $path ]] || path=$(dast_auth_conf_path)
   DAST_AUTH_LOADED=0
+  # A library caller can switch from an authenticated run to an absent config
+  # in one process.  Do not let a prior config's values unnecessarily redact
+  # that later, unauthenticated run; the next successful load registers its
+  # complete current set below.
+  declare -F auth_redaction_clear >/dev/null 2>&1 || die "$SCOURSH_EXIT_INCOMPLETE" \
+    'internal: auth loader missing the auth-value redaction clearer'
+  auth_redaction_clear
   [[ -e $path ]] || return 1
 
   local mode
@@ -280,6 +287,14 @@ dast_auth_load() {
   fi
 
   config_load_or_die "$path" auth-identity auth
+  # The frozen auth schema marks EVERY value secret (§9.6.2), including values
+  # whose spelling is not covered by a generic redaction rule.  Register them
+  # before any later auth phase can log, record a coverage fact, emit evidence,
+  # or render a report.  This is intentionally a hard dependency: continuing
+  # without the redaction registrar would make a successful parse a disclosure.
+  declare -F auth_redaction_register >/dev/null 2>&1 || die "$SCOURSH_EXIT_INCOMPLETE" \
+    'internal: auth.conf loaded before the auth-value redaction registrar'
+  auth_redaction_register auth
   DAST_AUTH_LOADED=1
   return 0
 }

@@ -855,6 +855,16 @@ scan_match_offsets() {
   scan_match "$out" -b -o -e "$pattern" -- "$file"
 }
 
+# The PCRE counterpart is deliberately separate from scan_match_offsets:
+# callers must make the §8.3 capability decision before reaching it, so an
+# unavailable optional dialect degrades into a recorded skip rather than an
+# internal engine error.  Once that decision has been made, offsets retain the
+# exact `line:byteoffset:match` shape the ERE path produces.
+scan_match_offsets_pcre() {
+  local out=$1 pattern=$2 file=$3
+  scan_match_pcre "$out" -b -o -e "$pattern" -- "$file"
+}
+
 # `scan_match_stdin PATTERN` - reads the text on stdin and prints one line per
 # MATCH.  Used by redact() (lib/findings.sh), which must apply the frozen §8.2
 # regex dialect to a string held in memory.
@@ -867,6 +877,17 @@ scan_match_stdin() {
   (( ${#SCOURSH_GREP_PLAIN[@]} > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine is not bound"
   "${SCOURSH_GREP_PLAIN[@]+"${SCOURSH_GREP_PLAIN[@]}"}" -o -e "$1" || rc=$?
   (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine failed (rc=$rc) on stdin match"
+  return "$rc"
+}
+
+# As scan_match_stdin, but for a record whose declared dialect is PCRE.  It is
+# used only after the caller's §8.3 skip gate, including context directives:
+# a record's dialect applies to pattern, context-require, and context-deny.
+scan_match_stdin_pcre() {
+  local rc=0
+  core_has_pcre || die "$SCOURSH_EXIT_INCOMPLETE" "scan_match_stdin_pcre called with no PCRE2 engine"
+  "${SCOURSH_GREP_PCRE[@]+"${SCOURSH_GREP_PCRE[@]}"}" -o -e "$1" || rc=$?
+  (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "PCRE pattern engine failed (rc=$rc) on stdin match"
   return "$rc"
 }
 

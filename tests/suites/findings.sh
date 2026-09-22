@@ -572,14 +572,23 @@ derive_findings "$d" "$W/d1.rules"
 assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields" || true)" \
   'correlate-on: file joins per file, so two different files do not correlate'
 
-t_case 'a requires contributor that is absent stops the composite firing'
+t_case 'an uncorrelatable composite is recorded as a coverage gap, never silently clean'
+derive_record_uncorrelated_gaps "$d" "$W/d1.rules"
+assert_contains "$(cat "$d/meta/coverage_gap")" \
+  'composite: COMPOSITE-TEST-CHAIN could not correlate its present contributors on file because they share no correlation value' \
+  'the operator sees the present-but-unjoinable chain in run.json coverage_gap'
+
+t_case 'an absent contributor remains a non-firing chain, not an uncorrelatable gap'
 new_run d3
 d=$SCOURSH_RUN_DIR
 occurrence_reset_unit u
 emit_match "$d" SAST-B-B-01 same.py 1 y
 findings_merge "$d"
 derive_findings "$d" "$W/d1.rules"
+derive_record_uncorrelated_gaps "$d" "$W/d1.rules"
 assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields" || true)" 'requires is ALL'
+assert_file_absent "$d/meta/coverage_gap" \
+  'a missing contributor is not mislabeled as a failed correlation'
 
 t_case 'any-of is satisfied by ONE of its alternatives'
 new_run d4
