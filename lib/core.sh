@@ -1222,10 +1222,21 @@ core_cleanup() {
 
 core_on_err() {
   local status=$1 line=$2 src=$3 cmd=$4
+  # An explicit `exit N` is a deliberate public contract of a caller, not an
+  # unexpected command failure.  lib/records.sh is shared by scan.sh and the
+  # standalone record linters; the latter deliberately exit 1 when they find
+  # a format violation, and must not have that documented result rewritten to
+  # the scanner's incomplete-run code.  `die` already clears ERR for its own
+  # intentional exits; this covers other small tools that do not use `die`.
+  if [[ $cmd == exit\ * ]]; then
+    return "$status"
+  fi
   # Nothing here may itself fail (tension 4 rule 5), so it is printf only.
   printf '%s error scoursh: command failed (status %s) at %s:%s: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$src" "$line" "$cmd" >&2
-  return "$status"
+  # An unhandled command failure is an incomplete run, never the findings
+  # gate's exit 1. `die` disables this trap for intentional 2/3/4/5 exits.
+  exit "$SCOURSH_EXIT_INCOMPLETE"
 }
 
 core_on_signal() {

@@ -1949,6 +1949,43 @@ t_case '--help exits 0 and prints the documented grammar'
 assert_status 0 './scan.sh --help exits 0' _bin_run --help
 assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text is printed'
 
+t_case '--version and paths expose the installed-entry-point diagnostics without creating a run'
+assert_status 0 './scan.sh --version exits 0' _bin_run --version
+assert_contains "$(cat "$W/bin.out")" 'scoursh 0.1.0-dev' '--version reads VERSION through core.sh'
+assert_status 0 './scan.sh paths exits 0' _bin_run paths
+assert_contains "$(cat "$W/bin.out")" "install: $ROOT" 'paths prints the physical install root'
+assert_contains "$(cat "$W/bin.out")" "config: $ROOT/config" 'paths prints the config directory'
+assert_contains "$(cat "$W/bin.out")" "data: $ROOT/data" 'paths prints the data directory'
+assert_contains "$(cat "$W/bin.out")" "state: $ROOT/state" 'paths prints the state directory'
+assert_contains "$(cat "$W/bin.out")" "reports: $ROOT/reports" 'paths prints the reports directory'
+
+t_case 'a two-level relative symlink chain resolves scan.sh before sourcing libraries'
+LINKROOT=$W/symlink-chain
+rm -rf "$LINKROOT"
+mkdir -p "$LINKROOT/bin1" "$LINKROOT/bin2"
+ln -s "$ROOT" "$LINKROOT/pkg"
+ln -s ../pkg/scan.sh "$LINKROOT/bin2/scoursh"
+ln -s ../bin2/scoursh "$LINKROOT/bin1/scoursh"
+LINK_OUT=$W/symlink-version.out
+LINK_RC=0
+bash "$LINKROOT/bin1/scoursh" --version >"$LINK_OUT" 2>&1 || LINK_RC=$?
+assert_eq 0 "$LINK_RC" 'a two-level relative symlink chain reaches the real scan.sh and exits 0'
+assert_contains "$(cat "$LINK_OUT")" 'scoursh 0.1.0-dev' 'the symlinked entry point loaded lib/core.sh from the physical install root'
+
+t_case 'output and state write failures are preflight input failures, never a findings gate'
+OUT_AS_FILE=$W/output-is-file
+: >"$OUT_AS_FILE"
+SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER assert_status 4 \
+  'an output path that is a file is refused before dispatch' \
+  _run_main sast --path . --out "$OUT_AS_FILE"
+ROOT_STATE_BLOCKED=$W/root-state-blocked
+mkdir -p "$ROOT_STATE_BLOCKED/config"
+printf 'id: scanner\njobs: 2\n' >"$ROOT_STATE_BLOCKED/config/scanner.conf"
+: >"$ROOT_STATE_BLOCKED/state"
+SCOURSH_INSTALL_ROOT=$ROOT_STATE_BLOCKED assert_status 4 \
+  'a state path that is a file is refused before the SAST walk begins' \
+  _run_main sast --path . --out "$W/output-state-blocked"
+
 t_case 'an unknown command exits 2 when run as a real script, matching the sourced-function behaviour'
 assert_status 2 './scan.sh bogus exits 2' _bin_run bogus
 

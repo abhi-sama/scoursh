@@ -128,7 +128,16 @@ unset -v _scan_found _scan_candidate 2>/dev/null || true
 #    artifact from the very first invocation (docs/DESIGN.md §4: "every run
 #    writes run.json").
 # -----------------------------------------------------------------------------
-SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+_scan_self=${BASH_SOURCE[0]}
+while [[ -L $_scan_self ]]; do
+  _scan_link=$(readlink -- "$_scan_self")
+  case $_scan_link in
+    /*) _scan_self=$_scan_link ;;
+    *) _scan_self=$(dirname -- "$_scan_self")/$_scan_link ;;
+  esac
+done
+SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "$_scan_self")" && pwd -P)
+unset -v _scan_self _scan_link
 # shellcheck source=lib/report.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # -x back-edge cut: lib/config.sh
@@ -206,7 +215,7 @@ source "$SCOURSH_SCAN_SH_DIR/lib/guide.sh"
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
 # -----------------------------------------------------------------------------
-SCAN_COMMANDS=(sast sca iac dast cloud network image all diff report)
+SCAN_COMMANDS=(sast sca iac dast cloud network image all diff report paths)
 
 # One map, keyed "scope:flag" (global, or a command name), because bash 4.2
 # has no namerefs (those are 4.3+, and tension 24 froze the minimum at 4.2)
@@ -425,9 +434,8 @@ scan_flag_kind() {
 }
 
 scan_usage() {
+  printf '%s <command> [options]\n\n' "${0##*/}"
   cat <<'EOF'
-scan.sh <command> [options]
-
 Commands:
   sast     [--path DIR] [--lang py,js,go,java] [--history]
   sca      [--path DIR]
@@ -444,9 +452,7 @@ Commands:
                                          override of the matching
                                          config/discovery.conf key for --target;
                                          nothing is written to that file. A
-                                         relative path is resolved against the
-                                         install root, exactly as the config
-                                         file's own paths are - not against
+                                         relative path is resolved against
                                          your current directory. Each requires
                                          --target, exit 2 otherwise - same
                                          rule as --i-own-target. Prefer
@@ -523,6 +529,7 @@ Commands:
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
+  paths    print resolved install, config, data, state, and reports locations
 
 Global:
   --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
@@ -617,6 +624,14 @@ EOF
 scan_die_usage() {
   scan_usage >&2
   die "$SCOURSH_EXIT_USAGE" "$*"
+}
+
+scan_print_paths() {
+  printf 'install: %s\n' "$SCOURSH_INSTALL_ROOT"
+  printf 'config: %s/config\n' "$SCOURSH_INSTALL_ROOT"
+  printf 'data: %s/data\n' "$SCOURSH_INSTALL_ROOT"
+  printf 'state: %s\n' "$(state_default_dir)"
+  printf 'reports: %s/reports\n' "$SCOURSH_INSTALL_ROOT"
 }
 
 # -----------------------------------------------------------------------------
@@ -767,7 +782,7 @@ scan_usage_for() {
     esac
   done
 
-  printf 'scan.sh %s [options]\n\n' "$cmd"
+  printf '%s %s [options]\n\n' "${0##*/}" "$cmd"
 
   req=${_SCAN_REQUIRED_FLAG[$cmd]:-}
   [[ -z $req ]] || printf 'Required: --%s\n\n' "$req"
@@ -975,6 +990,10 @@ scan_parse_args() {
   case $1 in
     -h | --help)
       scan_usage
+      exit "$SCOURSH_EXIT_OK"
+      ;;
+    version | --version)
+      printf 'scoursh %s\n' "$(scoursh_version)"
       exit "$SCOURSH_EXIT_OK"
       ;;
   esac
@@ -2144,6 +2163,46 @@ _scan_pf_check_live() {
   return 1
 }
 
+# `_scan_pf_check_writable_dir PATH LABEL` - proactively creates each
+# scan-time output location and verifies it is writable.  This is deliberately
+# a preflight detector, not a deferred state/report write: an unwritable
+# installed copy is an input failure (4), never an unclassified ERR exit or
+# the findings gate's exit 1 after a scan has already consumed time.
+_scan_pf_check_writable_dir() {
+  local path=$1 label=$2
+  if ! mkdir -p "$path" 2>/dev/null || [[ ! -d $path || ! -w $path ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="$label directory '$path' cannot be created or written; choose --out for reports or set SCOURSH_HOME when using an installed copy"
+    return 1
+  fi
+  return 0
+}
+
+# `_scan_preflight_output_state` - the small, early part of preflight that
+# must succeed before `run_init` can create a report directory.  Keep the
+# complete accumulating preflight below `run_init`: it may legitimately record
+# facts about an interactive scope authorisation into this run's meta/ files.
+# This gate is intentionally limited to paths whose failure used to be noticed
+# only after a scan had already run.
+_scan_preflight_output_state() {
+  local -a problems=()
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | network | image | all)
+      _scan_pf_check_writable_dir "$_SCAN_OUT_DIR" report || problems+=("$_SCAN_PF_MSG")
+      _scan_pf_check_writable_dir "$(state_default_dir)" state || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  if (( ${#problems[@]} > 0 )); then
+    local msg="preflight refused to start: ${#problems[@]} problem(s) found before any module ran -"
+    local p
+    for p in "${problems[@]+"${problems[@]}"}"; do
+      msg+=$'\n  - '"$p"
+    done
+    die "$SCOURSH_EXIT_INPUT" "$msg"
+  fi
+}
+
 # `_scan_pf_warn_declared_skips` - the non-fatal, informational half:
 # surfaces (via log_warn, at second zero) the two declared-skip conditions
 # named in this section's own header above. Deliberately never adds to the
@@ -2450,6 +2509,13 @@ _scan_preflight() {
         target_msg=$_SCAN_PF_MSG
         target_class=$_SCAN_PF_CLASS
       fi
+      ;;
+  esac
+
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | network | image | all)
+      _scan_pf_check_writable_dir "$_SCAN_OUT_DIR" report || problems+=("$_SCAN_PF_MSG")
+      _scan_pf_check_writable_dir "$(state_default_dir)" state || problems+=("$_SCAN_PF_MSG")
       ;;
   esac
 
@@ -2987,6 +3053,11 @@ scan_main() {
   # finds.
   _scan_check_required
 
+  if [[ $SCAN_COMMAND == paths ]]; then
+    scan_print_paths
+    exit "$SCOURSH_EXIT_OK"
+  fi
+
   # docs/STEP-GUIDE-PLAN.md GUIDE-06: `--print-command` - the non-interactive
   # twin of G9's own "Print the command and exit" item, for ANY invocation.
   # Placed after `_scan_check_required` (an invocation that could not itself
@@ -3000,8 +3071,19 @@ scan_main() {
   core_require_baseline
   [[ ${SCAN_FLAGS[history]:-} != true ]] || require_cmd git
 
-  local out_dir=${SCAN_FLAGS[out]:-"$SCOURSH_INSTALL_ROOT/reports/$(now_iso | tr ':' '-')"}
-  run_init "$out_dir"
+  _SCAN_OUT_DIR=${SCAN_FLAGS[out]:-"$SCOURSH_INSTALL_ROOT/reports/$(now_iso | tr ':' '-')"}
+
+  # Output/state writability must be known before run_init creates the run
+  # directory, so those failures are exit 4 before any module can scan.  The
+  # complete accumulating preflight remains after run_init because an
+  # interactive scope authorisation records auditable metadata in this run.
+  # A test or embedding caller can invoke scan_main more than once in one
+  # process; clear the preceding run so a preflight die cannot refresh or
+  # append facts to that old run before this invocation has its own directory.
+  SCOURSH_RUN_DIR=''
+  SCOURSH_RUN_ID=''
+  _scan_preflight_output_state
+  run_init "$_SCAN_OUT_DIR"
   run_record notes "command=$SCAN_COMMAND"
   # Reset for THIS invocation - scan_main may run more than once in one
   # process (every test in tests/suites/scan.sh sources scan.sh once and
@@ -3162,9 +3244,9 @@ scan_main() {
   # shellcheck disable=SC2034
   local incomplete=0 gate=0 input=0 path
 
-  # Preflight (section 6a above): every problem it can safely detect,
-  # together, before the first scan_dispatch call of any kind. Dies here on
-  # any of them; falls through unchanged when there are none.
+  # The complete preflight still runs in its established position: after
+  # configuration has resolved and the run can record an interactive scope
+  # authorisation, but before the first scan_dispatch call.
   _scan_preflight
 
   case $SCAN_COMMAND in

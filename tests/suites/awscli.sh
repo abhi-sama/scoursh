@@ -97,7 +97,7 @@ chmod +x "$W/bin/aws"
 
 # Every test gets a private PATH with the stub first and a private, isolated
 # allowlist file (so the suite never depends on - or accidentally seeds -
-# tests/aws-readonly-allow.txt, which is deliberately absent at this build
+# data/aws-readonly-allow.txt, which is deliberately absent at this build
 # step; see docs/FOUNDATION.md tension 23's "Consequence for the build").
 #
 # Each invocation also gets a FRESH response-cache directory.  SCOURSH_SCRATCH

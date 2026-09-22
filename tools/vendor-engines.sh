@@ -115,7 +115,16 @@ else
   VENG_MAIN=0
 fi
 
-VENG_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+_veng_self=${BASH_SOURCE[0]}
+while [[ -L $_veng_self ]]; do
+  _veng_link=$(readlink -- "$_veng_self")
+  case $_veng_link in
+    /*) _veng_self=$_veng_link ;;
+    *) _veng_self=$(dirname -- "$_veng_self")/$_veng_link ;;
+  esac
+done
+VENG_DIR=$(cd -- "$(dirname -- "$_veng_self")/.." && pwd -P)
+unset -v _veng_self _veng_link
 # shellcheck source=lib/core.sh
 source "$VENG_DIR/lib/core.sh"
 
@@ -346,9 +355,12 @@ veng_vendor_all() {
 # ---------------------------------------------------------------------------
 
 VENG_ADVISORIES_DB=${SCOURSH_SCA_ADVISORIES_DB:-$VENG_DIR/data/advisories.db}
-VENG_VERSIONS_DB=${SCOURSH_DAST_VERSIONS_DB:-$VENG_DIR/data/versions.db}
-# The summary side tables mirror their owning data namespaces: SCA/image rows
-# use advisory-summaries.db; banner rows alone use version-summaries.db.
+VENG_VERSIONS_DB=${SCOURSH_VERSIONS_DB:-${SCOURSH_DAST_VERSIONS_DB:-${SCOURSH_SCA_VERSIONS_DB:-$VENG_DIR/data/versions.db}}}
+# The two summary side tables docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment adds, mirroring the pair above exactly
+# (modules/sca/engine.sh's sca_advisory_summaries_db_path and
+# modules/dast/passive/banner_engine.sh's banner_summaries_db_path read
+# these same two env-var overrides).
 VENG_SUMMARIES_DB=${SCOURSH_SCA_SUMMARIES_DB:-$VENG_DIR/data/advisory-summaries.db}
 VENG_VERSION_SUMMARIES_DB=${SCOURSH_DAST_VERSION_SUMMARIES_DB:-$VENG_DIR/data/version-summaries.db}
 

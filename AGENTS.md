@@ -2561,7 +2561,7 @@ point this invocation at this credential," a fact about how the run was started.
   OWASP category; an honest absence beats an invented control id. A service script emits through
   `finding_from_record`, so the `cis` value reaches the finding from the registry rather than being
   retyped - which is the only way the two cannot disagree.
-- **`tests/aws-readonly-allow.txt` now exists, seeded by CLOUD-02 with exactly one entry, `sts
+- **`data/aws-readonly-allow.txt` now exists, seeded by CLOUD-02 with exactly one entry, `sts
   assume-role`** - the ticket that added the first `aws_ro sts assume-role` call site
   (`modules/cloud/aws/regions.sh`'s `cloud_assume_role`), and the only ticket that could seed it without
   tripping `tests/lint-aws-readonly.sh`'s check 4 (an entry with no caller fails, measured directly
@@ -3873,7 +3873,7 @@ step 2 is next" above.
   the CLI's argument parser). `scan.sh`'s `SCAN_FLAGS[profile]` still has zero readers, so
   `--profile staging` end to end is `modules/cloud/aws/run.sh`'s to close - the defect is narrowed
   to one wiring site, not fixed.
-- **`sts get-caller-identity` needs NO entry in `tests/aws-readonly-allow.txt`** - the frozen `get`
+- **`sts get-caller-identity` needs NO entry in `data/aws-readonly-allow.txt`** - the frozen `get`
   prefix already admits it, and an entry no code needs is what the lint's check 4 exists to reject.
   That file is still deliberately absent and is seeded by the `--assume-role` PR, not before.
 - `tests/lint-aws-readonly.sh` gained an optional scan-root and allow-file override (used only by
@@ -3912,7 +3912,7 @@ step 2 is next" above.
   buckets again afterward. **Opt-in only**, not part of `tests/run-tests.sh`, requires docker and a
   real `aws` CLI (neither is a scoursh runtime dependency); confirmed by running the full suite
   with `docker` removed from `PATH`.
-- `tests/aws-readonly-allow.txt` was **deliberately absent at this point** - no code called `sts
+- `data/aws-readonly-allow.txt` was **deliberately absent at this point** - no code called `sts
   assume-role` yet, and seeding the file then would have tripped the lint's
   own check 4 (confirmed empirically before deciding this). It has since been seeded, by CLOUD-02, with
   exactly one entry (`sts assume-role`) once `modules/cloud/aws/regions.sh`'s `cloud_assume_role`

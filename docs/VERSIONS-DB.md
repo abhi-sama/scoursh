@@ -162,6 +162,8 @@ Never an error, always a recorded reduction (`docs/DESIGN.md` §15):
 | file present with `banner` rows older than `advisory-max-age-days` | the out-of-date check still runs, and `coverage_reduction reason=advisory_data_stale` records the age. This never changes the exit code. |
 | a discovered product with no row of any version | counted into one `coverage_reduction reason=versions_db_product_unknown` roll-up, never one record per product. |
 
-`SCOURSH_DAST_VERSIONS_DB` overrides the path, which is how the test suite points at
+`SCOURSH_VERSIONS_DB` overrides the path for both the banner reader and the
+vendor writer. `SCOURSH_DAST_VERSIONS_DB` and `SCOURSH_SCA_VERSIONS_DB` remain
+accepted compatibility aliases; the test suite uses them to point at
 `tests/fixtures/dast/versions.db` instead of the shipped file.
 It is a test seam, not a supported way to run a scan against someone else's database.

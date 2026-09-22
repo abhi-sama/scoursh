@@ -31,7 +31,7 @@ source "$ROOT/tests/lib/assert.sh"
 W=$SCOURSH_SCRATCH/aws-lint
 mkdir -p "$W"
 
-# ISOLATED from the real, committed tests/aws-readonly-allow.txt, always -
+# ISOLATED from the real, committed data/aws-readonly-allow.txt, always -
 # every case below plants a fixture tree that carries none of that file's own
 # entries, and check 4 fails on any entry the SCANNED tree does not call.
 # Before docs/STEP6-CLOUD-PLAN.md P20 seeded that file, it was simply absent
@@ -49,7 +49,7 @@ lint() {
 
 # check 4's allow-list tests use SCOURSH_AWS_LINT_ALLOWFILE (added alongside
 # this suite) so they never write to the real, committed
-# tests/aws-readonly-allow.txt - which docs/STEP6-CLOUD-PLAN.md P20 has since
+# data/aws-readonly-allow.txt - which docs/STEP6-CLOUD-PLAN.md P20 has since
 # seeded with exactly one entry, `sts assume-role` (docs/FOUNDATION.md tension
 # 23: "seeded at §13 step 6").  Every case in this file still runs against an
 # isolated fixture allowlist, never the real one, so a later addition to the
