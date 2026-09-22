@@ -3293,6 +3293,20 @@ scan_main() {
       ;;
   esac
 
+  # A correlated composite is evaluated by module finishers as findings arrive,
+  # but §9.2.2's *uncorrelatable* outcome can only be stated once every module
+  # selected for this command has had the chance to contribute.  Recording it
+  # here prevents an `all` run from leaving a false coverage gap behind after a
+  # later module supplies the matching value.  Re-render so every selected
+  # report format receives this final limitation, not only run.json below.
+  case $SCAN_COMMAND in
+    diff | report) ;;
+    *)
+      derive_record_uncorrelated_gaps "$SCOURSH_RUN_DIR"
+      report_all "$SCOURSH_RUN_DIR"
+      ;;
+  esac
+
   # SCOURSH_SELECTED_CHECKS: LF-joined ids every _scan_apply_profile_filter
   # call above added; export unconditionally (possibly empty) so a findings
   # pipeline downstream never has to distinguish "the filter chain ran and

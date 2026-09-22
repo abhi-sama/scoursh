@@ -1500,8 +1500,10 @@ A schema that needs "unset" uses the literal token `none` (§5.3).
 
 ## 13. Linter checks
 
-`tests/lint-rules.sh` implements every check below and exits non-zero if any error fires.
-Warnings are reported but do not fail the linter; they are shown only when `SCOURSH_SHOW_RULE_WARNINGS=true`.
+`tests/lint-rules.sh` implements the checks below except the explicitly marked **reserved**
+codes. It exits non-zero if an implemented error fires. There is no `--strict` mode in
+format version 1: warnings never fail the linter and are shown only when
+`SCOURSH_SHOW_RULE_WARNINGS=true`.
 
 ### Syntax (from §3 to §7)
 
@@ -1542,7 +1544,7 @@ Warnings are reported but do not fail the linter; they are shown only when `SCOU
 | E045 | error | `format-version` present and not `1` |
 | E070 | error | Record file matches no row of the §9 path table |
 | E071 | error | Single-record config file has the wrong `id` literal, or more than one record (§9) |
-| E072 | error | §9.5 `script` names a path that does not exist |
+| E072 | reserved | §9.5 `script` names a path that does not exist (not currently emitted) |
 | E073 | error | `config/auth.conf` permissions are not `600` |
 | E074 | error | §9.6.2 record is missing a key its `mode` requires |
 | E075 | error | Two `data/severity-rubric.conf` records share the same (`fact`, `equals`) pair |
@@ -1560,7 +1562,7 @@ Warnings are reported but do not fail the linter; they are shown only when `SCOU
 | E040 | error | `dialect: ere` value uses a construct outside the §8.2 subset |
 | E041 | error | Nested unbounded quantification (catastrophic-backtracking shape) |
 | E046 | error | Value does not compile under its declared dialect (verified by invoking the engine on `/dev/null`) |
-| W047 | warning | `dialect: pcre` used where the §8.2 subset would suffice (no PCRE-only construct present) |
+| W047 | reserved | `dialect: pcre` used where the §8.2 subset would suffice (not currently emitted) |
 | E042 | error | `files` / `exclude-files` glob uses `\` or `{}` |
 
 ### Directive (from §10)
@@ -1584,8 +1586,8 @@ Warnings are reported but do not fail the linter; they are shown only when `SCOU
 
 | Code | Severity | Check |
 |---|---|---|
-| E060 | error | A rule has no true-positive fixture under `tests/fixtures/` |
-| W061 | warning | A rule fires on the clean fixture (false-positive guard) |
+| E060 | reserved | A rule has no true-positive fixture under `tests/fixtures/` (not currently emitted) |
+| W061 | reserved | A rule fires on the clean fixture (not currently emitted) |
 | E062 | error | `rules/RETIRED.txt` contains an id that is still defined |
 
 Every diagnostic is printed as `path:line:col: CODE record-id message` so it is greppable and so an
