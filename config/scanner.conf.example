@@ -140,6 +140,7 @@ history-max-commits: 5000
 lock-stale-seconds: 30
 mutex-timeout-seconds: 120
 tls-expiry-warn-days: 30
+advisory-max-age-days: 30
 notes: scratch-dir is best pointed at a tmpfs. Overwrite-based erasure is not
   effective on APFS, journalled ext4, or any SSD with wear levelling, so a
   memory-backed scratch directory is the real control for the raw matched lines

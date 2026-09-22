@@ -4246,6 +4246,23 @@ SemVer 2.0.0 reference), and `tests/suites/sca.sh` / `tests/suites/vendor-engine
 npm-range lookup and importer end to end, the summary side table's round trip through the finding-decode
 path, and every non-npm ecosystem proven unaffected).
 
+**AMENDMENT (captain-approved namespace split, 2026-09-21).** The earlier "same shape and same rule"
+sentence caused the build to write every SCA and image OS-package row into both
+`data/advisories.db` and `data/versions.db`, making two near-identical roughly-492-MB files. That is
+not useful redundancy: SCA and image consumers read `advisories.db`; DAST and network banner consumers
+read only the literal `banner` namespace from `versions.db`. The build therefore writes SCA and image
+namespaces, and their summaries, only to `advisories.db` / `advisory-summaries.db`; `versions.db` /
+`version-summaries.db` contain banner data only. A SCA/image refresh prunes legacy non-banner rows from
+an existing `versions.db`. Both primary files remain plain, `LC_ALL=C`-sorted TSV so
+`db_lookup_exact` keeps its `look` binary-search contract; neither is compressed at scan time.
+
+**AMENDMENT (advisory freshness, 2026-09-21).** Generated advisory files carry a `# generated:` UTC
+stamp. SCA, image OS-package, and banner consumers compare it with the resolved
+`advisory-max-age-days` scanner setting (default 30; `SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS` is the
+ordinary environment override). Data older than that limit records a `coverage_reduction` with the
+stamp and age; it does not alter findings or exit status. An absent required SCA/image database remains
+the existing exit-4 condition, while an absent banner namespace remains its existing declared skip.
+
 ## Tension 26 - one record format for human-authored config
 
 **The tension.**

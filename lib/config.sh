@@ -204,6 +204,7 @@ _scanner_default() {
     state-retain-runs) printf '%s' 30 ;;
     history-window-days) printf '%s' 365 ;;
     history-max-commits) printf '%s' 5000 ;;
+    advisory-max-age-days) printf '%s' 30 ;;
     lock-stale-seconds) printf '%s' 30 ;;
     mutex-timeout-seconds) printf '%s' 120 ;;
     *) return 1 ;;
@@ -244,7 +245,7 @@ _scanner_validate_value() {
       | circuit-breaker-5xx-failures \
       | max-matches-per-file | evidence-max-bytes | state-retain-runs \
       | history-window-days | history-max-commits | lock-stale-seconds \
-      | mutex-timeout-seconds)
+      | mutex-timeout-seconds | advisory-max-age-days)
       [[ $val =~ ^[1-9][0-9]*$ ]] ;;
     # Zero IS valid here, unlike every key above: `tls-expiry-warn-days: 0`
     # means "warn about nothing that has not already expired", which is a

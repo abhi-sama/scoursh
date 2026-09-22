@@ -381,6 +381,20 @@ t_case 'checks_run records what actually executed'
 assert_contains "$(run_facts checks_run)" 'DAST-BANNER-OUTDATED_COMPONENT-01' 'the out-of-date check ran'
 assert_contains "$(run_facts checks_run)" 'DAST-BANNER-VERSION_DISCLOSURE-01' 'and so did version disclosure'
 
+t_case 'stale banner data records coverage reduction without suppressing the lookup'
+_fresh_run
+SCOURSH_DAST_VERSIONS_DB=$FIXDB
+SCOURSH_ADVISORY_NOW_EPOCH=2000000000
+SRV_CASE=basic
+_phase_env "$INV"
+# shellcheck source=/dev/null  # cut the edge - see the header note
+source "$ROOT/modules/dast/passive/banner.sh"
+assert_contains "$(run_facts coverage_reduction)" 'reason=advisory_data_stale target=banner-fixture' \
+  'the stale generated stamp reaches the DAST coverage report'
+assert_contains "$(_shard_text)" 'DAST-BANNER-OUTDATED_COMPONENT-01' \
+  'the stale list is still used for matching: staleness does not convert it into an absent-data skip'
+unset SCOURSH_ADVISORY_NOW_EPOCH
+
 t_case 'no banner rows in the list: that ONE sub-check degrades, the others run'
 _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$ONLYSCA

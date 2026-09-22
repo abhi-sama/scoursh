@@ -930,6 +930,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `state-retain-runs` | single | no | Positive integer | `30` |
 | `history-window-days` | single | no | Positive integer | `365` |
 | `history-max-commits` | single | no | Positive integer | `5000` |
+| `advisory-max-age-days` | single | no | Positive integer. Maximum age of a `# generated:` advisory-data stamp before consumers record a coverage reduction; does not change the exit code. | `30` |
 | `lock-stale-seconds` | single | no | Positive integer | `30` |
 | `mutex-timeout-seconds` | single | no | Positive integer | `120` |
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
@@ -961,6 +962,10 @@ SEPARATE counter rather than toward `circuit-breaker-failures`, which after this
 transport-level failures (no usable response at all).  See `lib/http.sh`'s
 `_http_breaker_record_failure` for the full reasoning behind the split.  Additive and optional, so it
 too trips §14 item 2 alone with no `format_version` bump.
+
+`advisory-max-age-days` is likewise additive and optional. It is resolved through the ordinary
+`SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS` environment override and is consumed by SCA, image package, and
+banner-version matching; it trips §14 item 2 alone with no `format_version` bump.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.

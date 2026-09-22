@@ -620,6 +620,19 @@ banner_db_state() {
   return 0
 }
 
+# `banner_db_freshness` shares core.sh's portable generated-stamp parser with
+# SCA and image matching.  Callers own their coverage wording because DAST and
+# network have distinct check ids, but they all receive the same state.
+banner_db_freshness() {
+  local max_age
+  core_capture max_age config_scanner_value advisory-max-age-days
+  advisory_data_freshness "$(banner_db_path)" "$max_age"
+  _BANNER_DB_FRESHNESS=$ADVISORY_DATA_FRESHNESS
+  _BANNER_DB_AGE_DAYS=$ADVISORY_DATA_AGE_DAYS
+  _BANNER_DB_MAX_AGE_DAYS=$max_age
+  return 0
+}
+
 # `banner_db_known PRODUCT` - 0 when the vendored list carries ANY row for
 # PRODUCT, whatever the version.
 #

@@ -76,6 +76,8 @@ assert_eq 4 "$(config_scanner_value jobs)" 'jobs falls all the way to its §9.6.
 assert_eq none "$(config_scanner_value fail-on)" 'fail-on defaults to none'
 assert_eq low "$(config_scanner_value min-confidence)" 'min-confidence defaults to low'
 assert_eq true "$(config_scanner_value redact-secrets)" 'redact-secrets defaults to true'
+assert_eq 30 "$(config_scanner_value advisory-max-age-days)" \
+  'advisory-max-age-days defaults to 30 days when scanner.conf is absent'
 assert_eq 'json
 sarif
 html
@@ -111,6 +113,9 @@ assert_eq 16 "$val" \
 val=$(export SCOURSH_CONFIG_FORMATS=sarif,md; config_scanner_list formats)
 assert_eq 'sarif
 md' "$val" 'SCOURSH_CONFIG_FORMATS overrides the file''s formats: json'
+val=$(export SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS=45; config_scanner_value advisory-max-age-days)
+assert_eq 45 "$val" \
+  'SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS overrides the 30-day default through the ordinary scanner.conf environment convention'
 # An explicitly EMPTY env var is "not given" and falls through to the file,
 # not to the default - fails under "any exported var counts as given".
 val=$(export SCOURSH_CONFIG_JOBS=''; config_scanner_value jobs)
@@ -152,6 +157,14 @@ _bad_env_jobs() {
 }
 assert_status 2 'SCOURSH_CONFIG_JOBS=abc dies exit 2 (usage error) - fails under "an invalid env value silently uses the file value (8) instead"' \
   _bad_env_jobs
+
+_bad_env_advisory_age() {
+  config_scanner_load "$W/scanner.conf"
+  export SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS=0
+  config_scanner_value advisory-max-age-days
+}
+assert_status 2 'SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS=0 dies exit 2 rather than permitting a non-positive freshness limit' \
+  _bad_env_advisory_age
 
 t_case 'a malformed CLI value dies 2 and does not fall back to env, file, or default'
 _bad_cli_jobs() {

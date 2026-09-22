@@ -357,6 +357,13 @@ _sca_run_module() {
       input=1
     fi
   else
+    local _sca_db _sca_max_age
+    _sca_db=$(sca_advisories_db_path)
+    core_capture _sca_max_age config_scanner_value advisory-max-age-days
+    advisory_data_freshness "$_sca_db" "$_sca_max_age"
+    if [[ $ADVISORY_DATA_FRESHNESS == stale ]]; then
+      run_record coverage_reduction "module=sca reason=advisory_data_stale database=$_sca_db generated=$ADVISORY_DATA_GENERATED age_days=$ADVISORY_DATA_AGE_DAYS max_age_days=$_sca_max_age - dependency advisory matching used data older than the configured freshness limit; findings and exit status are unchanged. Refresh it on a networked box with tools/vendor-engines.sh advisories bulk --accept-unverified --all."
+    fi
     # sca_rollup_begin/sca_rollup_flush (modules/sca/engine.sh section 8a)
     # bracket the four walks so their unknown-version counts land in ONE
     # SCA-COV-UNKNOWN_VERSION-01 finding rather than one per walk.  Four

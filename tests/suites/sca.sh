@@ -1667,5 +1667,22 @@ assert_eq 1 "$SCAPAR_G1" \
 assert_eq 1 "$SCAPAR_G4" \
   'and once at --jobs 4 - FAILS if it is left to sca_go_scan_tree under a partition, which would state it once per worker and read as four separate limitations'
 
+t_case 'stale advisory data records coverage reduction without changing the SCA exit code'
+STALE_DB=$W/stale-advisories.db
+{
+  printf '# generated: 2020-01-01T00:00:00Z\n'
+  cat "$DB"
+} >"$STALE_DB"
+STALE_RUNDIR=$W/run-stale-advisories
+rm -rf "$STALE_RUNDIR"
+_RC=0
+env SCOURSH_SCA_ADVISORIES_DB="$STALE_DB" SCOURSH_ADVISORY_NOW_EPOCH=2000000000 \
+  bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --out "$STALE_RUNDIR" >/dev/null 2>&1 || _RC=$?
+assert_eq 0 "$_RC" 'a stale but readable database still performs matching and exits by the ordinary gate result'
+assert_contains "$(cat "$STALE_RUNDIR/run.json")" 'reason=advisory_data_stale database=' \
+  'run.json names the stale-data coverage reduction rather than treating old advisories as a clean result'
+assert_contains "$(cat "$STALE_RUNDIR/run.json")" 'max_age_days=30' \
+  'the documented default freshness limit is the value used when no config or environment override is set'
+
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"
