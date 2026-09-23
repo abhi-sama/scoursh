@@ -758,7 +758,9 @@ _owasp_filtered_reasons() {
   list=$(
     for k in "${!_RPTOW_FILTERED_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do
@@ -990,7 +992,9 @@ _cis_not_applicable_reasons() {
   list=$(
     for k in "${!_RPTCIS_NAPP_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do
@@ -1005,7 +1009,9 @@ _cis_filtered_reasons() {
   list=$(
     for k in "${!_RPTCIS_FILTERED_SET[@]}"; do
       [[ -n $k ]] || continue
-      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+      if [[ $k == "$id|"* ]]; then
+        printf '%s\n' "${k#"$id|"}"
+      fi
     done | LC_ALL=C sort -u
   )
   while IFS= read -r reason; do
@@ -1331,8 +1337,8 @@ _report_authorization_json() {
 # object.  scan.sh's `_scan_record_config` is the writer; this is the only
 # reader, so the two can never drift on which keys exist.
 readonly -a _REPORT_CONFIG_KEYS=(
-  circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
-  fail-on formats history-max-commits history-window-days http-timeout jobs
+  circuit-breaker-5xx-failures circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
+  fail-on formats history-max-commits history-window-days http-timeout jobs advisory-max-age-days
   lock-stale-seconds max-matches-per-file max-redirects min-confidence
   mutex-timeout-seconds paranoid-allow recommended-header redact-secrets
   request-budget requests-per-second scratch-dir state-retain-runs
@@ -3972,7 +3978,7 @@ report_locations() {
     finding_decode "$line"
     local mod=${_DF[module]:-} check=${_DF[check_id]:-} write=0 fallback=0
     case $mod in
-      dast | cloud | posture | derived | image) write=1 ;;
+      dast | cloud | posture | derived | image | net) write=1 ;;
       sast)
         if [[ $check == SAST-HIST-* ]] \
           && ! _locations_history_resolves "${_DF[loc_path]:-}"; then
@@ -3988,19 +3994,36 @@ report_locations() {
       fi
       local n=$(( ${_loc_n[$mod]:-0} + 1 ))
       _loc_n[$mod]=$n
+      # Net findings deliberately have no stored logical identity or loc_line:
+      # their JSON location is the frozen fingerprint tuple (target, host,
+      # port, transport).  SARIF derives this display-only listener identity
+      # below, without changing the persisted finding shape or fingerprint.
+      local location_fqn=${_DF[logical_fqn]:-}
+      if [[ $mod == net && -z $location_fqn ]]; then
+        location_fqn=$(_report_net_listener_fqn)
+      fi
       if (( fallback )); then
         printf '%s (blob=%s commit=%s)\n' \
-          "${_DF[logical_fqn]:-}" "${_DF[loc_blob_sha]:-}" "${_DF[commit]:-}" \
+          "$location_fqn" "${_DF[loc_blob_sha]:-}" "${_DF[commit]:-}" \
           >>"$rundir/locations/$mod.txt"
       else
-        printf '%s\n' "${_DF[logical_fqn]:-}" >>"$rundir/locations/$mod.txt"
+        printf '%s\n' "$location_fqn" >>"$rundir/locations/$mod.txt"
       fi
-      _DF[loc_line]=$n
+      [[ $mod == net ]] || _DF[loc_line]=$n
     fi
     _reencode_decoded >>"$tmp"
     printf '\n' >>"$tmp"
   done <"$rundir/findings.fields"
   mv "$tmp" "$rundir/findings.fields"
+}
+
+# A net finding's persisted location is its frozen fingerprint tuple, so do
+# not save a logical field merely to render it in SARIF.  This helper is used
+# only for the generated SARIF location artifact and logical location.
+_report_net_listener_fqn() {
+  printf '%s:%s:%s/%s' \
+    "${_DF[loc_target]:-}" "${_DF[loc_host]:-}" \
+    "${_DF[loc_port]:-}" "${_DF[loc_transport]:-}"
 }
 
 # Case 3's filesystem test: true only when `loc_path` still resolves to a
@@ -4355,7 +4378,7 @@ _sarif_run_incomplete() {
 # fabrication-avoiding default.
 declare -g _SARIF_LOC_URI='' _SARIF_LOC_LINE=''
 _sarif_result_location() {
-  local module=${_DF[module]:-} check_id=${_DF[check_id]:-} profile
+  local module=${_DF[module]:-} check_id=${_DF[check_id]:-} profile net_line=${1:-}
   _SARIF_LOC_URI=''
   _SARIF_LOC_LINE=''
   profile=$(_fp_profile_for "$module" "$check_id") || profile=''
@@ -4374,6 +4397,10 @@ _sarif_result_location() {
     dast | cloud | posture | derived | image)
       _SARIF_LOC_URI="locations/$module.txt"
       _SARIF_LOC_LINE=${_DF[loc_line]:-}
+      ;;
+    net)
+      _SARIF_LOC_URI="locations/$module.txt"
+      _SARIF_LOC_LINE=$net_line
       ;;
     *)
       # The path profile (sast native/adapters, iac, containers), and the
@@ -4432,11 +4459,11 @@ _sarif_maybe_record_sca_severity_gap() {
 # _DF to already hold a decoded finding (finding_decode); does not adopt it
 # into _F, since nothing here needs the current-finding API.
 _sarif_print_one_result() {
-  local rundir=$1
+  local rundir=$1 net_line=${2:-}
   local cid=${_DF[check_id]:-} level
   level=$(_sarif_level_for "${_DF[severity]:-}")
 
-  _sarif_result_location
+  _sarif_result_location "$net_line"
   _sarif_message_for
 
   printf '{'
@@ -4451,8 +4478,13 @@ _sarif_print_one_result() {
     printf '}'
   fi
   printf '}'
+  local logical_kind=${_DF[logical_kind]:-} logical_fqn=${_DF[logical_fqn]:-}
+  if [[ ${_DF[module]:-} == net && -z $logical_kind ]]; then
+    logical_kind=listener
+    logical_fqn=$(_report_net_listener_fqn)
+  fi
   printf ',"logicalLocations":[{"kind":%s,"fullyQualifiedName":%s}]' \
-    "$(json_string "${_DF[logical_kind]:-}")" "$(json_string "${_DF[logical_fqn]:-}")"
+    "$(json_string "$logical_kind")" "$(json_string "$logical_fqn")"
   printf '}]'
   printf ',"partialFingerprints":{"scourshFingerprint/v1":%s}' "$(json_string "${_DF[fingerprint]:-}")"
   printf ',"properties":{'
@@ -4487,15 +4519,18 @@ _sarif_print_one_result() {
 # fixture produce a byte-identical results[] array, matching every other
 # emitter in this file.
 _sarif_print_results() {
-  local rundir=$1 line first=1
+  local rundir=$1 line first=1 net_line=0
   printf '['
   if [[ -s $rundir/findings.fields ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue
       finding_decode "$line"
+      if [[ ${_DF[module]:-} == net ]]; then
+        net_line=$((net_line + 1))
+      fi
       (( first )) || printf ','
       first=0
-      _sarif_print_one_result "$rundir"
+      _sarif_print_one_result "$rundir" "$net_line"
     done <"$rundir/findings.fields"
   fi
   printf ']'

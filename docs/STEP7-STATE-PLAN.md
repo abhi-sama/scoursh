@@ -1,5 +1,8 @@
 # Step 7 (diff / state) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This historical plan is complete (STATE-01..08). Current state,
+> baseline, and diff behavior lives in `lib/state.sh`, `lib/diff.sh`, and [`docs/USAGE.md`](USAGE.md).
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that step 7 - `docs/DESIGN.md` §13's "**Diff/state** (§9a): fingerprint history + `diff` command + 'fail on new only' mode" - can be picked up as a clean sequence of small, independently reviewable tickets the moment its blockers clear, instead of being re-derived from `docs/DESIGN.md` §9a and four `docs/FOUNDATION.md` tensions from scratch by whoever picks it up first, mirroring `docs/STEP5-DAST-PLAN.md` and `docs/STEP6-CLOUD-PLAN.md` for their steps.

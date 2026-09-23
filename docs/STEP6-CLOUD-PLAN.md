@@ -1,5 +1,9 @@
 # Step 6 (Cloud / AWS) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This is a historical landing plan. CLOUD-01..34 and POSTURE-01
+> have landed: current cloud behavior is implemented under `modules/cloud/aws/` and documented in
+> [`docs/USAGE.md`](USAGE.md). POSTURE-02..04 remain unbuilt.
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that step 6 - `docs/DESIGN.md` §13's "`regions.sh` iteration -> live read-only checks
@@ -41,12 +45,12 @@ build-order sections named in "Doc-update process" below, in the same change.
 (commit `b25cd26`), and already implements all four `docs/FOUNDATION.md` tension 23 checks: every bare
 `aws` invocation outside `lib/awscli.sh` is a failure; every `aws_ro` call's operation argument is
 checked against the frozen read-only prefix regex; a variable operation is permitted only from a
-`readonly` array of literals in the same file; and an `tests/aws-readonly-allow.txt` entry that no
+`readonly` array of literals in the same file; and a `data/aws-readonly-allow.txt` entry that no
 longer appears in the code is a failure.
 Its header dated from §13 step 1 and used to say that `lib/awscli.sh` and the live scripts both arrived
 at the start of §13 step 6, so nothing existed for the lint to examine yet.
 Only half of that was still true, and the header has since been corrected in the file itself.
-`tests/aws-readonly-allow.txt` itself does not exist yet either; the lint prints a note that it is
+`data/aws-readonly-allow.txt` itself does not exist yet either; the lint prints a note that it is
 "seeded at §13 step 6".
 
 **`lib/awscli.sh` has since landed, ahead of step 6.**
@@ -60,13 +64,13 @@ an optional scan-root and allow-file override that only that suite uses.
 The lint nevertheless still passes over an empty set of call sites, because it skips `lib/awscli.sh` by
 name (the one file where a bare `aws` invocation is legitimate) and no `aws/live/*.sh` script exists: it
 is the live scripts that are missing, not the chokepoint.
-`tests/aws-readonly-allow.txt` really is still absent, and deliberately so - seeding it before any code
+`data/aws-readonly-allow.txt` really is still absent, and deliberately so - seeding it before any code
 calls `sts assume-role` would trip the lint's own check 4.
 
 So the "standalone ticket for the read-only-verb CI lint" this plan's acceptance criteria require
 (CLOUD-03 below) is **not** "write the lint" - that already happened - and it is no longer "land the
 `aws_ro` chokepoint for the lint to have something real to examine" either, since that has happened too.
-What is left of it is: seed `tests/aws-readonly-allow.txt` with the two entries tension 23 names
+What is left of it is: seed `data/aws-readonly-allow.txt` with the two entries tension 23 names
 (`sts assume-role`, `sts get-caller-identity`), add the negative-fixture test tension 23's own
 "Consequence for the build" paragraph calls for - a script with a mutating `aws_ro` call, asserted to
 fail **both** the lint and `aws_ro`'s runtime guard (exit `3`) - and re-verify checks 1 to 3 against the

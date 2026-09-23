@@ -550,33 +550,32 @@ unset _guide_mod _guide_want _guide_got
 # not-built explanation" branch (`_guide_g1_explain_not_built`, still present
 # in scan.sh for the day a module regresses or a new one is added ahead of
 # its own run.sh) therefore has NO module left to exercise it through this
-# menu - it is unreachable on this codebase's own real tree today, and this
-# case is re-expressed around cloud's real, current behaviour rather than
-# left pinning a defect that no longer exists.  Coverage for the loop-back
+# menu - it is unreachable on this codebase's own real tree today. This case
+# now pins cloud's real guided-mode refusal instead. Coverage for the loop-back
 # MECHANISM itself (re-asking and returning to G1) still lives in the
 # bad-`--path` case further below, which reaches it via a bad answer rather
 # than an unbuilt module.
-t_case "picking item 5 (cloud, now built) proceeds past G1 with its own partial-guided-setup note, never the not-built loop-back - the menu's fixed 7 items never reorder"
+t_case "picking item 5 (cloud, now built) refuses guided setup before a scan because it cannot safely compose --live"
 GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
 rm -rf "$GUIDE_CLOUD_LOOP_DIR"
 mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
 cd "$GUIDE_CLOUD_LOOP_DIR"
-assert_status 0 \
-  "item 5 (cloud) proceeds past G1 into G8 (no local-surface G2/G3 questions apply to cloud); G8 '1' (no CI gate) then G9 '3' (Cancel) exits 0 with nothing scanned - fails if the menu numbering shifted cloud out of its fixed slot, or if picking it still bounced back to G1" \
-  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n'
+assert_status 2 \
+  "item 5 (cloud) refuses before G8/G9 so guided mode cannot silently omit --live - fails if it still proceeds to a no-op cloud run" \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n'
 cd "$ROOT"
 assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'cancelling from the guided flow never creates a run directory'
 
 GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
 cd "$GUIDE_CLOUD_LOOP_DIR"
-( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
 cd "$ROOT"
 assert_not_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version' \
   'cloud is built now, so the not-built loop-back explanation is never shown - fails if picking cloud still looped back to G1'
-assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'guided setup for this is partial - see below' \
-  "cloud's menu row still names its OWN, real limitation (guided setup beyond scan type is partial) - fails under a status word that cannot distinguish this from an ordinary refusal"
-assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'Cancelled.  Nothing was scanned.' \
-  'Cancel at G9, reached only because cloud proceeded past G1, prints the ordinary cancellation message, never a guided-specific one'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" '--guided cloud cannot safely configure an AWS account scan yet' \
+  'the refusal explains that guided cloud cannot silently omit --live'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" "scan.sh cloud --live" \
+  'the refusal gives the safe direct invocation'
 
 t_case 'sca with no advisories.db explains and still proceeds - the operator may proceed, per this ticket'"'"'s own G1 wording'
 GUIDE_SCA_DIR=$W/guide-sca-dir
@@ -1949,6 +1948,43 @@ fi
 t_case '--help exits 0 and prints the documented grammar'
 assert_status 0 './scan.sh --help exits 0' _bin_run --help
 assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text is printed'
+
+t_case '--version and paths expose the installed-entry-point diagnostics without creating a run'
+assert_status 0 './scan.sh --version exits 0' _bin_run --version
+assert_contains "$(cat "$W/bin.out")" 'scoursh 0.1.0-dev' '--version reads VERSION through core.sh'
+assert_status 0 './scan.sh paths exits 0' _bin_run paths
+assert_contains "$(cat "$W/bin.out")" "install: $ROOT" 'paths prints the physical install root'
+assert_contains "$(cat "$W/bin.out")" "config: $ROOT/config" 'paths prints the config directory'
+assert_contains "$(cat "$W/bin.out")" "data: $ROOT/data" 'paths prints the data directory'
+assert_contains "$(cat "$W/bin.out")" "state: $ROOT/state" 'paths prints the state directory'
+assert_contains "$(cat "$W/bin.out")" "reports: $ROOT/reports" 'paths prints the reports directory'
+
+t_case 'a two-level relative symlink chain resolves scan.sh before sourcing libraries'
+LINKROOT=$W/symlink-chain
+rm -rf "$LINKROOT"
+mkdir -p "$LINKROOT/bin1" "$LINKROOT/bin2"
+ln -s "$ROOT" "$LINKROOT/pkg"
+ln -s ../pkg/scan.sh "$LINKROOT/bin2/scoursh"
+ln -s ../bin2/scoursh "$LINKROOT/bin1/scoursh"
+LINK_OUT=$W/symlink-version.out
+LINK_RC=0
+bash "$LINKROOT/bin1/scoursh" --version >"$LINK_OUT" 2>&1 || LINK_RC=$?
+assert_eq 0 "$LINK_RC" 'a two-level relative symlink chain reaches the real scan.sh and exits 0'
+assert_contains "$(cat "$LINK_OUT")" 'scoursh 0.1.0-dev' 'the symlinked entry point loaded lib/core.sh from the physical install root'
+
+t_case 'output and state write failures are preflight input failures, never a findings gate'
+OUT_AS_FILE=$W/output-is-file
+: >"$OUT_AS_FILE"
+SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER assert_status 4 \
+  'an output path that is a file is refused before dispatch' \
+  _run_main sast --path . --out "$OUT_AS_FILE"
+ROOT_STATE_BLOCKED=$W/root-state-blocked
+mkdir -p "$ROOT_STATE_BLOCKED/config"
+printf 'id: scanner\njobs: 2\n' >"$ROOT_STATE_BLOCKED/config/scanner.conf"
+: >"$ROOT_STATE_BLOCKED/state"
+SCOURSH_INSTALL_ROOT=$ROOT_STATE_BLOCKED assert_status 4 \
+  'a state path that is a file is refused before the SAST walk begins' \
+  _run_main sast --path . --out "$W/output-state-blocked"
 
 t_case 'an unknown command exits 2 when run as a real script, matching the sourced-function behaviour'
 assert_status 2 './scan.sh bogus exits 2' _bin_run bogus

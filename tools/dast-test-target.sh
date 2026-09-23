@@ -110,7 +110,7 @@ dtt_start() {
   fi
 
   log_info "dast-test-target: starting $DTT_IMAGE on $DTT_URL"
-  docker run -d --name "$DTT_CONTAINER" -p "${DTT_PORT}:3000" "$DTT_IMAGE" >/dev/null
+  docker run -d --name "$DTT_CONTAINER" -p "127.0.0.1:${DTT_PORT}:3000" "$DTT_IMAGE" >/dev/null
 
   docker cp "$DTT_CLIENT_JS" "$DTT_CONTAINER:/tmp/scoursh-http-client.js" >/dev/null
 

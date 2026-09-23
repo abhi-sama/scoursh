@@ -226,8 +226,12 @@ sast_rule_matches_file() {
 # operation, not a regex match - so it carries none of the "which engine"
 # risk `pattern`/`context-*` values do; the actual match is scan_match_stdin.
 _sast_context_matches() {
-  local pattern=$1 text=$2 rc=0
-  printf '%s\n' "$text" | scan_match_stdin "$pattern" >/dev/null || rc=$?
+  local dialect=$1 pattern=$2 text=$3 rc=0
+  if [[ $dialect == pcre ]]; then
+    printf '%s\n' "$text" | scan_match_stdin_pcre "$pattern" >/dev/null || rc=$?
+  else
+    printf '%s\n' "$text" | scan_match_stdin "$pattern" >/dev/null || rc=$?
+  fi
   (( rc == 0 ))
 }
 
@@ -253,17 +257,18 @@ sast_context_ok() {
   local window_text
   window_text=$(sed -n "${lo},${hi}p" "$file")
 
-  local p
+  local dialect p
+  dialect=$(records_field_or "$set" "$idx" dialect ere)
   if records_has "$set" "$idx" context-require; then
     while IFS= read -r p; do
       [[ -n $p ]] || continue
-      _sast_context_matches "$p" "$window_text" || return 1
+      _sast_context_matches "$dialect" "$p" "$window_text" || return 1
     done <<<"$(records_list "$set" "$idx" context-require)"
   fi
   if records_has "$set" "$idx" context-deny; then
     while IFS= read -r p; do
       [[ -n $p ]] || continue
-      _sast_context_matches "$p" "$window_text" && return 1
+      _sast_context_matches "$dialect" "$p" "$window_text" && return 1
     done <<<"$(records_list "$set" "$idx" context-deny)"
   fi
   return 0
@@ -300,9 +305,15 @@ sast_context_ok() {
 # tests/suites/scan.sh's `scan.sh all` case, which fails under the bare
 # `declare -A` reading.
 declare -gA _SAST_CHECK_LOC=()
+# IDs filtered under §8.3 for this registry invocation.  The same set is read
+# by the coverage and checks_run writers so an unavailable PCRE engine can
+# never be mistaken for a clean, covered execution.
+declare -gA _SAST_PCRE_SKIPPED=()
+declare -ga SAST_PCRE_AVAILABLE_IDS=()
 
 sast_index_checks() {
   _SAST_CHECK_LOC=()
+  _SAST_PCRE_SKIPPED=()
   local set n i id
   for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
     n=$(records_count "$set")
@@ -311,6 +322,31 @@ sast_index_checks() {
       _SAST_CHECK_LOC[$id]="$set $i"
     done
   done
+}
+
+# `sast_filter_pcre_ids MODULE ID...` resolves the one runtime capability that
+# §8.3 permits a record to depend on.  It SETS an array instead of printing so
+# callers never put die-capable capability probing inside a command
+# substitution.  A skipped record is removed before the walk, checks_run, and
+# state coverage; its explicit run.json entry is the only honest outcome.
+sast_filter_pcre_ids() {
+  local module=$1 id loc set idx dialect
+  shift
+  SAST_PCRE_AVAILABLE_IDS=()
+  for id in "$@"; do
+    loc=${_SAST_CHECK_LOC[$id]:-}
+    [[ -n $loc ]] || continue
+    read -r set idx <<<"$loc"
+    dialect=$(records_field_or "$set" "$idx" dialect ere)
+    if [[ $dialect == pcre ]] && ! core_has_pcre; then
+      _SAST_PCRE_SKIPPED[$id]=1
+      run_record skipped_checks "check=$id reason=pcre-unavailable"
+      log_warn "$module: skipped $id because no PCRE2-capable pattern engine is available"
+      continue
+    fi
+    SAST_PCRE_AVAILABLE_IDS+=("$id")
+  done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -358,6 +394,7 @@ sast_record_checks_run() {
   local id
   local -a not_applicable=()
   for id in "$@"; do
+    [[ -n ${_SAST_PCRE_SKIPPED[$id]:-} ]] && continue
     if (( ${_SAST_CHECK_EVAL[$id]:-0} > 0 )); then
       run_record checks_run "$id"
     else
@@ -399,6 +436,7 @@ sast_record_coverage() {
   shift
   local id loc set idx digest
   for id in "$@"; do
+    [[ -n ${_SAST_PCRE_SKIPPED[$id]:-} ]] && continue
     loc=${_SAST_CHECK_LOC[$id]:-}
     [[ -n $loc ]] || continue
     read -r set idx <<<"$loc"
@@ -432,9 +470,10 @@ _sast_check_is_sensitive() {
 # ---------------------------------------------------------------------------
 sast_scan_file() {
   local set=$1 idx=$2 relpath=$3 abspath=$4
-  local pattern id
+  local pattern id dialect
   pattern=$(records_field "$set" "$idx" pattern)
   id=$(records_id "$set" "$idx")
+  dialect=$(records_field_or "$set" "$idx" dialect ere)
 
   # `$BASHPID`, NEVER `$$`: this file is scanned by lib/parallel.sh's forked
   # workers under `--jobs N`, and inside a subshell bash keeps `$$` as the
@@ -446,7 +485,12 @@ sast_scan_file() {
   # a dead worker and an incomplete run.  `$BASHPID` is the real pid in every
   # shell including the top-level one, so the single-worker path is unchanged.
   local hits=$SCOURSH_SCRATCH/sast-hits.$BASHPID
-  if ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
+  if [[ $dialect == pcre ]]; then
+    scan_match_offsets_pcre "$hits" "$pattern" "$abspath" || {
+      rm -f "$hits"
+      return 0
+    }
+  elif ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
     rm -f "$hits"
     return 0
   fi
@@ -754,6 +798,8 @@ sast_scan_tree() {
   local root=$1
   shift
   local -a ids=("$@")
+  sast_filter_pcre_ids sast "${ids[@]+"${ids[@]}"}"
+  ids=("${SAST_PCRE_AVAILABLE_IDS[@]+"${SAST_PCRE_AVAILABLE_IDS[@]}"}")
   _sast_capture_max_matches
   # Fresh per call (this function is the whole run's one tree walk for its
   # module): a stale count from an earlier scan_main invocation in the same

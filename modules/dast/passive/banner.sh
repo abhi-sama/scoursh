@@ -201,6 +201,12 @@ _dast_banner_phase() {
         run_record coverage_reduction "module=dast reason=versions_db_no_banner_rows target=$target${_nc:+ checks=[$_nc]} - data/versions.db exists but carries no \`banner\` rows, so no discovered component version could be matched against a known-vulnerable one. This is the state of a fresh clone: the list is vendored by an operator action, never by a scan (docs/VERSIONS-DB.md). Version DISCLOSURE was still checked."
         ;;
       present)
+        banner_db_freshness
+        if [[ $_BANNER_DB_FRESHNESS == stale ]]; then
+          local _nc='DAST-BANNER-OUTDATED_COMPONENT-01'
+          declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+          run_record coverage_reduction "module=dast reason=advisory_data_stale target=$target${_nc:+ checks=[$_nc]} database=$(banner_db_path) generated=$_BANNER_DB_GENERATED age_days=$_BANNER_DB_AGE_DAYS max_age_days=$_BANNER_DB_MAX_AGE_DAYS - banner version matching used data older than the configured freshness limit; findings and exit status are unchanged. Refresh it on a networked box with tools/vendor-engines.sh advisories banner."
+        fi
         run_record notes "module=dast phase=banner target=$target versions_db=present${_BANNER_DB_GENERATED:+ generated=$_BANNER_DB_GENERATED}"
         ;;
     esac

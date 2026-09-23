@@ -1,5 +1,9 @@
 # Step 8 (`--paranoid` / netns) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This historical plan has shipped: `lib/paranoid.sh`,
+> `tools/run-in-netns.sh`, and macOS `tools/run-sandboxed.sh` provide the implemented layers. Consult
+> [`docs/USAGE.md`](USAGE.md) for current guarantees and limitations.
+
 **Step 8 is complete: both PARANOID-01 and NETNS-01 have landed.**
 `lib/paranoid.sh` implements `--paranoid` (wired into `scan.sh`'s `scan_main`) and
 `tools/run-in-netns.sh` implements the network-namespace runner; both are exercised by
@@ -34,9 +38,8 @@ grow into the other:
 - **`tools/run-in-netns.sh`** is the **guarantee**. A Linux network namespace whose only route is to the
   declared scope makes an out-of-scope connection categorically impossible rather than merely
   observable. It needs root (or `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`) to create the namespace and its
-  veth/route plumbing, and it is Linux-only with **no macOS equivalent** - neither property
-  `--paranoid` shares, now that `--paranoid` has a macOS backend.  On macOS the detector is therefore
-  the only egress control available: there is no guarantee tier behind it.
+  veth/route plumbing, and it is Linux-only. macOS has `tools/run-sandboxed.sh`: its Tier A denies all
+  network access and Tier B uses scope-conf loopback relays; a Linux container can provide Tier C parity.
 
 Because the two mechanisms have different implementers' concerns (a sampling observer with graceful
 degradation vs. a privileged, optional, Linux-only wrapper script), they are independently schedulable

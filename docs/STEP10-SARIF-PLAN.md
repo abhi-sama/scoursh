@@ -1,5 +1,10 @@
 # Step 10 (SARIF + compliance report) sub-ticket plan
 
+> **Current-status note (2026-09-21).** This historical plan is complete: SARIF and compliance reporting
+> are implemented in `lib/report.sh`. Current output behavior is documented in [`docs/USAGE.md`](USAGE.md).
+> Network SARIF locations remain a known code gap; do not infer a complete physical/logical location for
+> every network finding from the historical design sections below.
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that step 10 - `docs/DESIGN.md` §13's "SARIF + compliance-mapping report + `--fail-on` CI gate + docs/README" - can be picked up as a clean sequence of small, independently reviewable tickets, instead of being re-derived from `docs/DESIGN.md` §4, §8 and `docs/FOUNDATION.md` tension 22 from scratch by whoever picks it up first, mirroring `docs/STEP5-DAST-PLAN.md`, `docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md` for their steps.

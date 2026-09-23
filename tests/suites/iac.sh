@@ -249,6 +249,89 @@ _scan_multi_pack() {
   findings_merge "$rundir"
 }
 
+# =============================================================================
+printf -- '\n-- §8.3 PCRE degradation: skipped, never covered --\n'
+# =============================================================================
+PCRE_RULES=$W/pcre.rules
+PCRE_FIX=$W/pcre-fixture
+mkdir -p "$PCRE_FIX"
+printf 'pcre-token\n' >"$PCRE_FIX/main.tf"
+cat >"$PCRE_RULES" <<'RULEEOF'
+id: IAC-PCRE-SKIP-01
+title: PCRE capability fixture
+severity: high
+confidence: high
+cwe: none
+owasp: none
+pattern: (?=pcre-token)pcre-token
+dialect: pcre
+files: *.tf
+tags: static
+remediation: Test fixture only.
+
+id: IAC-ERE-CONTROL-01
+title: ERE capability control
+severity: high
+confidence: high
+cwe: none
+owasp: none
+pattern: pcre-token
+dialect: ere
+files: *.tf
+tags: static
+remediation: Test fixture only.
+RULEEOF
+
+t_case '§8.3: an unavailable PCRE IaC record is skipped, not covered, while ERE still runs'
+run_init "$W/pcre-run"
+SCOURSH_PATH_ROOT=$(path_root_cell "$PCRE_FIX")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$PCRE_FIX")
+SCOURSH_IAC_MAX_MATCHES_PER_FILE=200
+records_load "$PCRE_RULES" pattern-rule pcreiac >/dev/null
+CHECKS_REGISTRY_SETS=(pcreiac)
+sast_index_checks
+PCRE_IDS=(IAC-PCRE-SKIP-01 IAC-ERE-CONTROL-01)
+
+# core_has_pcre caches the capability value. Force its documented unavailable
+# state so this is deterministic on both GNU-PCRE and BSD hosts.
+_pcre_cap_was_set=false
+if [[ -n ${SCOURSH_CAP_PCRE+x} ]]; then
+  _pcre_cap_was_set=true
+  _pcre_cap_before=$SCOURSH_CAP_PCRE
+fi
+SCOURSH_CAP_PCRE=none
+iac_scan_tree "$PCRE_FIX" "${PCRE_IDS[@]}"
+findings_merge "$SCOURSH_RUN_DIR"
+sast_record_checks_run iac "${PCRE_IDS[@]}"
+
+# Stub only the state writer boundary: this proves the shared coverage caller
+# excludes the skipped id without requiring a persistent state/ fixture.
+PCRE_COVERED=''
+state_add_covered() { PCRE_COVERED+="${PCRE_COVERED:+,}$1"; }
+sast_record_coverage "$SCOURSH_PATH_ROOT" "${PCRE_IDS[@]}"
+unset -f state_add_covered
+if [[ $_pcre_cap_was_set == true ]]; then
+  SCOURSH_CAP_PCRE=$_pcre_cap_before
+else
+  unset SCOURSH_CAP_PCRE
+fi
+unset _pcre_cap_was_set _pcre_cap_before
+
+assert_not_contains "$(_ids_found "$SCOURSH_RUN_DIR")" 'IAC-PCRE-SKIP-01' \
+  'the unavailable PCRE IaC rule emits no finding'
+assert_contains "$(_ids_found "$SCOURSH_RUN_DIR")" 'IAC-ERE-CONTROL-01' \
+  'the ERE control still runs over the same file'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/skipped_checks")" 'check=IAC-PCRE-SKIP-01 reason=pcre-unavailable' \
+  'run.json input records the exact pcre-unavailable skip reason'
+assert_not_contains "$(cat "$SCOURSH_RUN_DIR/meta/checks_run")" 'IAC-PCRE-SKIP-01' \
+  'a skipped PCRE IaC rule is not claimed as run'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/checks_run")" 'IAC-ERE-CONTROL-01' \
+  'the ERE control is claimed as run'
+assert_not_contains "$PCRE_COVERED" 'IAC-PCRE-SKIP-01' \
+  'the skipped PCRE IaC rule is excluded from covered_checks'
+assert_contains "$PCRE_COVERED" 'IAC-ERE-CONTROL-01' \
+  'the ERE control remains covered'
+
 TF_IDS='IAC-TF-OPEN_CIDR-01 IAC-TF-PUBLIC_ACL-01 IAC-TF-UNENCRYPTED-01 IAC-TF-KEY_ROTATION_DISABLED-01 IAC-TF-PUBLIC_IP-01 IAC-TF-HARDCODED_SECRET-01 IAC-TF-RDS_PUBLIC-01'
 
 _scan_one_pack terraform "$ROOT/tests/fixtures/vuln" "$W/run-tf-vuln"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tests/suites/vendor-engines-advisories.sh - tools/vendor-engines.sh's
 # `advisories` command namespace (docs/FOUNDATION.md tension 25): resolving
-# data/advisories.db/data/versions.db from real SCA advisory data - and
-# (section D2) data/versions.db's OWN `banner` namespace
+# data/advisories.db from real SCA advisory data - and (section D2)
+# data/versions.db's independent `banner` namespace
 # (docs/VERSIONS-DB.md §3-§5), the known-vulnerable-version catalogue for a
 # banner-matched product with no SCA-ecosystem manifest at all.
 #
@@ -39,7 +39,7 @@
 #    touch curl at all, by stripping curl/wget from PATH the same way
 #    tests/suites/vendor-engines.sh's own section B does.
 #  - Every db write in this suite targets SCOURSH_SCA_ADVISORIES_DB /
-#    SCOURSH_SCA_VERSIONS_DB pointed at scratch paths - never this
+#    SCOURSH_DAST_VERSIONS_DB pointed at scratch paths - never this
 #    repository's own data/advisories.db or data/versions.db, which stay
 #    absent from the tree (tools/vendor-engines.sh is never run for real
 #    in this repo/CI; see this file's own header and
@@ -289,7 +289,7 @@ mkdir -p "$W/db"
 
 run_ecosystem() {
   # Runs one ecosystem's veng_advisories_one against the stubbed curl, with
-  # SCOURSH_SCA_ADVISORIES_DB/SCOURSH_SCA_VERSIONS_DB (and their two summary
+  # SCOURSH_SCA_ADVISORIES_DB/SCOURSH_DAST_VERSIONS_DB (and their two summary
   # side-table siblings) pointed at this suite's own scratch files - a real
   # subprocess (not in-process), since veng_advisories_one/die exits on
   # failure the same way tests/suites/vendor-engines.sh's own
@@ -298,7 +298,7 @@ run_ecosystem() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories "$eco" ) >"$W/run-$eco.out" 2>&1
@@ -361,15 +361,9 @@ assert_contains "$(cat "$DB")" \
   "$(printf 'composer\tacme/fixture-widget\t3.0.0\tSCOURSH-FIXTURE-OSV-COMPOSER-1\thigh\t3.1.0')" \
   'the composer row lowercases the vendor/package name, matching sca_composer_normalize_name'
 
-t_case 'data/versions.db mirrors data/advisories.db (tension 25: "the same shape and the same rule")'
-# The two files' own `#` header lines legitimately differ (each names
-# itself, e.g. "generated ... advisories.db" vs "... versions.db"); the
-# DATA rows below the header - the actual "same shape, same rule" tension
-# 25 asks for - must be byte-identical.
-db_body=$(grep -v -- '^#' "$DB" 2>/dev/null || true)
-vdb_body=$(grep -v -- '^#' "$VDB" 2>/dev/null || true)
-assert_eq "$db_body" "$vdb_body" \
-  'after six ecosystem runs, the scratch versions.db data rows are byte-identical to advisories.db - both are written by the same _veng_advisories_write_db call in _veng_advisories_run'
+t_case 'SCA rows are not duplicated into versions.db (tension 25 namespace split)'
+assert_file_absent "$VDB" \
+  'after six SCA ecosystem runs, versions.db remains absent until a banner catalogue is explicitly built'
 
 t_case 'sorted under LC_ALL=C, one # header, no stray blank/duplicate lines'
 body=$(grep -v '^#' "$DB" 2>/dev/null || true)
@@ -419,7 +413,7 @@ run_banner() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories banner ) >"$W/run-banner.out" 2>&1
@@ -505,17 +499,27 @@ assert_contains "$(cat "$VDB")" \
 assert_contains "$(cat "$VSDB")" 'fixture: unspecified-severity banner product issue' \
   'and its summary is in the side table too'
 
-t_case 'merge: re-running banner replaces the WHOLE banner namespace (like any other ecosystem), and never disturbs an unrelated SCA ecosystem'
+t_case 'merge: re-running banner replaces its namespace and SCA imports leave it alone'
 SCOURSH_ADVISORY_BANNER_IDS='SCOURSH-FIXTURE-OSV-BANNER-1' run_banner
 after_replace=$(cat "$VDB")
 assert_contains "$after_replace" 'nginx-fixture' 'the re-run'"'"'s own id is present'
 assert_not_contains "$after_replace" 'apache-http-server-fixture' \
   "a second 'advisories banner' run REPLACES the banner namespace rather than accumulating - the same per-ecosystem semantics section E proves for npm - so the first run's other id is gone, not merged"
+# An SCA-only refresh has no new banner source data, so its legacy-row cleanup
+# must retain the banner catalogue's provenance timestamp rather than silently
+# making stale banner data look current.
+{
+  printf '# generated: 2001-02-03T04:05:06Z\n'
+  awk '!/^# generated: /' "$VDB"
+} >"$W/db/versions-with-fixed-banner-stamp.db"
+mv -f -- "$W/db/versions-with-fixed-banner-stamp.db" "$VDB"
 SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
 after_npm=$(cat "$VDB")
 assert_contains "$after_npm" 'nginx-fixture' \
-  'the banner row survives an unrelated npm run - _veng_advisories_write_db replaces only the ecosystem it was called with (npm), never touching banner rows'
-assert_contains "$after_npm" 'left-pad-fixture' 'and the npm row landed as normal'
+  'the banner row survives an unrelated npm run'
+assert_contains "$after_npm" '# generated: 2001-02-03T04:05:06Z' \
+  'the SCA import prunes obsolete duplicate rows without re-dating unchanged banner data'
+assert_not_contains "$after_npm" 'left-pad-fixture' 'the npm row remains in advisories.db, never versions.db'
 assert_not_contains "$(cat "$DB")" banner \
   'data/advisories.db (scratch) STILL carries no banner row even after other ecosystems have since written real rows to it - banner never reaches this file at all'
 
@@ -534,7 +538,7 @@ run_alpine() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories alpine ) >"$W/run-alpine.out" 2>&1
@@ -600,10 +604,10 @@ assert_not_contains "$DB_AFTER_1" 'Debian' \
 line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-ALPINE-1' "$DB")
 assert_eq 2 "$line_count" \
   'exactly two rows for this advisory (v3.18 and v3.19), never three - the Debian entry contributed none'
-assert_eq "$(grep -v '^#' <<<"$DB_AFTER_1")" "$(grep -v '^#' "$VDB")" \
-  'data/versions.db carries the byte-identical DATA rows (the two files'"'"' own `#` header lines legitimately differ - each names its own basename) - tension 25/VERSIONS-DB.md §2'"'"'s "same shape, same rule" reuse applies to alpine too, unlike banner'
-assert_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow' \
-  'the summary lives in the version-summaries side table, mirroring every other namespace'
+assert_not_contains "$(cat "$VDB")" $'Alpine:v3.18\topenssl' \
+  'image OS-package rows are not duplicated into banner-only versions.db'
+assert_not_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow' \
+  'image summaries stay in advisory-summaries.db, never version-summaries.db'
 assert_contains "$(cat "$SDB")" 'fixture: openssl heap overflow' \
   'and in the advisory-summaries side table too, since alpine (unlike banner) writes data/advisories.db'
 
@@ -628,7 +632,7 @@ assert_not_contains "$after_replace" 'Alpine:v3.19' \
   'specifically: the v3.19 row from the FIRST run is gone even though the SECOND run never touched v3.19 at all - proving the replace-scope is the whole Alpine: PREFIX, not the one release the new rows happen to name'
 assert_contains "$after_replace" 'left-pad-fixture' \
   "the npm row written BEFORE this alpine run survives untouched - _veng_advisories_write_db_prefix's own prefix filter leaves every non-'Alpine:' row alone"
-assert_contains "$(cat "$VDB")" 'busybox' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" 'busybox' 'data/versions.db remains banner-only after an image import'
 assert_not_contains "$(cat "$VDB")" 'openssl' 'and also lost the stale v3.18/v3.19 openssl rows'
 
 # ---------------------------------------------------------------------------
@@ -646,7 +650,7 @@ run_debian() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories debian ) >"$W/run-debian.out" 2>&1
@@ -655,7 +659,7 @@ run_ubuntu() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories ubuntu ) >"$W/run-ubuntu.out" 2>&1
@@ -725,9 +729,8 @@ assert_not_contains "$DB_AFTER_DEBIAN" 'Alpine' \
   'the Alpine-tagged affected[] entry for the SAME package produced no row at all - FAILS if "Debian:*" were wired to a bare "*" wildcard, or to "Alpine:*"'"'"'s own prefix'
 line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-DEBIAN-1' "$DB")
 assert_eq 2 "$line_count" 'exactly two rows for this advisory (Debian:11 and Debian:12), never three'
-assert_eq "$(grep -v '^#' <<<"$DB_AFTER_DEBIAN")" "$(grep -v '^#' "$VDB")" \
-  'data/versions.db carries the byte-identical DATA rows, mirroring alpine'"'"'s own reuse'
-assert_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow (debian)' 'the summary lives in the version-summaries side table'
+assert_not_contains "$(cat "$VDB")" $'Debian:11\topenssl' 'Debian rows stay out of banner-only versions.db'
+assert_not_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow (debian)' 'Debian summaries stay out of version-summaries.db'
 
 t_case 'end-to-end: ubuntu - a Debian entry for the same package is excluded, and both Ubuntu releases land as separate rows'
 : >"$W/db/advisories.db"
@@ -773,7 +776,7 @@ assert_contains "$after_merge" 'Ubuntu:20.04' \
   "ubuntu's rows survive a debian re-run untouched - the two distro namespaces never share a replace-scope despite both being per-release prefix sentinels"
 assert_contains "$after_merge" 'left-pad-fixture' \
   'the npm row written before either distro run survives untouched too'
-assert_contains "$(cat "$VDB")" 'bash' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" 'bash' 'data/versions.db remains banner-only after a Debian import'
 assert_not_contains "$(cat "$VDB")" $'Debian:11\topenssl' 'and lost the stale Debian:11 openssl row there too'
 
 # ---------------------------------------------------------------------------
@@ -785,14 +788,14 @@ assert_not_contains "$(cat "$VDB")" $'Debian:11\topenssl' 'and lost the stale De
 #    _veng_advisories_run/_veng_advisories_write_db with the six SCA
 #    ecosystems rather than the ':*' prefix machinery D3-D5 exercise. This
 #    section proves the EXACT-match branch is wired correctly and that it
-#    writes BOTH data/advisories.db and data/versions.db like alpine/debian/
-#    ubuntu (unlike banner), never bleeding into or from a sibling ecosystem.
+#    writes data/advisories.db only, never bleeding into or from a sibling
+#    ecosystem or the independent banner database.
 # ---------------------------------------------------------------------------
 run_redhat() {
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
-    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_DAST_VERSIONS_DB="$VDB" \
     SCOURSH_SCA_SUMMARIES_DB="$SDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories redhat ) >"$W/run-redhat.out" 2>&1
@@ -845,9 +848,8 @@ assert_not_contains "$DB_AFTER_REDHAT" 'Debian' \
   'the Debian-tagged affected[] entry for a similarly-named package produced no row at all - FAILS if "Red Hat" were wired to a wildcard or prefix match instead of an exact one'
 line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-REDHAT-1' "$DB")
 assert_eq 1 "$line_count" 'exactly ONE row for this advisory - unlike alpine/debian/ubuntu, "Red Hat" names no per-release variant to multiply across'
-assert_eq "$(grep -v '^#' <<<"$DB_AFTER_REDHAT")" "$(grep -v '^#' "$VDB")" \
-  'data/versions.db carries the byte-identical DATA rows, mirroring alpine/debian/ubuntu'"'"'s own reuse (tension 25/VERSIONS-DB.md §2)'
-assert_contains "$(cat "$VSDB")" 'fixture: openssl-libs heap overflow (redhat)' 'the summary lives in the version-summaries side table'
+assert_not_contains "$(cat "$VDB")" $'Red Hat\topenssl-libs' 'Red Hat rows stay out of banner-only versions.db'
+assert_not_contains "$(cat "$VSDB")" 'fixture: openssl-libs heap overflow (redhat)' 'Red Hat summaries stay out of version-summaries.db'
 assert_contains "$(cat "$SDB")" 'fixture: openssl-libs heap overflow (redhat)' 'and in the advisory-summaries side table too, since redhat (unlike banner) writes data/advisories.db'
 
 t_case 'both directions of the exit-4 gate this ticket relies on are pinned against a real image_ecosystem_known-shaped lookup'
@@ -878,7 +880,7 @@ assert_contains "$after_merge" $'Debian:12\topenssl\t' \
   'and Debian'"'"'s own (unrelated) "openssl" row is untouched too, proving the "Red Hat" replace-scope is an exact ecosystem-field match, never a package-name match'
 assert_contains "$after_merge" 'left-pad-fixture' \
   'the npm row written before this redhat run survives untouched too'
-assert_contains "$(cat "$VDB")" $'Red Hat\tbash' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" $'Red Hat\tbash' 'data/versions.db remains banner-only after a Red Hat import'
 assert_not_contains "$(cat "$VDB")" 'openssl-libs' 'and lost the stale redhat-1 row there too'
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +1009,7 @@ bulk_run() {
   local rc=0
   ( PATH="$NO_NET_PATH" \
     SCOURSH_SCA_ADVISORIES_DB="$BDB" \
-    SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    SCOURSH_DAST_VERSIONS_DB="$BVDB" \
     SCOURSH_SCA_SUMMARIES_DB="$BSDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
@@ -1021,7 +1023,7 @@ bulk_run_net() {
   ( PATH="$FAKE_BULK_BIN:$NO_NET_PATH" \
     FAKE_BULK_ZIP_DIR="$BULK_W/zips" \
     SCOURSH_SCA_ADVISORIES_DB="$BDB" \
-    SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    SCOURSH_DAST_VERSIONS_DB="$BVDB" \
     SCOURSH_SCA_SUMMARIES_DB="$BSDB" \
     SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
@@ -1159,7 +1161,7 @@ for args in 'bulk' 'bulk --help' 'bulk npm' 'bulk --bogus' 'bulk --all' \
   'bulk --accept-unverified nonexistent-eco' 'bulk --archive /nope --accept-unverified npm'; do
   rc=0
   # shellcheck disable=SC2086
-  ( PATH=$NO_NET_PATH SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  ( PATH=$NO_NET_PATH SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_DAST_VERSIONS_DB="$BVDB" \
     SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories $args ) >/dev/null 2>&1 || rc=$?
   if (( rc >= 0 && rc <= 5 )); then
@@ -1235,10 +1237,8 @@ assert_contains "$hdr" "sha256=$NPM_ZIP_SHA" 'it records the digest of the artif
 assert_contains "$hdr" 'rows=12' 'it records the row count'
 assert_contains "$hdr" 'range_only_skipped=0' 'it records the (now zero, for npm) skip count'
 
-t_case 'bulk import: versions.db is written with the identical body (tension 25)'
-assert_file_exists "$BVDB" 'data/versions.db (scratch) was written too'
-assert_eq "$(LC_ALL=C sed -e '/^#/d' "$BDB")" "$(LC_ALL=C sed -e '/^#/d' "$BVDB")" \
-  'the two files carry byte-identical data rows, the same "same shape and same rule" the single-advisory path already honours'
+t_case 'bulk import: SCA rows are not duplicated into versions.db (tension 25 namespace split)'
+assert_file_absent "$BVDB" 'a bulk SCA import does not create versions.db: that file is reserved for banner rows'
 
 t_case 'bulk import: a pinned artifact is verified, and states so'
 bulk_reset_db
@@ -1330,7 +1330,7 @@ assert_eq 3 "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB" | wc -l | tr -d ' ')" 'three
 t_case 'a single-advisory import of an ecosystem RETIRES that ecosystem bulk provenance claim'
 ( PATH="$FAKE_BIN:$NO_NET_PATH" FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
   SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' \
-  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_DAST_VERSIONS_DB="$BVDB" \
   SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
   bash "$TOOL" advisories npm ) >"$BULK_W/retire.out" 2>&1
 assert_not_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=npm' \
@@ -1483,7 +1483,7 @@ t_case 'bulk import over the network: a failed download is exit 5, not a silent 
 bulk_reset_db
 rc=0
 ( PATH="$FAKE_BULK_BIN:$NO_NET_PATH" FAKE_BULK_ZIP_DIR="$BULK_W/zips" FAKE_CURL_FAIL=1 \
-  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_DAST_VERSIONS_DB="$BVDB" \
   SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
   bash "$TOOL" advisories bulk --accept-unverified npm ) >"$BULK_W/last.out" 2>&1 || rc=$?
 assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" 'a failed fetch is exit 5'

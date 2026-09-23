@@ -408,8 +408,13 @@ dast_auth_load "$W/c4.conf"
 dast_auth_acquire auth-fixture a
 assert_eq authenticated "$_DAST_AUTH_STATE" \
   'srp with a pre-obtained token authenticates - fails under "srp is unimplemented, so refuse", which docs/DESIGN.md §7.0 explicitly does not require'
-assert_contains "$(run_facts coverage_reduction)" 'srp_handshake_not_computed' \
-  'and the RUN says the SRP exchange was not performed - fails under "it works, so say nothing", which lets mode: srp read as evidence that the provider'"'"'s SRP implementation was exercised'
+SRP_GAP=$(run_facts coverage_reduction)
+assert_contains "$SRP_GAP" 'reason=<redacted:AUTH_CONF:' \
+  'the structured coverage reason is present even though its auth-config mode value is redacted'
+assert_contains "$SRP_GAP" 'SRP exchange was NOT performed' \
+  'and the RUN still says the SRP exchange was not performed'
+assert_not_contains "$SRP_GAP" 'srp_handshake_not_computed' \
+  'the raw mode value never reaches the coverage record - fails if auth.conf values bypass the report-wide redaction path'
 
 t_case 'external authenticates and is recorded as a mode of its own'
 _reset

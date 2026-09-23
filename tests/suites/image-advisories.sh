@@ -290,6 +290,17 @@ assert_contains "$RUN_WITHDB_JSON" 'IMAGE-COV-UNKNOWN_DISTRO-01' \
 assert_not_contains "$(_slurp "$W/run-withdb/findings.jsonl")" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
   'and no package finding, since none could be enumerated at all'
 
+t_case 'stale image advisory data records coverage reduction without changing image exit status'
+STALE_FIXDB=$W/stale-advisories.db
+{
+  printf '# generated: 2020-01-01T00:00:00Z\n'
+  cat "$FIXDB"
+} >"$STALE_FIXDB"
+SCOURSH_ADVISORY_NOW_EPOCH=2000000000 _image_scan "$W/run-stale" "$STALE_FIXDB" -- --image alpine318 --source "$ALPINE_318_IMG"
+assert_eq 0 "$_RC" 'a stale but readable image database still runs the image scan'
+assert_contains "$(_slurp "$W/run-stale/run.json")" 'reason=advisory_data_stale image=alpine318' \
+  'the image report names stale advisory data as a coverage reduction'
+
 t_case 'the distro-agnostic config check still runs on this same path (independent of the ecosystem/apk branch)'
 assert_contains "$RUN_WITHDB_JSON" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
   "checks_run names it - FAILS if image_check_root_user were gated behind the ecosystem resolution instead of running unconditionally once the image opened"

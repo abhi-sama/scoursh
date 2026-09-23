@@ -145,13 +145,13 @@ context-require: "?Type"?\s*:\s*"?AWS::S3::Bucket"?
 context-window: 15
 tags: static
 tags: compliance
-cis: 2.1.1
+cis: 2.1.4
 remediation: Set every PublicAccessBlockConfiguration flag (BlockPublicAcls,
   BlockPublicPolicy, IgnorePublicAcls, RestrictPublicBuckets) to true and remove any
   public canned ACL. If the object truly must be public, front it with CloudFront and
   an Origin Access Control instead of a public bucket.
 references: CWE-284
-references: CIS-AWS-2.1.1
+references: CIS-AWS-2.1.4
 
 id: IAC-CFN-UNENCRYPTED-01
 title: RDS or EBS resource explicitly configured without encryption at rest
@@ -169,7 +169,6 @@ context-require: "?Type"?\s*:\s*"?AWS::(RDS::DB(Instance|Cluster)|EC2::Volume)"?
 context-window: 15
 tags: static
 tags: compliance
-cis: 2.1.1
 remediation: Set StorageEncrypted to true and, where the resource supports it, pin a
   customer-managed KMS key via KmsKeyId rather than relying on the account default key.
 references: CWE-311
@@ -193,8 +192,8 @@ remediation: Add EnableKeyRotation: true to the AWS::KMS::Key resource so AWS ro
   the backing key material annually without any application-visible change (KMS
   transparently keeps prior key material available for decrypting old ciphertext).
 references: CWE-320
-references: CIS-AWS-3.8
-cis: 3.8
+references: CIS-AWS-3.6
+cis: 3.6
 
 id: IAC-CFN-PUBLIC_IP-01
 title: EC2 instance or launch template auto-assigns a public IP address
@@ -257,11 +256,11 @@ context-require: "?Type"?\s*:\s*"?AWS::RDS::DBInstance"?
 context-window: 15
 tags: static
 tags: compliance
-cis: 2.3.2
+cis: 2.3.3
 remediation: Set PubliclyAccessible to false and reach the database through an
   application tier inside the same VPC, a bastion, or a VPN, never a public endpoint.
 references: CWE-284
-references: CIS-AWS-2.3.2
+references: CIS-AWS-2.3.3
 
 id: IAC-CFN-ECS_PRIVILEGED-01
 title: ECS task definition runs a container with privileged escalation enabled

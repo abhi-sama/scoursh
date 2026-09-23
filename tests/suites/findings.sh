@@ -572,14 +572,23 @@ derive_findings "$d" "$W/d1.rules"
 assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields" || true)" \
   'correlate-on: file joins per file, so two different files do not correlate'
 
-t_case 'a requires contributor that is absent stops the composite firing'
+t_case 'an uncorrelatable composite is recorded as a coverage gap, never silently clean'
+derive_record_uncorrelated_gaps "$d" "$W/d1.rules"
+assert_contains "$(cat "$d/meta/coverage_gap")" \
+  'composite: COMPOSITE-TEST-CHAIN could not correlate its present contributors on file because they share no correlation value' \
+  'the operator sees the present-but-unjoinable chain in run.json coverage_gap'
+
+t_case 'an absent contributor remains a non-firing chain, not an uncorrelatable gap'
 new_run d3
 d=$SCOURSH_RUN_DIR
 occurrence_reset_unit u
 emit_match "$d" SAST-B-B-01 same.py 1 y
 findings_merge "$d"
 derive_findings "$d" "$W/d1.rules"
+derive_record_uncorrelated_gaps "$d" "$W/d1.rules"
 assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields" || true)" 'requires is ALL'
+assert_file_absent "$d/meta/coverage_gap" \
+  'a missing contributor is not mislabeled as a failed correlation'
 
 t_case 'any-of is satisfied by ONE of its alternatives'
 new_run d4
@@ -891,7 +900,7 @@ finding_decode "$(/usr/bin/grep 'check_id=POSTURE-A-B-01' "$d/findings.fields")"
 assert_eq control "${_DF[logical_kind]}" 'defaults to kind=control'
 assert_eq POSTURE-EDGE-WAF_GEO-01 "${_DF[logical_fqn]}" 'defaults to <loc_control_id>'
 
-t_case 'net profile: target host port transport - NET-02 identity only, no logical-default arm yet'
+t_case 'net profile: target host port transport remains its frozen JSON location'
 new_run sarif01-net
 d=$SCOURSH_RUN_DIR
 finding_new
@@ -916,6 +925,8 @@ finding_decode "$(/usr/bin/grep 'check_id=NET-PORT-UNEXPECTED_LISTENER-01' "$d/f
 assert_eq net "${_DF[module]}" 'module round-trips through the merge as net'
 assert_eq lab "${_DF[loc_target]}" 'loc_target round-trips'
 assert_eq 8443 "${_DF[loc_port]}" 'loc_port round-trips - the component no other profile has a slot for'
+assert_eq '' "${_DF[logical_kind]:-}" 'net does not add a persisted logical kind'
+assert_eq '' "${_DF[logical_fqn]:-}" 'net does not add a persisted logical fqn'
 
 t_case 'sca profile: an emitters own logical identity is never overwritten'
 new_run sarif01-sca

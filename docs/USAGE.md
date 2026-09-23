@@ -30,7 +30,10 @@ document: read the tables below for the exact per-flag behaviour behind that one
 
 ## Commands
 
-`scoursh` is a single entry point, `scan.sh`, with one subcommand per surface it scans.
+`scoursh` is a single entry point, `scan.sh` in a checkout and `scoursh` when
+installed, with one subcommand per surface it scans. `scoursh --version` prints
+the installed version and `scoursh paths` prints its resolved install, config,
+data, state, and reports locations.
 Every run that gets as far as dispatching its command writes `run.json` into its output directory,
 whether or not any findings were produced.
 A run that refuses first - a missing required input, a scope violation, a `--paranoid` host with no
@@ -81,7 +84,7 @@ scan.sh <command> [options]
 | `--live` | cloud, all | live - runs all 30 AWS service checks against the resolved account/regions |
 | `--profile NAME` | cloud, all | live - selects a named AWS CLI profile |
 | `--regions all\|us-east-1,...` | cloud, all | live - narrows the enabled-region list; an explicit list is not validated against the account |
-| `--assume-role ARN` | cloud, all | live - scans a second account via STS, recorded in `run.json`'s authorization block |
+| `--assume-role ARN` | cloud, all | live - assumes the role in every active AWS Organization member account, recorded in `run.json`'s authorization block |
 | `--i-own-account ID` | cloud, all | live - optional affirmation; when given, must match the resolved account id (mismatch is exit 2) |
 | `--image ID` | image, all | live as a gate (`scan_die_usage`, exit 2, if missing on `image`), and the scan it gates now runs; `all` skips `image` entirely (a declared coverage reduction) when it is absent |
 | `--source PATH` | image, all | live; overrides `config/images.conf`'s configured path for this run only, with the `docker-archive`/`oci-layout` shape inferred from the filesystem when `ID` has no config record at all |
@@ -469,7 +472,7 @@ checking the bytes in:
   merely unwise, it is refused outright.
 - gitleaks' binary and ruleset are small enough to push (~20MB total), but a binary blob checked into
   git history forever is worth avoiding on general principle even when it fits.
-- semgrep's own default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0",
+- semgrep's own default ruleset, if you ever obtain one, ships under Semgrep's rules licence,
   which explicitly forbids redistribution - committing it into this Apache-2.0, public repository would
   be a license violation, not just bloat.
 
@@ -836,7 +839,7 @@ is arithmetic, not safety).  The budget can be raised but never removed, and BOT
 have their own threshold raised but never be disabled - `--circuit-breaker-failures N` (transport-level
 failures) and `--circuit-breaker-5xx-failures N` (well-formed 5xx responses) plus `--i-own-target` are
 the flags for that. The second is the one that matters against a target that answers an unmatched path
-with a 5xx rather than a 404: its own default (100) is already generous enough to absorb that during
+with a 5xx rather than a 404: its own default (200) is already generous enough to absorb that during
 discovery/methods for most applications without raising anything, since a 5xx no longer counts toward
 the transport-failure counter at all.
 
@@ -890,12 +893,57 @@ network, and it is never called during a scan. It needs `python3` and `curl` on 
 neither is a `scan.sh` runtime dependency.
 
 Measured on a clean checkout: **~2 minutes**, **~290 MB downloaded** (OSV.dev's six per-ecosystem
-export archives), **~940 MB written** to `data/advisories.db` and `data/versions.db` combined. The
+export archives), with the large output written once to `data/advisories.db`. `data/versions.db` is
+a separate banner-only catalogue and is not a second copy of SCA/image rows. The
 archives themselves are not kept - they live under `$SCOURSH_SCRATCH` and are erased when the command
 exits, successfully or not. It ends by printing a per-ecosystem table (ecosystem, grade, rows
 imported, and a `range_only_skipped` percentage) - that table, not silence, is how you know it worked.
 A failed ecosystem is marked `FAILED` there and the command exits non-zero, rather than leaving you
 with a database that silently covers less than it claims.
+
+#### Refresh weekly
+
+Run the build on a networked host every week. A scan never refreshes data itself; SCA, image, DAST, and
+network version consumers record `coverage_reduction reason=advisory_data_stale` once their relevant
+database's `# generated:` stamp is older than `advisory-max-age-days` (default `30`). This does
+not change findings or the exit code. Set the limit in `config/scanner.conf` or with
+`SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS`.
+
+```cron
+# Every Sunday at 03:15 on the networked build host.
+15 3 * * 0 cd /opt/scoursh && tools/vendor-engines.sh advisories bulk --accept-unverified --all >>/var/log/scoursh-advisories.log 2>&1
+```
+
+If your estate uses banner matching, schedule its operator-selected IDs too:
+
+```cron
+30 3 * * 0 cd /opt/scoursh && SCOURSH_ADVISORY_BANNER_IDS='CVE-…' tools/vendor-engines.sh advisories banner >>/var/log/scoursh-advisories.log 2>&1
+```
+
+On macOS, save the following as
+`~/Library/LaunchAgents/com.scoursh.advisories.plist`, then load it with
+`launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.scoursh.advisories.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.scoursh.advisories</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/sh</string><string>-lc</string>
+    <string>cd /opt/scoursh &amp;&amp; tools/vendor-engines.sh advisories bulk --accept-unverified --all</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Weekday</key><integer>0</integer><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/var/log/scoursh-advisories.log</string>
+  <key>StandardErrorPath</key><string>/var/log/scoursh-advisories.log</string>
+</dict></plist>
+```
+
+Adjust `/opt/scoursh` and the log path for the account that runs the job. Add a separate job or command
+for the operator-selected banner IDs when banner matching is in use.
 
 There are two ways to build it - bulk, above, which is what you almost certainly want, and one
 advisory at a time, below, when you already know the specific IDs you care about.
@@ -929,7 +977,7 @@ tools/vendor-engines.sh advisories --all
 See [`tools/vendor-engines.sh advisories --help`](../tools/vendor-engines.sh) for the full list of
 per-ecosystem environment variables.
 
-**`scan.sh image` reads the same two files, through four more ecosystems that are deliberately NOT
+**`scan.sh image` reads `data/advisories.db`, through four more ecosystems that are deliberately NOT
 part of `--list`/`--all`/`bulk --all` above: `alpine`, `debian`, `ubuntu`, and `redhat`.** Each is
 its own named subcommand, one-advisory-at-a-time only (no bulk import exists for these yet - a stated
 gap, not an oversight):
@@ -964,7 +1012,7 @@ dependency with a well-known CVE, even immediately after a fresh, successful imp
 limitation of npm's own OSV.dev export today, not a broken build.
 
 **The gotcha: do not scan `data/` itself with `sast` or `all --path .` after building the database.**
-`data/advisories.db` and `data/versions.db` together land at roughly 940 MB. If your `--path` includes
+`data/advisories.db` is the large file; `data/versions.db` remains a small banner-only catalogue. If your `--path` includes
 this repository's own `data/` directory (for example, `./scan.sh all --path .` run from a checkout
 where you just built the database), `sast` will walk that multi-hundred-megabyte binary file like any
 other source file, producing noise and a very slow run for no security value. Point `--path` at real
@@ -1311,9 +1359,10 @@ authorised - it can never become a way to scan a host you did not (docs/FOUNDATI
 ["Per-command flags"](#per-command-flags)) override the matching key above for a single invocation,
 ephemerally - nothing is written to `config/discovery.conf`. Each requires `--target` naming the
 target the override applies to (exit 2 otherwise, the same rule `--i-own-target` enforces), and a
-relative path is resolved against the install root exactly as this file's own paths are. Prefer the
-file for anything you want to keep re-running the same way; reach for a flag when you are trying one
-spec or capture once.
+relative CLI path is resolved from the current working directory. In an installed copy, a relative
+path recorded in `config/discovery.conf` is resolved from that config file's directory; a checkout
+keeps its historic install-root-relative interpretation. Prefer the file for anything you want to
+keep re-running the same way; reach for a flag when you are trying one spec or capture once.
 
 ### `config/images.conf` - required only for `image` (unless `--source` is given)
 
@@ -1360,7 +1409,7 @@ file yet; those are called out in the Notes column.
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
 | `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |
 | `circuit-breaker-failures` | positive integer | `10` | live | Transport-level failures (no usable response at all - connection refused, timeout, reset, or a malformed status line) within the window below; reaching it aborts the run at exit 5. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-failures N` is the dedicated CLI flag for `dast`/`all` (same shape as `--requests-per-second`/`--request-budget`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES`). |
-| `circuit-breaker-5xx-failures` | positive integer | `100` | live | A SEPARATE counter for well-formed 5xx responses within the same window - a 5xx is a real answer and individually weaker evidence of an outage than a transport failure, so its own threshold is much higher. Reaching it aborts the run at exit 5 exactly as the transport counter does. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-5xx-failures N` is the dedicated CLI flag for `dast`/`all`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES`. |
+| `circuit-breaker-5xx-failures` | positive integer | `200` | live | A SEPARATE counter for well-formed 5xx responses within the same window - a 5xx is a real answer and individually weaker evidence of an outage than a transport failure, so its own threshold is much higher. Reaching it aborts the run at exit 5 exactly as the transport counter does. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-5xx-failures N` is the dedicated CLI flag for `dast`/`all`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES`. |
 | `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window, shared by both counters above. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
@@ -1372,6 +1421,7 @@ file yet; those are called out in the Notes column.
 | `state-retain-runs` | positive integer | `30` | live | Every scanning run prunes `state/` to this many most-recent runs plus `state/latest.json`. See [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline). |
 | `history-window-days` | positive integer | `365` | live | Bounds `sast --history`. |
 | `history-max-commits` | positive integer | `5000` | live | Bounds `sast --history`. |
+| `advisory-max-age-days` | positive integer | `30` | live | SCA, image package, and DAST/network banner consumers record a coverage reduction when their readable advisory data is older than this `# generated:` stamp limit. Findings and exit codes are unchanged. Override with `SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS`. |
 | `lock-stale-seconds` | positive integer | `30` | inert | The staleness rule is real, but reads `SCOURSH_LOCK_STALE_SECONDS`. |
 | `mutex-timeout-seconds` | positive integer | `120` | inert | The timeout is real, but reads `SCOURSH_MUTEX_TIMEOUT_SECONDS`. |
 | `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |

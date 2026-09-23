@@ -468,7 +468,7 @@ cloud_org_accounts_resolve() {
 # reads the literal operation word following the chokepoint's function and its
 # service argument.  `sts assume-role` is the one operation in this file that
 # is NOT covered by the frozen read-only prefix - it needs its own
-# tests/aws-readonly-allow.txt entry (tension 23 item 4), which this ticket is
+# data/aws-readonly-allow.txt entry (tension 23 item 4), which this ticket is
 # the one that seeds.
 #
 # A SETTER, for the by-now-standard reason: `aws_ro` sets lib/awscli.sh's

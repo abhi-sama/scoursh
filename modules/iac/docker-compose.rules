@@ -92,7 +92,6 @@ files: docker-compose.*.yaml
 files: compose.*.yml
 files: compose.*.yaml
 tags: static
-cis: 5.4
 remediation: Remove "privileged: true" and grant only the specific Linux capabilities the
   container needs via "cap_add", rather than every device and capability the host has.
   A privileged container has no meaningful isolation from the host at all - a compromise

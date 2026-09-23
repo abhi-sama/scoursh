@@ -72,12 +72,12 @@ dialect: ere
 files: *.tf
 tags: static
 tags: compliance
-cis: 2.1.1
+cis: 2.1.4
 remediation: Remove the public ACL and rely on the bucket's default private ACL with
   Block Public Access enabled. If the object truly must be public, front it with
   CloudFront and an Origin Access Control instead of a public bucket ACL.
 references: CWE-284
-references: CIS-AWS-2.1.1
+references: CIS-AWS-2.1.4
 
 id: IAC-TF-UNENCRYPTED-01
 title: Resource explicitly configured without encryption at rest
@@ -90,7 +90,6 @@ dialect: ere
 files: *.tf
 tags: static
 tags: compliance
-cis: 2.1.1
 remediation: Set encrypted = true (or omit the attribute where the provider default is
   encryption-on) and, where the resource supports it, pin a customer-managed KMS key
   rather than relying on the provider default key.
@@ -112,8 +111,8 @@ remediation: Add enable_key_rotation = true to the aws_kms_key resource so AWS r
   the backing key material annually without any application-visible change (KMS
   transparently keeps prior key material available for decrypting old ciphertext).
 references: CWE-320
-references: CIS-AWS-3.8
-cis: 3.8
+references: CIS-AWS-3.6
+cis: 3.6
 
 id: IAC-TF-PUBLIC_IP-01
 title: Instance or launch resource auto-assigns a public IP address
@@ -161,8 +160,8 @@ dialect: ere
 files: *.tf
 tags: static
 tags: compliance
-cis: 2.3.2
+cis: 2.3.3
 remediation: Set publicly_accessible = false and reach the database through an
   application tier inside the same VPC, a bastion, or a VPN, never a public endpoint.
 references: CWE-284
-references: CIS-AWS-2.3.2
+references: CIS-AWS-2.3.3

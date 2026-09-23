@@ -357,6 +357,8 @@ assert_contains "$J7" '"paranoid-allow": {"value": [], "source": ""}' \
   'the same honesty rule as the scalar case above, applied to the list shape'
 
 t_case 'keys render in one fixed, alphabetically-sorted order - byte order is part of the reproducibility claim'
+assert_contains "$J7" '"circuit-breaker-5xx-failures": {"value": "", "source": ""}' \
+  'the separately-recorded 5xx breaker threshold is rendered even when it was not set'
 assert_contains "$J7" '"circuit-breaker-failures"' 'spot check: an early key in the sort order is present'
 CFG_BLOCK=$(sed -n '/^  "config": {$/,/^  },$/p' "$D7/run.json")
 JOBS_POS=$(printf '%s' "$CFG_BLOCK" | grep -n '"jobs":' | head -1 | cut -d: -f1)

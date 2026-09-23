@@ -16,9 +16,7 @@ Commands:
                                          override of the matching
                                          config/discovery.conf key for --target;
                                          nothing is written to that file. A
-                                         relative path is resolved against the
-                                         install root, exactly as the config
-                                         file's own paths are - not against
+                                         relative path is resolved against
                                          your current directory. Each requires
                                          --target, exit 2 otherwise - same
                                          rule as --i-own-target. Prefer
@@ -95,6 +93,7 @@ Commands:
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
+  paths    print resolved install, config, data, state, and reports locations
 
 Global:
   --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
@@ -107,9 +106,10 @@ Global:
                               a usable `strace`, or `lsof` is available.
                               `lsof` is what makes this work on macOS. A
                               sufficiently short-lived connection can still
-                              evade detection - tools/run-in-netns.sh is the
-                              actual guarantee, and it is Linux-only with no
-                              macOS equivalent. See docs/FOUNDATION.md
+                              evade detection. tools/run-in-netns.sh is the
+                              Linux guarantee; on macOS,
+                              tools/run-sandboxed.sh provides the stronger
+                              Seatbelt-based option. See docs/FOUNDATION.md
                               tension 20.)
   --use-engines             (opt in to optional vendored engine adapters,
                               e.g. semgrep for sast - docs/ADAPTERS.md. Only
@@ -174,6 +174,10 @@ Global:
   --min-confidence LEVEL    (high|medium|low; default low)
   --baseline FILE
   --out DIR                 (default: reports/<timestamp>)
+  --guided                  (interactive setup when stdin and stderr are
+                              terminals; nothing scans until confirmation)
+  --print-command           (print the validated command and exit without
+                              creating a run directory)
 
 Exit codes: 0 clean/below gate * 1 findings at/above --fail-on *
 2 usage error * 3 scope violation * 4 missing required input *

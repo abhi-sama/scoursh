@@ -23,11 +23,11 @@ A version check that called an advisory API would be a second, unauthorised dest
 the scanner's correctness at the mercy of a service the operator never approved.
 
 So the vulnerability data is **vendored**: resolved on a networked box, written to disk, and read by the
-scan as a table lookup.
-A scan never fetches it, never refreshes it, and never notices that it is stale on its own - which is why
-§5 below exists.
+scan as a table lookup. A scan never fetches or refreshes it. It does read the `# generated:` stamp: when
+the data is older than `advisory-max-age-days` (30 days by default), the affected banner check records a
+`coverage_reduction`; findings and the exit code remain unchanged.
 
-## 2. The file, and the two namespaces in it
+## 2. The file and its one namespace
 
 `data/versions.db` is the tension-25 TSV, byte-for-byte the same schema as `data/advisories.db`'s own
 non-npm ecosystem rows. `banner` is a namespace, not one of the six SCA ecosystems, so it is never
@@ -49,27 +49,15 @@ No field may contain a TAB or an LF.
 Lookup is `db_lookup_exact` (`lib/core.sh`) - `LC_ALL=C look` on a prefix, falling back to
 `grep -F -m 1` where `look` is absent - and nothing else ever reads the file.
 
-The first field is a **namespace**, and this file carries three kinds of row:
+The first field is a **namespace**, but this file carries exactly one kind of row:
 
 | Field 1 | Rows | Written by | Read by |
 |---|---|---|---|
-| an SCA ecosystem (`npm`, `pypi`, `maven`, `Go`, `RubyGems`, `composer`) | one per exact affected package version | `tools/vendor-engines.sh advisories` | nothing today - `modules/sca/` reads `data/advisories.db`, and `tools/vendor-engines.sh` writes both files from one call (tension 25's "the same shape and the same rule") |
-| the literal `banner` | one per exact affected **product** version | an operator, per §5 | `modules/dast/passive/banner_engine.sh` |
-| a per-release Alpine key (`Alpine:v3.18`, `Alpine:v3.19`, ...) | one per exact affected apk package version | `tools/vendor-engines.sh advisories alpine` (IMG-03) | nothing today - `modules/image/` reads `data/advisories.db`, mirroring the SCA row above; both files get it for the identical "same shape, same rule" reason |
-
-All three coexist safely and that is by construction, not by luck.
-`tools/vendor-engines.sh`'s writer for a single fixed namespace
-(`_veng_advisories_write_db`) replaces only the rows whose first field EQUALS the ecosystem it is
-writing and carries every other row through untouched, so refreshing npm cannot delete the banner
-catalogue and vendoring a banner row cannot delete npm's. The Alpine importer uses a PREFIX-matched
-sibling writer instead (`_veng_advisories_write_db_prefix`) because one import can legitimately name
-several different Alpine releases at once - see that function's own header in `tools/vendor-engines.sh`
-for why an exact match does not fit this one namespace.
-`banner` also sorts before every ecosystem name under `LC_ALL=C`, so adding banner rows never disturbs the
-sort the lookup depends on. `Alpine:` (capital `A`, byte `0x41`) sorts before every lowercase-initial
-namespace - `banner` (`0x62`), `composer`, `maven`, `npm`, `pypi` - and before the two other
-capital-initial ecosystems, `Go` (`0x47`) and `RubyGems` (`0x52`); only the file's own `#` header lines
-(`0x23`) sort earlier still. Adding Alpine rows therefore never disturbs the sort either.
+| the literal `banner` | one per exact affected **product** version | `tools/vendor-engines.sh advisories banner` | `modules/dast/passive/banner_engine.sh` and `modules/network/` |
+`data/advisories.db` alone holds SCA and image OS-package namespaces; this split is deliberate. It avoids
+shipping a second copy of the large SCA database while leaving the small banner table sorted and
+uncompressed for `db_lookup_exact`. A current SCA or image refresh also strips legacy non-`banner` rows
+from an existing `versions.db` rather than carrying the former duplication forward.
 
 ## 3. The `banner` row, field by field
 
@@ -81,7 +69,6 @@ capital-initial ecosystems, `Go` (`0x47`) and `RubyGems` (`0x52`); only the file
 | `advisory_id` | the advisory this row comes from (`CVE-2021-41773`, `GHSA-xxxx-xxxx-xxxx`). One row per (product, version, advisory): two advisories affecting one version are two rows. |
 | `severity` | one of `info`, `low`, `medium`, `high`, `critical`. The finding's base severity; `lib/findings.sh`'s rubric adjusts it from there. An unrecognised value is ignored rather than trusted, and a row with none lands on `high`. |
 | `fixed_versions` | comma-separated, opaque display text, never compared. Empty is legal. |
-| `summary` | one line of prose. No TAB, no LF. Empty is legal. |
 
 There is deliberately **no CWE, no CVSS vector and no reference URL** in a row.
 The check's own `checks.rules` record carries the CWE and the OWASP category, and a row that carried its
@@ -159,8 +146,9 @@ Verify: `bash tests/run-tests.sh dast-banner` still passes, and a run against a 
 affected reports `DAST-BANNER-OUTDATED_COMPONENT-01`.
 
 **A stale list produces false negatives, not false positives**, which is the failure mode that hides.
-That asymmetry is why the generation stamp is reported in the finding text and why a run with no banner
-rows at all records a `coverage_reduction` naming the missing data rather than a clean result.
+That asymmetry is why the generation stamp is reported in the finding text, why data older than the
+configured `advisory-max-age-days` records a `coverage_reduction`, and why a run with no banner rows at
+all records a reduction rather than a clean result.
 
 ## 6. What a missing or empty list does
 
@@ -171,8 +159,11 @@ Never an error, always a recorded reduction (`docs/DESIGN.md` §15):
 | file absent or unreadable | `coverage_reduction reason=versions_db_absent`; the two disclosure checks still run. |
 | file present, no `banner` row | `coverage_reduction reason=versions_db_no_banner_rows`; the two disclosure checks still run. This is the state of a fresh clone. |
 | file present with `banner` rows | the out-of-date check runs; the `# generated:` stamp is recorded in `run.json` and in every finding's evidence. |
+| file present with `banner` rows older than `advisory-max-age-days` | the out-of-date check still runs, and `coverage_reduction reason=advisory_data_stale` records the age. This never changes the exit code. |
 | a discovered product with no row of any version | counted into one `coverage_reduction reason=versions_db_product_unknown` roll-up, never one record per product. |
 
-`SCOURSH_DAST_VERSIONS_DB` overrides the path, which is how the test suite points at
+`SCOURSH_VERSIONS_DB` overrides the path for both the banner reader and the
+vendor writer. `SCOURSH_DAST_VERSIONS_DB` and `SCOURSH_SCA_VERSIONS_DB` remain
+accepted compatibility aliases; the test suite uses them to point at
 `tests/fixtures/dast/versions.db` instead of the shipped file.
 It is a test seam, not a supported way to run a scan against someone else's database.

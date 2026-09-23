@@ -289,6 +289,18 @@ image_ecosystem_known() {
   db_lookup_exact "$prefix" "$db" >/dev/null
 }
 
+# The image package match uses the same advisory data as SCA, but a stale
+# database is still a real coverage reduction even when it contains this
+# image's release namespace.  Absence remains the existing exit-4 gate.
+image_report_advisory_staleness() {
+  local image_id=$1 db=${2:-$(image_advisories_db_path)} max_age
+  core_capture max_age config_scanner_value advisory-max-age-days
+  advisory_data_freshness "$db" "$max_age"
+  if [[ $ADVISORY_DATA_FRESHNESS == stale ]]; then
+    run_record coverage_reduction "module=image reason=advisory_data_stale image=$image_id database=$db generated=$ADVISORY_DATA_GENERATED age_days=$ADVISORY_DATA_AGE_DAYS max_age_days=$max_age - OS-package and image language-dependency matching used data older than the configured freshness limit; findings and exit status are unchanged. Refresh it on a networked box with tools/vendor-engines.sh advisories."
+  fi
+}
+
 # `image_report_no_advisory_db IMAGE_ID ECOSYSTEM [DB]` - the module-level
 # announcement when data/advisories.db has no rows for the image's own
 # resolved ecosystem: ONE coverage_reduction, ONE IMAGE-COV-NO_ADVISORY_DB-01

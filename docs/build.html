@@ -231,7 +231,8 @@ var SURFACES = [
   {id:"image", desc:"Container image"},
   {id:"all", desc:"Every configured module"},
   {id:"diff", desc:"Classify vs a prior run"},
-  {id:"report", desc:"Regenerate reports"}
+  {id:"report", desc:"Regenerate reports"},
+  {id:"paths", desc:"Show resolved paths"}
 ];
 
 var REQUIRED = {dast:"target", network:"target", image:"image", diff:"against", report:"from"};
@@ -293,7 +294,8 @@ var COMMAND_GROUPS = {
     {title:"Container image", flags:["image","source"]}
   ],
   diff: [{title:"Target", flags:["against"]}],
-  report: [{title:"Target", flags:["from"]}]
+  report: [{title:"Target", flags:["from"]}],
+  paths: []
 };
 
 var GLOBAL_GROUPS = [
