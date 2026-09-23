@@ -217,7 +217,10 @@ t_case 'gate: real tarball'
 # the refusal branch is no longer accepted and the gate must PASS outright.
 _run "$W/e.out" bash "$GATE" "$TB"
 e=$(cat "$W/e.out")
-if scan_match "$W/e.hits" -F -e SCOURSH_STATE_DIR -- "$ROOT/lib/core.sh"; then
+# No `-F`: scan_match already binds `grep -E`, and GNU grep refuses a second
+# matcher ("conflicting matchers specified") where BSD grep lets the last win.
+# The literal carries no ERE metacharacter, so the ERE match is exact.
+if scan_match "$W/e.hits" -e SCOURSH_STATE_DIR -- "$ROOT/lib/core.sh"; then
   c3=landed
 else
   c3=absent
@@ -234,7 +237,15 @@ else
   assert_contains "$e" "scoursh --version -> scoursh $V" 'the symlinked, read-only entry point still runs --version'
   assert_contains "$e" 'is INSIDE the read-only install root' 'the refusal is the install-root state/reports check'
   assert_contains "$e" 'scoursh-vendor --help resolves through its link' 'the second entry point resolves through its link'
-  assert_contains "$e" 'install tree unchanged by the run' 'nothing was written into the install tree'
+  # Root ignores the read-only bits, so as root (the GNU container leg of
+  # tools/daily-suite.sh) the pre-C3 scan really does write state/ and reports/
+  # into the install tree - and the gate's own step 8 exists to catch exactly
+  # that.  Non-root, the read-only bits stop the write and the tree is unchanged.
+  if (( EUID == 0 )); then
+    assert_contains "$e" 'the run changed the install tree' 'as root, the tree-diff check catches the install-root write'
+  else
+    assert_contains "$e" 'install tree unchanged by the run' 'nothing was written into the install tree'
+  fi
   assert_not_contains "$e" 'SHA256SUMS has no single' 'the checksum held'
   assert_not_contains "$e" 'does not run' 'the entry point was never the failure'
 fi

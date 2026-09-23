@@ -311,7 +311,9 @@ PY
       smk_fail "expected exactly one run directory under reports '$p_reports', found ${#runs[@]}"
     elif [[ ! -s ${runs[0]}/findings.jsonl ]]; then
       smk_fail "no findings.jsonl in ${runs[0]}"
-    elif scan_match "$SMK_WORK/hits" -F -e 'SAST-INJ-OS_COMMAND-01' -- "${runs[0]}/findings.jsonl"; then
+    # No `-F`: scan_match binds `grep -E`, and GNU grep rejects a second
+    # matcher; the id carries no ERE metacharacter, so the match is exact.
+    elif scan_match "$SMK_WORK/hits" -e 'SAST-INJ-OS_COMMAND-01' -- "${runs[0]}/findings.jsonl"; then
       smk_ok "findings.jsonl carries SAST-INJ-OS_COMMAND-01 (${runs[0]})"
     else
       smk_fail "findings.jsonl in ${runs[0]} lacks SAST-INJ-OS_COMMAND-01"
