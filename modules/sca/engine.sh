@@ -949,7 +949,11 @@ sca_relpath() {
 # overrides it - the same override-by-env convention lib/config.sh already
 # uses elsewhere in this codebase for a path a test needs to redirect.
 sca_advisories_db_path() {
-  printf '%s' "${SCOURSH_SCA_ADVISORIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisories.db}"
+  if [[ -n ${SCOURSH_SCA_ADVISORIES_DB:-} ]]; then
+    printf '%s' "$SCOURSH_SCA_ADVISORIES_DB"
+  else
+    scoursh_data_file advisories.db
+  fi
 }
 
 # sca_lookup_exact ECOSYSTEM PACKAGE VERSION [DB] - prints every matching
@@ -983,7 +987,11 @@ sca_package_known() {
 # across every version row for one advisory) into this advisory-keyed side
 # table: one row per advisory_id, `advisory_id\tsummary`, LC_ALL=C sorted.
 sca_advisory_summaries_db_path() {
-  printf '%s' "${SCOURSH_SCA_SUMMARIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisory-summaries.db}"
+  if [[ -n ${SCOURSH_SCA_SUMMARIES_DB:-} ]]; then
+    printf '%s' "$SCOURSH_SCA_SUMMARIES_DB"
+  else
+    scoursh_data_file advisory-summaries.db
+  fi
 }
 
 # sca_lookup_summary ADVISORY_ID [DB] - prints the advisory's summary text,

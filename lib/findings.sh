@@ -743,7 +743,8 @@ _ATTR_LOADED=0
 # version a CI image happens to ship.
 # shellcheck disable=SC2120
 attribution_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local path=${1:-$SCOURSH_CONF_DIR/scope.conf}
   _ATTR_HOST=()
   _ATTR_SUBDOMAIN=()
   _ATTR_LOADED=1

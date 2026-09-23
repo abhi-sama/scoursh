@@ -273,7 +273,11 @@ image_distro_ecosystem_resolve() {
 # reused verbatim so a test pointing SCOURSH_SCA_ADVISORIES_DB at a fixture
 # redirects this module too - the one thing that actually has to agree.
 image_advisories_db_path() {
-  printf '%s' "${SCOURSH_SCA_ADVISORIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisories.db}"
+  if [[ -n ${SCOURSH_SCA_ADVISORIES_DB:-} ]]; then
+    printf '%s' "$SCOURSH_SCA_ADVISORIES_DB"
+  else
+    scoursh_data_file advisories.db
+  fi
 }
 
 # `image_ecosystem_known ECOSYSTEM [DB]` - true when data/advisories.db

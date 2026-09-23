@@ -71,7 +71,7 @@ if [[ -n ${SCOURSH_GITLEAKS_ADAPTER_SOURCED:-} ]]; then
 fi
 SCOURSH_GITLEAKS_ADAPTER_SOURCED=1
 
-GITLEAKS_ADAPTER_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+GITLEAKS_ADAPTER_DIR=$(scoursh_engine_dir sast gitleaks)
 GITLEAKS_BIN=$GITLEAKS_ADAPTER_DIR/bin/gitleaks
 GITLEAKS_CONFIG=$GITLEAKS_ADAPTER_DIR/rules/gitleaks.toml
 

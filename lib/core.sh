@@ -1564,6 +1564,89 @@ if [[ -z ${SCOURSH_INSTALL_ROOT:-} ]]; then
   export SCOURSH_INSTALL_ROOT
 fi
 
+# Resolve mutable operator-owned locations separately from the immutable
+# install tree.  A checkout deliberately keeps the historical in-tree layout;
+# only a release build's untracked marker opts an installed copy into XDG.
+# SCOURSH_HOME is intentionally the one container-friendly override: it
+# collapses config, generated data, state, and reports below one mount point.
+#
+# Most processes call this exactly once during core initialisation.  The root
+# comparison also preserves the longstanding fixture seam where a test sources
+# a library and then points SCOURSH_INSTALL_ROOT at another clone in-process.
+_SCOURSH_LAYOUT_ROOT=''
+_SCOURSH_LAYOUT_MODE=''
+scoursh_layout_resolve() {
+  local root=${SCOURSH_INSTALL_ROOT:?scoursh_layout_resolve: SCOURSH_INSTALL_ROOT is not set}
+  if [[ $_SCOURSH_LAYOUT_ROOT == "$root" ]]; then
+    return 0
+  fi
+
+  if [[ -n ${SCOURSH_HOME:-} ]]; then
+    SCOURSH_CONF_DIR=$SCOURSH_HOME/config
+    SCOURSH_DATA_DIR=$SCOURSH_HOME/data
+    SCOURSH_STATE_DIR=$SCOURSH_HOME/state
+    SCOURSH_REPORTS_DIR=$SCOURSH_HOME/reports
+    _SCOURSH_LAYOUT_MODE=home
+  elif [[ -f $root/.scoursh-packaged ]]; then
+    local home=${HOME:-}
+    [[ -n $home ]] || die "$SCOURSH_EXIT_INPUT" \
+      'HOME is required to resolve an installed scoursh layout; set SCOURSH_HOME for a single-root layout'
+    SCOURSH_CONF_DIR=${XDG_CONFIG_HOME:-$home/.config}/scoursh
+    SCOURSH_DATA_DIR=${XDG_DATA_HOME:-$home/.local/share}/scoursh
+    SCOURSH_STATE_DIR=${XDG_STATE_HOME:-$home/.local/state}/scoursh/state
+    SCOURSH_REPORTS_DIR=${XDG_STATE_HOME:-$home/.local/state}/scoursh/reports
+    _SCOURSH_LAYOUT_MODE=installed
+  else
+    SCOURSH_CONF_DIR=$root/config
+    SCOURSH_DATA_DIR=$root/data
+    SCOURSH_STATE_DIR=$root/state
+    SCOURSH_REPORTS_DIR=$root/reports
+    _SCOURSH_LAYOUT_MODE=clone
+  fi
+  _SCOURSH_LAYOUT_ROOT=$root
+  export SCOURSH_CONF_DIR SCOURSH_DATA_DIR SCOURSH_STATE_DIR SCOURSH_REPORTS_DIR
+}
+
+# `scoursh_data_file NAME` resolves generated advisory data.  The per-user
+# location wins when present, while an image may still bake a read-only
+# database into its install tree as a fallback.
+scoursh_data_file() {
+  local name=$1 candidate fallback
+  scoursh_layout_resolve
+  candidate=$SCOURSH_DATA_DIR/$name
+  fallback=$SCOURSH_INSTALL_ROOT/data/$name
+  if [[ -r $candidate ]]; then
+    printf '%s' "$candidate"
+  else
+    printf '%s' "$fallback"
+  fi
+}
+
+# Optional engine adapters remain code from the install tree, but their large
+# downloaded binaries/rules move to generated user data in packaged installs.
+scoursh_engine_dir() {
+  local module=$1 engine=$2 candidate fallback
+  scoursh_layout_resolve
+  candidate=$SCOURSH_DATA_DIR/engines/$module/$engine
+  fallback=$SCOURSH_INSTALL_ROOT/modules/$module/adapters/$engine
+  if [[ $_SCOURSH_LAYOUT_MODE == installed || $_SCOURSH_LAYOUT_MODE == home ]]; then
+    [[ -d $candidate ]] && { printf '%s' "$candidate"; return 0; }
+  fi
+  printf '%s' "$fallback"
+}
+
+scoursh_engine_dir_for_write() {
+  local module=$1 engine=$2
+  scoursh_layout_resolve
+  if [[ $_SCOURSH_LAYOUT_MODE == installed || $_SCOURSH_LAYOUT_MODE == home ]]; then
+    printf '%s' "$SCOURSH_DATA_DIR/engines/$module/$engine"
+  else
+    printf '%s' "$SCOURSH_INSTALL_ROOT/modules/$module/adapters/$engine"
+  fi
+}
+
+scoursh_layout_resolve
+
 # Order matters: the scratch directory must exist before the msleep probe, whose
 # FIFO fallback lives in it.  scratch_init is a no-op in a worker, which
 # inherits SCOURSH_SCRATCH from the parent and must never create its own.

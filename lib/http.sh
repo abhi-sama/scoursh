@@ -356,7 +356,8 @@ _http_scope_add() {
 # same tuple.  extra-host has no scheme of its own (rules/RULE-FORMAT.md
 # §9.4); it inherits the target's base-url scheme.
 http_scope_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local path=${1:-$SCOURSH_CONF_DIR/scope.conf}
   _HTTP_SCOPE_ID=() _HTTP_SCOPE_SCHEME=() _HTTP_SCOPE_HOST=()
   _HTTP_SCOPE_PORT=() _HTTP_SCOPE_SUBS=() _HTTP_SCOPE_PRIV=()
   _HTTP_SCOPE_LOADED=1

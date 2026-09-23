@@ -72,7 +72,7 @@ trivy_vendor() {
   fi
 
   local adapter_dir
-  adapter_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+  adapter_dir=$(scoursh_engine_dir_for_write iac trivy)
   local bin_dir=$adapter_dir/bin
   mkdir -p "$bin_dir"
 

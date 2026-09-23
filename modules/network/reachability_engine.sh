@@ -305,7 +305,8 @@ _reach_row_collect() {
 # `config_load_if_present`, the same generic loader, rather than a second
 # reader.
 reach_posture_load() {
-  local target=$1 path=${2:-${SCOURSH_NET_POSTURE_CONF:-${SCOURSH_INSTALL_ROOT:-}/config/posture.conf}}
+  scoursh_layout_resolve
+  local target=$1 path=${2:-${SCOURSH_NET_POSTURE_CONF:-$SCOURSH_CONF_DIR/posture.conf}}
   declare -gA _REACH_EXPECT_CLOSED=()
   _REACH_POSTURE_STATE=absent
   _REACH_POSTURE_PATH=$path
