@@ -322,6 +322,10 @@ _net_httpport_phase() {
       run_record coverage_reduction "module=network reason=versions_db_no_banner_rows target=$target checks=[$_nc2] - data/versions.db exists but carries no \`banner\` rows, so no discovered component version could be matched against a known-vulnerable one. This is the state of a fresh clone: the list is vendored by an operator action, never by a scan (docs/VERSIONS-DB.md). Version DISCLOSURE was still checked."
       ;;
     present)
+      banner_db_freshness
+      if [[ $_BANNER_DB_FRESHNESS == stale ]]; then
+        run_record coverage_reduction "module=network phase=httpport.sh reason=advisory_data_stale checks=[NET-SVC-HTTP_OUTDATED_COMPONENT-01] target=$target database=$(banner_db_path) generated=$_BANNER_DB_GENERATED age_days=$_BANNER_DB_AGE_DAYS max_age_days=$_BANNER_DB_MAX_AGE_DAYS - banner version matching used data older than the configured freshness limit; findings and exit status are unchanged. Refresh it on a networked box with tools/vendor-engines.sh advisories banner."
+      fi
       run_record notes "module=network phase=httpport target=$target versions_db=present${_BANNER_DB_GENERATED:+ generated=$_BANNER_DB_GENERATED}"
       ;;
   esac

@@ -63,7 +63,7 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 | IaC | landed | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | 36 |
 | DAST | landed | Full engine: auth, crawl, passive, safe-active, injection, tier-5 | 92 |
 | Network / host | landed | Declared-listener reachability, banner/TLS/HTTP identification, transport posture — never a port sweep | 15 |
-| Container image | landed | Offline apk/dpkg/rpm package + language-dep CVE matching against a `docker save` tarball or OCI layout — never a registry pull | 11 |
+| Container image | landed | Offline apk/dpkg package + language-dependency CVE matching against a `docker save` tarball or OCI layout — never a registry pull. Real rpm databases report the declared `rpm_db_binary_format` coverage reduction because binary RPM headers are not decoded | 11 |
 | Cloud / AWS | landed | 30 services, read-only, multi-account (`--assume-role`), CIS/OWASP-mapped | 112 |
 
 > **Cloud is read-only and needs your own account.** `scan.sh cloud --live` runs 112 checks across 30
@@ -84,7 +84,7 @@ Also shipping, and relevant when comparing against a specialist toolchain:
 - **Guided mode** - a bare `scan.sh` walks you through composing a real command and can print the
   exact non-interactive equivalent.
 - **Test rigour** - `tests/run-tests.sh --list` is the source of truth for the current suite/linter
-  count (141 suites, 7 linters as of this writing); 47% of the codebase is tests.
+  count (142 suites, 7 linters as of this writing); roughly 45% of shell code is tests.
 
 ## Declared limits
 
@@ -102,9 +102,10 @@ blind spots*.
   correctness still needs human review.
 - **Container images.** Only the bounded, declared metadata paths a package-manager database and a
   handful of conventional language-manifest locations occupy are ever read - never a full rootfs
-  materialisation, and never a running container or its runtime behaviour. rpm needs `sqlite3` on
-  `PATH`, or matching is a declared coverage reduction rather than a silent clean pass.
-- **Speed.** Measured: 114 s for 52 files at the default single worker. `--jobs N` now gives real
+  materialisation, and never a running container or its runtime behaviour. rpm package databases use
+  binary headers scoursh does not decode, so they are a declared `rpm_db_binary_format` coverage reduction.
+- **Speed.** Measured cost is roughly 38 s of fixed startup plus ~0.3 s per file; `jobs` defaults to 4.
+  `--jobs N` gives real
   multi-worker fan-out for `sast`/`sca`/`iac` (byte-identical findings regardless of width), but each
   worker is still a shell pattern engine, not a compiled parser - compiled-Go competitors do
   comparable per-file work in a fraction of the time.
@@ -241,7 +242,7 @@ states rather than folded into a clean pass.
 
 | Tool | Coverage | Licence | Footprint | Egress / consent | Coverage honesty | Unique strength |
 |---|---|---|---|---|---|---|
-| **scoursh** | 11 checks: installed apk/dpkg/rpm package CVEs, in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference) | Apache-2.0 | bash + `tar` (rpm also needs `sqlite3` on `PATH`) | **Reads only an operator-supplied `docker save` tarball or OCI layout - never a registry pull, no daemon socket** | **Found / ran-clean / declared-skip (no advisory DB, no recognised package database, unreadable layer) kept as distinct states** | Correlates a built-artifact finding with the Dockerfile source finding for the same image (`rules/derived.rules`) |
+| **scoursh** | 11 checks: installed apk/dpkg package CVEs (rpm databases are detected but reported as a declared reduction), in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference) | Apache-2.0 | bash + `tar` | **Reads only an operator-supplied `docker save` tarball or OCI layout - never a registry pull, no daemon socket** | **Found / ran-clean / declared-skip (no advisory DB, no recognised package database, unreadable layer) kept as distinct states** | Correlates a built-artifact finding with the Dockerfile source finding for the same image (`rules/derived.rules`) |
 | Trivy | Full image, filesystem, and repo scanning across OS packages, language deps, IaC misconfig, secrets, and SBOM export, plus registry/daemon pulls | Apache-2.0 | Go binary, self-contained | Pulls from a registry or local daemon directly | Findings only | The reference image scanner - broadest ecosystem and distro coverage, actively maintained vulnerability DB |
 | Grype | OS package and language-dependency CVEs via Anchore's own feed, SBOM-driven | Apache-2.0 | Go binary, self-contained | Pulls from a registry or local daemon directly | Findings only | Fast, SBOM-native (pairs with Syft), strong feed-freshness tooling |
 
@@ -253,7 +254,7 @@ registry or a local daemon by design, which is real convenience scoursh's egress
 permit itself. What scoursh adds instead is the property the rest of the tool has: the same finding
 lands in one report alongside this image's own source-code, dependency, IaC, and (if scanned) cloud
 findings, with an absent advisory database or an unrecognised package database (a distroless/scratch
-image, or an rpm database with no `sqlite3` on `PATH`) reported as a declared reduction rather than
+image, or an rpm database whose binary headers are not decoded) reported as a declared reduction rather than
 folded into a silent clean pass. It is also the **built-artifact** counterpart to `iac`'s own
 Dockerfile *source* linting rather than a replacement for it - see `docs/CHECKS.md`'s "Container
 image" section and `docs/DESIGN.md` §15 for the boundary, including what neither scoursh feature
@@ -323,7 +324,8 @@ checks-shipped gap predicts a recall gap; the recall gap should never be the fir
 - **IaC:** scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.
 - **Secrets:** scoursh ships 7 dedicated secret checks against Gitleaks' and TruffleHog's broad,
   purpose-built rulesets.
-- **Container image:** scoursh ships 11 checks across three package managers (apk/dpkg/rpm) plus six
+- **Container image:** scoursh ships 11 checks across two package managers with working matching
+  (apk/dpkg; rpm is detected but reported as a declared reduction) plus six
   language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface,
   refreshed continuously against a registry rather than an offline, hand-refreshed database.
 

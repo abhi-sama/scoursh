@@ -56,9 +56,10 @@ _iac_capture_max_matches() {
 # context window per match and emits a finding with module=iac.
 iac_scan_file() {
   local set=$1 idx=$2 relpath=$3 abspath=$4
-  local pattern id
+  local pattern id dialect
   pattern=$(records_field "$set" "$idx" pattern)
   id=$(records_id "$set" "$idx")
+  dialect=$(records_field_or "$set" "$idx" dialect ere)
 
   # `$BASHPID`, NEVER `$$`: this file is scanned by lib/parallel.sh's forked
   # workers under `--jobs N`, and inside a subshell bash keeps `$$` as the
@@ -70,7 +71,12 @@ iac_scan_file() {
   # a dead worker and an incomplete run.  `$BASHPID` is the real pid in every
   # shell including the top-level one, so the single-worker path is unchanged.
   local hits=$SCOURSH_SCRATCH/iac-hits.$BASHPID
-  if ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
+  if [[ $dialect == pcre ]]; then
+    scan_match_offsets_pcre "$hits" "$pattern" "$abspath" || {
+      rm -f "$hits"
+      return 0
+    }
+  elif ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
     rm -f "$hits"
     return 0
   fi
@@ -150,6 +156,8 @@ iac_scan_tree() {
   local root=$1
   shift
   local -a ids=("$@")
+  sast_filter_pcre_ids iac "${ids[@]+"${ids[@]}"}"
+  ids=("${SAST_PCRE_AVAILABLE_IDS[@]+"${SAST_PCRE_AVAILABLE_IDS[@]}"}")
   _iac_capture_max_matches
   # Shares `_SAST_CHECK_EVAL` with sast_scan_tree (modules/sast/engine.sh) -
   # reset here so a stale IaC count from an earlier scan_main invocation in

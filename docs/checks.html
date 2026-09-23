@@ -105,7 +105,7 @@
 
 <div class="legend">
   <div class="item"><span class="dot d-green"></span><div><b>No external data</b><br>Works on just <code>--path</code> (code) or <code>--target</code> (a running app). Active DAST needs a reachable target + <code>--i-own-target</code>.</div></div>
-  <div class="item"><span class="dot d-blue"></span><div><b>Needs the advisory DB</b><br>Requires <code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories</code>).</div></div>
+  <div class="item"><span class="dot d-blue"></span><div><b>Needs advisory data</b><br>Dependency checks require <code>data/advisories.db</code>; banner-version checks read <code>data/versions.db</code>.</div></div>
   <div class="item"><span class="dot d-purple"></span><div><b>Optional engine depth</b><br><code>--use-engines</code> adds vendored Semgrep/Trivy/Gitleaks. Boosts depth, not new categories.</div></div>
   <div class="item"><span class="dot d-orange"></span><div><b>Needs AWS credentials</b><br>Resolvable via profile, environment, or instance role. Read-only only, enforced by <code>lib/awscli.sh</code>'s <code>aws_ro</code> chokepoint. Optional <code>--i-own-account</code> + <code>--assume-role</code> for multi-account.</div></div>
   <div class="item"><span class="dot d-red"></span><div><b>Needs <code>--allow-intrusive</code></b><br>The check's payload can mutate state beyond the single request/response cycle it inspects (<code>rules/RULE-FORMAT.md</code> &sect;9.1.3's <code>intrusive</code> tag), so it is refused in addition to <code>--intensity active</code> + <code>--i-own-target</code>.</div></div>
@@ -244,7 +244,7 @@
 <tr><td class="id" style="color:var(--red)">DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01 <span class="tag t-red">--allow-intrusive</span></td><td>Prototype pollution (error-based and confirmed-reflected) - both attempt a write into a shared, process-wide object</td></tr>
 <tr><td class="id">DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01</td><td>Host-header reflection into body or redirect authority</td></tr>
 <tr><td class="id">DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01</td><td>Exposed sensitive/backup files, content discovery, directory listing</td></tr>
-<tr><td class="id">DAST-METHOD-TRACE / WRITE / CONNECT-01</td><td>Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT)</td></tr>
+<tr><td class="id">DAST-METHOD-TRACE_ENABLED / WRITE_ADVERTISED / CONNECT_ADVERTISED-01</td><td>Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT)</td></tr>
 </tbody></table></div>
 
 <h2>DAST &mdash; authorization, tokens, rate limits &amp; GraphQL <span class="tag t-green">no external data</span></h2>
@@ -313,7 +313,7 @@ arithmetic &mdash; the identical <code>DAST-BANNER-OUTDATED_COMPONENT-01</code> 
 
 <h2>SCA &mdash; dependency CVEs <span class="tag t-blue">advisory DB</span></h2>
 <p>Known-vulnerable dependencies from your lockfiles. This is the one surface that needs the vendored
-<code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories bulk --all</code>); without it,
+<code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories bulk --accept-unverified --all</code>); without it,
 SCA reports that no advisory data was available rather than a false all-clear.</p>
 <div class="tblwrap"><table>
 <thead><tr><th>Check</th><th>Ecosystem</th></tr></thead><tbody>
@@ -332,9 +332,9 @@ registry pull. Runs on <code>./scan.sh image --image ID</code> (optionally <code
 the path <code>config/images.conf</code> records for that id), where <code>ID</code> names an <code>id</code>
 record in <code>config/images.conf</code> pointing at a <code>docker save</code> tarball
 (<code>source: docker-archive</code>) or an OCI image-layout directory (<code>source: oci-layout</code>) the
-operator has already exported. <code>tar</code> is the only new binary this needs; rpm additionally needs
-<code>sqlite3</code> on <code>PATH</code> (its package database is a binary format text tools can't read &mdash;
-<code>requires-cmd: sqlite3</code>, a declared coverage reduction rather than a silent skip when absent). This is
+operator has already exported. <code>tar</code> is the only new binary this needs. apk and dpkg matching work;
+real rpm databases are detected but their binary RPM headers are not decoded, so they report the declared
+<code>rpm_db_binary_format</code> coverage reduction. This is
 the <b>built-artifact</b> counterpart to <code>modules/iac/dockerfile.rules</code>: the Dockerfile check reads what
 was <i>written</i>, this reads what actually <i>shipped</i> &mdash; the base image's own packages, drift between a
 digest-pinned Dockerfile and a months-old build, and the effective runtime user across every merged layer, none of
@@ -343,13 +343,13 @@ which source linting can see.</p>
 <thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
 <tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-01</td><td>Installed apk package matches a known advisory for the image's Alpine release</td></tr>
 <tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-02</td><td>Installed dpkg package matches a known advisory for the image's Debian/Ubuntu release (resolved against the <code>Source:</code> package where one is declared)</td></tr>
-<tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-03 (needs <code>sqlite3</code> on <code>PATH</code>)</td><td>Installed rpm package matches a known advisory for the image's RHEL/Fedora release</td></tr>
+<tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-03</td><td>rpm matching is not supported on real images: their binary database yields the declared <code>rpm_db_binary_format</code> coverage gap</td></tr>
 <tr><td class="id">IMAGE-LANGDEP-VULNERABLE_DEP-01</td><td>A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) found at a bounded set of conventional manifest locations inside the image's own rootfs matches a known advisory &mdash; reuses <code>sca</code>'s own tree-walkers, re-emitted under this id and the image's own <code>image-id</code> cell rather than <code>module=sca</code></td></tr>
 <tr><td class="id">IMAGE-CFG-RUNS_AS_ROOT-01</td><td>Image config declares no non-root <code>User</code> &mdash; the <i>effective</i> runtime user across every merged base layer, not one Dockerfile's own <code>USER</code> line</td></tr>
 <tr><td class="id">IMAGE-CFG-EXPOSED_PORTS-01</td><td>Image config declares one or more exposed ports (informational)</td></tr>
 <tr><td class="id">IMAGE-CFG-MUTABLE_BASE_REF-01</td><td>Image's own recorded base-image reference is a mutable tag rather than a content digest</td></tr>
 <tr><td class="id">IMAGE-COV-NO_ADVISORY_DB-01</td><td>No advisory rows for this image's distro release &mdash; nothing was matched (exit 4 when <code>image</code> is the selected command)</td></tr>
-<tr><td class="id">IMAGE-COV-UNKNOWN_DISTRO-01</td><td>No recognised package database (apk/dpkg/rpm) found in any layer &mdash; e.g. a distroless/scratch image</td></tr>
+<tr><td class="id">IMAGE-COV-UNKNOWN_DISTRO-01</td><td>No recognised package database found in any layer (for example, distroless/scratch), or an rpm database whose binary format cannot be decoded</td></tr>
 <tr><td class="id">IMAGE-COV-LAYER_UNREADABLE-01</td><td>One or more layers or archive members could not be read</td></tr>
 <tr><td class="id">IMAGE-COV-LANGDEPS_NOT_SCANNED-01</td><td>Language-dependency scanning found no manifest at any declared candidate location, or no advisory data</td></tr>
 </tbody></table></div>

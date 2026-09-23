@@ -885,6 +885,12 @@ t_case 'AC: a no-fixed-version pypi advisory is flagged accept-risk (urllib3), a
 assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: true' 'urllib3 (empty fixed_versions in the fixture db) is accept-risk'
 assert_contains "$PY_POETRY_FINDINGS" 'fixed_versions: none published' 'the empty fixed_versions field renders as "none published"'
 assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: false' 'requests (has a fixed version) is NOT accept-risk'
+t_case 'the real PyPI emitter writes machine-readable dependency type and fixed versions'
+PY_POETRY_FIELDS=$(cat "$W/run-py-python-poetry/findings.fields")
+assert_contains "$PY_POETRY_FIELDS" 'dep_type=direct' \
+  'the direct requests finding carries dep_type for agent-fix.json'
+assert_contains "$PY_POETRY_FIELDS" 'fix_fixed_versions=2.20.0' \
+  'the fixed requests finding carries fix_fixed_versions for agent-fix.json'
 t_case 'poetry.lock: an unmatched-but-known pinned version (certifi) feeds the roll-up'
 assert_contains "$PY_POETRY_FINDINGS" 'SCA-COV-UNKNOWN_VERSION-01' 'the roll-up fired'
 assert_contains "$PY_POETRY_FINDINGS" 'SCA: 1 pinned dependency version' 'exactly one unresolved case (certifi@2019.11.28) is counted'
@@ -1660,6 +1666,23 @@ assert_eq 1 "$SCAPAR_G1" \
   'once at --jobs 1 - FAILS under a parent-side emit gated on `PARALLEL_WORKERS > 1`, which drops it from every single-worker run (a partition is installed on the inline path too); that shipped for one measurement and reads as a cleaner result'
 assert_eq 1 "$SCAPAR_G4" \
   'and once at --jobs 4 - FAILS if it is left to sca_go_scan_tree under a partition, which would state it once per worker and read as four separate limitations'
+
+t_case 'stale advisory data records coverage reduction without changing the SCA exit code'
+STALE_DB=$W/stale-advisories.db
+{
+  printf '# generated: 2020-01-01T00:00:00Z\n'
+  cat "$DB"
+} >"$STALE_DB"
+STALE_RUNDIR=$W/run-stale-advisories
+rm -rf "$STALE_RUNDIR"
+_RC=0
+env SCOURSH_SCA_ADVISORIES_DB="$STALE_DB" SCOURSH_ADVISORY_NOW_EPOCH=2000000000 \
+  bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --out "$STALE_RUNDIR" >/dev/null 2>&1 || _RC=$?
+assert_eq 0 "$_RC" 'a stale but readable database still performs matching and exits by the ordinary gate result'
+assert_contains "$(cat "$STALE_RUNDIR/run.json")" 'reason=advisory_data_stale database=' \
+  'run.json names the stale-data coverage reduction rather than treating old advisories as a clean result'
+assert_contains "$(cat "$STALE_RUNDIR/run.json")" 'max_age_days=30' \
+  'the documented default freshness limit is the value used when no config or environment override is set'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

@@ -818,6 +818,7 @@ patterns do.
 | `cis` | optional | repeatable | no | As §9.1. |
 | `severity-floor` | optional | single | no | As §9.1. |
 | `severity-ceiling` | optional | single | no | As §9.1. |
+| `fix-cli` | optional | single | no | A deterministic remediation command, when the check can safely supply one. |
 
 A script check has no `pattern`, `dialect`, `files`, or `context-*` key; those are `E017` here.
 
@@ -922,13 +923,14 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `fail-on` | single | no | Severity name or `none` | `none` |
 | `min-confidence` | single | no | `high` `medium` `low` | `low` |
 | `redact-secrets` | single | no | `true` or `false` | `true` |
-| `formats` | repeatable | no | `json` `sarif` `html` `md` | all four |
+| `formats` | repeatable | no | `json` `sarif` `html` `md` `audit` `agent` | `json` `sarif` `html` `md` `agent` |
 | `max-matches-per-file` | single | no | Positive integer | `200` |
 | `evidence-max-bytes` | single | no | Positive integer | `512` |
 | `scratch-dir` | single | no | Absolute path | `${TMPDIR:-/tmp}` |
 | `state-retain-runs` | single | no | Positive integer | `30` |
 | `history-window-days` | single | no | Positive integer | `365` |
 | `history-max-commits` | single | no | Positive integer | `5000` |
+| `advisory-max-age-days` | single | no | Positive integer. Maximum age of a `# generated:` advisory-data stamp before consumers record a coverage reduction; does not change the exit code. | `30` |
 | `lock-stale-seconds` | single | no | Positive integer | `30` |
 | `mutex-timeout-seconds` | single | no | Positive integer | `120` |
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
@@ -960,6 +962,10 @@ SEPARATE counter rather than toward `circuit-breaker-failures`, which after this
 transport-level failures (no usable response at all).  See `lib/http.sh`'s
 `_http_breaker_record_failure` for the full reasoning behind the split.  Additive and optional, so it
 too trips §14 item 2 alone with no `format_version` bump.
+
+`advisory-max-age-days` is likewise additive and optional. It is resolved through the ordinary
+`SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS` environment override and is consumed by SCA, image package, and
+banner-version matching; it trips §14 item 2 alone with no `format_version` bump.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.
@@ -1499,8 +1505,10 @@ A schema that needs "unset" uses the literal token `none` (§5.3).
 
 ## 13. Linter checks
 
-`tests/lint-rules.sh` implements every check below and exits non-zero if any error fires.
-Warnings are reported and do not fail unless `--strict`.
+`tests/lint-rules.sh` implements the checks below except the explicitly marked **reserved**
+codes. It exits non-zero if an implemented error fires. There is no `--strict` mode in
+format version 1: warnings never fail the linter and are shown only when
+`SCOURSH_SHOW_RULE_WARNINGS=true`.
 
 ### Syntax (from §3 to §7)
 
@@ -1541,7 +1549,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E045 | error | `format-version` present and not `1` |
 | E070 | error | Record file matches no row of the §9 path table |
 | E071 | error | Single-record config file has the wrong `id` literal, or more than one record (§9) |
-| E072 | error | §9.5 `script` names a path that does not exist |
+| E072 | reserved | §9.5 `script` names a path that does not exist (not currently emitted) |
 | E073 | error | `config/auth.conf` permissions are not `600` |
 | E074 | error | §9.6.2 record is missing a key its `mode` requires |
 | E075 | error | Two `data/severity-rubric.conf` records share the same (`fact`, `equals`) pair |
@@ -1559,7 +1567,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E040 | error | `dialect: ere` value uses a construct outside the §8.2 subset |
 | E041 | error | Nested unbounded quantification (catastrophic-backtracking shape) |
 | E046 | error | Value does not compile under its declared dialect (verified by invoking the engine on `/dev/null`) |
-| W047 | warning | `dialect: pcre` used where the §8.2 subset would suffice (no PCRE-only construct present) |
+| W047 | reserved | `dialect: pcre` used where the §8.2 subset would suffice (not currently emitted) |
 | E042 | error | `files` / `exclude-files` glob uses `\` or `{}` |
 
 ### Directive (from §10)
@@ -1583,8 +1591,8 @@ Warnings are reported and do not fail unless `--strict`.
 
 | Code | Severity | Check |
 |---|---|---|
-| E060 | error | A rule has no true-positive fixture under `tests/fixtures/` |
-| W061 | warning | A rule fires on the clean fixture (false-positive guard) |
+| E060 | reserved | A rule has no true-positive fixture under `tests/fixtures/` (not currently emitted) |
+| W061 | reserved | A rule fires on the clean fixture (not currently emitted) |
 | E062 | error | `rules/RETIRED.txt` contains an id that is still defined |
 
 Every diagnostic is printed as `path:line:col: CODE record-id message` so it is greppable and so an

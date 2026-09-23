@@ -1,5 +1,8 @@
 # Guided interactive mode sub-ticket plan
 
+> **Current-status note (2026-09-21).** This is a historical plan. Guided cloud currently does not compose
+> `--live`, so it does not start a live AWS scan; use the explicit `cloud --live` command for that surface.
+
 This is a planning document only.
 It contains no shell code and changes no behavior.
 It exists so that the guided interactive mode - `--guided` (a bare `scan.sh`, or

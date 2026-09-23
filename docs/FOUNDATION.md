@@ -1,5 +1,10 @@
 # scoursh foundation - design-tension register
 
+> **Current-status note (2026-09-21).** This register preserves both design resolutions and their
+> implementation history. For current operator-facing behavior use [`docs/USAGE.md`](USAGE.md); where a
+> tension says a proposed feature is not implemented, that statement is intentional unless a later dated
+> status note says otherwise.
+
 > This is the register of design tensions found by reading `docs/DESIGN.md` adversarially, as an
 > implementer who has to write the thing in bash.
 > Each entry states the tension, why it bites, the options that were considered, the **RESOLUTION**, and
@@ -44,6 +49,9 @@
 | 24 | Runtime freeze: bash and coreutils portability | §4, §10 |
 | 25 | Offline version matching for SCA | §6.5 |
 | 26 | One record format for human-authored config | §11 |
+| 27 | Adapter integration and vendoring | §6.4, §9 |
+| 28 | Egress model correction | §2, §12 |
+| 29 | Documentation and verification evidence | §12 |
 
 ---
 
@@ -399,7 +407,8 @@ A lint in `tests/` enforces rules 1, 2, and 5 by grep.
    18), because this trap erases the scratch dir on the very signal tension 18's resume test uses.
 
    The `ERR` trap reports `${BASH_SOURCE[0]}:${LINENO}` and `$BASH_COMMAND`, must contain no command
-   that can itself fail, and re-raises the original status.
+   that can itself fail, and exits `5` (`incomplete`) rather than re-raising an arbitrary unexpected
+   status. This keeps a failed command from colliding with the findings gate's exit `1`.
    `die` removes the `ERR` trap before exiting, so an intentional exit is not re-reported as an error.
 
 **Consequence for the build.**
@@ -2807,9 +2816,12 @@ The worker id is `$BASHPID` plus the work-unit index, so it is unique even if a 
 > `$( ... )` is the subshell's pid and differs on every call, which silently gives every finding a shard
 > of its own.
 
-`--keep-shards` is redefined accordingly: it means **do not delete the shard and unit directories after
-a successful merge**.  Without it they are removed once the merge has completed, which is the only point
-at which they are genuinely redundant.
+> **Implementation status (2026-09-21): resolved in design, not implemented.** `--keep-shards` is not
+> a shipped CLI flag. Shards live in the run directory, but the proposed deletion behavior below has not
+> been implemented.
+
+`--keep-shards` is redefined accordingly in this design: it would mean **do not delete the shard and unit
+directories after a successful merge**. Without it they would be removed once the merge completed.
 
 At end of run, `scan.sh` merges every shard into `reports/<run>/findings.jsonl`, sorted by
 `(module, check_id, fingerprint)` under `LC_ALL=C`.
@@ -2943,7 +2955,10 @@ unit_key = lowercase_hex_sha256( "uk/1" \0 module \0 check_id \0 scope_1 \0 scop
 | Cloud live | `account_id`, `region`, `service` |
 | Posture | `control_id` (the `POSTURE-*` check id), `scope_key` |
 
-Each worker appends `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to
+> **Implementation status (2026-09-21): resolved in design, not implemented.** The unit journal and
+> `--resume` are not shipped; `reports/<run>/units/` is currently created empty.
+
+Each worker would append `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to
 `reports/<run>/units/<worker-id>.jsonl`, using the same per-worker shard mechanism as tension 17, so the
 journal needs no locking either.
 
@@ -3696,7 +3711,10 @@ sast -> sca -> iac -> cloud -> dast
 ```
 
 DAST last, deliberately.
-For the standalone case, `--from-run <dir>` imports a previous run's inventory, which lets a fast DAST
+> **Implementation status (2026-09-21): resolved in design, not implemented.** `--from-run` is not a
+> shipped flag; the following paragraph records the intended standalone-inventory design.
+
+For the standalone case, `--from-run <dir>` would import a previous run's inventory, letting a fast DAST
 loop reuse a nightly full run's route extraction without re-running SAST.
 Imported inventory is recorded in `run.json` with its source run id, because inventory from a stale
 source is a coverage claim that needs an audit trail.
@@ -3854,7 +3872,7 @@ holds even if the lint is wrong.
    positives by construction.
 4. **A small, reviewed exception file** for operations that are legitimately needed and are not read
    verbs.
-   `tests/aws-readonly-allow.txt` holds exact `service operation` pairs with a justification comment,
+   `data/aws-readonly-allow.txt` holds exact `service operation` pairs with a justification comment,
    seeded with `sts assume-role` (required by §8.1 multi-account) and `sts get-caller-identity` (which
    the prefix allows anyway, listed for clarity).
    The lint fails on any call not covered by the prefix allowlist **or** this file, **and** fails on any
@@ -4229,6 +4247,23 @@ SemVer 2.0.0 reference), and `tests/suites/sca.sh` / `tests/suites/vendor-engine
 npm-range lookup and importer end to end, the summary side table's round trip through the finding-decode
 path, and every non-npm ecosystem proven unaffected).
 
+**AMENDMENT (captain-approved namespace split, 2026-09-21).** The earlier "same shape and same rule"
+sentence caused the build to write every SCA and image OS-package row into both
+`data/advisories.db` and `data/versions.db`, making two near-identical roughly-492-MB files. That is
+not useful redundancy: SCA and image consumers read `advisories.db`; DAST and network banner consumers
+read only the literal `banner` namespace from `versions.db`. The build therefore writes SCA and image
+namespaces, and their summaries, only to `advisories.db` / `advisory-summaries.db`; `versions.db` /
+`version-summaries.db` contain banner data only. A SCA/image refresh prunes legacy non-banner rows from
+an existing `versions.db`. Both primary files remain plain, `LC_ALL=C`-sorted TSV so
+`db_lookup_exact` keeps its `look` binary-search contract; neither is compressed at scan time.
+
+**AMENDMENT (advisory freshness, 2026-09-21).** Generated advisory files carry a `# generated:` UTC
+stamp. SCA, image OS-package, and banner consumers compare it with the resolved
+`advisory-max-age-days` scanner setting (default 30; `SCOURSH_CONFIG_ADVISORY_MAX_AGE_DAYS` is the
+ordinary environment override). Data older than that limit records a `coverage_reduction` with the
+stamp and age; it does not alter findings or exit status. An absent required SCA/image database remains
+the existing exit-4 condition, while an absent banner namespace remains its existing declared skip.
+
 ## Tension 26 - one record format for human-authored config
 
 **The tension.**
@@ -4297,6 +4332,15 @@ rather than by the shell implicitly, against scoursh's own **install root** - th
 `scan.sh`.
 That is a different root from the **scan root** of tension 12, which is a property of the tree being
 scanned; the two are never interchangeable and are named differently for that reason.
+
+**Packaging amendment (2026-09-21).** The discovery-input paths in
+`config/discovery.conf` keep this install-root-relative interpretation in a
+checkout, preserving existing configuration. In a packaged install (identified
+by its `.scoursh-packaged` marker), they resolve relative to the config file
+that names them; equivalent `--openapi`/`--har`/`--postman`/`--graphql-schema`
+CLI paths resolve from the operator's current working directory. This is the
+narrow exception needed to keep an installed copy from resolving operator data
+inside its immutable install tree.
 
 One parser, `lib/records.sh`, serves all of it.
 One linter covers all of it, so a typo in `scanner.conf` fails the same way a typo in a rule pack does,
@@ -5824,7 +5868,7 @@ read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD
 through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
 at step 1 as a no-op stub over an empty set of call sites and removes its matching logic from the
 "still to write" list - `lib/awscli.sh` has since landed too, so what is left of CLOUD-03 is seeding
-`tests/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
+`data/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
 against the first real `aws_ro` call sites once the live scripts start landing - and states that the
 landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. Step 6 was gated on
 step 3, step 4 (SCA + IaC), and step 5 (DAST) all being complete on `dev`, per that plan's own status

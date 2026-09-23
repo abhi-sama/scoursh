@@ -1,5 +1,11 @@
 # Air-Gapped Shell Security Scanner - Design & Implementation Plan
 
+> **Current-status note (2026-09-21).** This preserved handoff plan records the original design rather
+> than the current command surface. For current behavior, consult [`docs/FOUNDATION.md`](FOUNDATION.md),
+> [`rules/RULE-FORMAT.md`](../rules/RULE-FORMAT.md), [`docs/USAGE.md`](USAGE.md),
+> [`docs/CHECKS.md`](CHECKS.md), and the egress-model correction in
+> [`docs/adr/0001-egress-model-correction.md`](adr/0001-egress-model-correction.md).
+
 > Handoff spec. Build in the order given in §13. Each module is
 > independent and testable in isolation. Nothing in the core makes third-party
 > network calls. The only outbound traffic permitted is (a) `curl` to targets the

@@ -1,5 +1,9 @@
 # Runbook: how this project's tests are actually run
 
+> **Current-status note (2026-09-21).** Pull requests run a 10-shard Ubuntu matrix. Pushes to `dev` and
+> `main` additionally run macOS and the GNU/BSD comparison. The heaviest ShellCheck files are handed to
+> the scheduled local `tools/daily-suite.sh` path; see `tests/shellcheck-heavy-files.txt`.
+
 Audience: engineers contributing to scoursh (PR authors), and whoever administers the machine the local suite runs on.
 
 ## Two paths, and which one actually runs right now

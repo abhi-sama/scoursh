@@ -154,7 +154,16 @@ else
   RUN_SANDBOXED_MAIN=0
 fi
 
-RUN_SANDBOXED_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+_sbx_self=${BASH_SOURCE[0]}
+while [[ -L $_sbx_self ]]; do
+  _sbx_link=$(readlink -- "$_sbx_self")
+  case $_sbx_link in
+    /*) _sbx_self=$_sbx_link ;;
+    *) _sbx_self=$(dirname -- "$_sbx_self")/$_sbx_link ;;
+  esac
+done
+RUN_SANDBOXED_DIR=$(cd -- "$(dirname -- "$_sbx_self")/.." && pwd -P)
+unset -v _sbx_self _sbx_link
 # -x back-edge cut: lib/http.sh below reaches lib/core.sh itself, so following
 # this edge too would inline the whole hub chain twice for every consumer of
 # this file (docs/CI-RUNBOOK.md, "the memory model"). Lossless - core.sh is
@@ -468,7 +477,7 @@ _sbx_on_exit() {
 RUN_SANDBOXED_RELAY_MAP=''
 
 _sbx_start_relays_and_build_profile() {
-  local n=${#RUN_SANDBOXED_MAP_HOST[@]} i key addr port relayport allow=''
+  local n=${#RUN_SANDBOXED_MAP_HOST[@]} i key addr port allow=''
   local -a seen_key=() seen_port=()
   local j found
   RUN_SANDBOXED_RELAY_MAP=''

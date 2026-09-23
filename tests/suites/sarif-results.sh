@@ -269,6 +269,19 @@ finding_set loc_param_location query
 finding_set loc_param_name q
 finding_emit
 
+finding_new
+finding_set check_id LOC-CASE4-NET-01
+finding_set module net
+finding_set title 'case 4 net'
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target t1
+finding_set loc_host listener.example
+finding_set loc_port 8443
+finding_set loc_transport tcp
+finding_emit
+
 findings_merge "$D"
 report_all "$D"
 
@@ -297,6 +310,17 @@ if (( HAVE_PY )); then
   assert_file_exists "$D/locations/dast.txt" 'and it genuinely exists (tension 22: never a fabricated location)'
   LN=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-DAST-01')['locations'][0]['physicalLocation']['region']['startLine']")
   assert_ne '' "$LN" 'case 4 still carries a region.startLine, into the generated artifact'
+
+  t_case 'case 4 (net): uri is the generated listener-location artifact, which is a real file'
+  URI=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['physicalLocation']['artifactLocation']['uri']")
+  assert_eq 'locations/net.txt' "$URI" 'net uri'
+  assert_file_exists "$D/locations/net.txt" 'and the listener artifact genuinely exists'
+  LN=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['physicalLocation']['region']['startLine']")
+  assert_ne '' "$LN" 'net location carries a region.startLine into the generated artifact'
+  NET_KIND=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['logicalLocations'][0]['kind']")
+  NET_FQN=$(_py "$D" "next(r for r in d['runs'][0]['results'] if r['ruleId']=='LOC-CASE4-NET-01')['locations'][0]['logicalLocations'][0]['fullyQualifiedName']")
+  assert_eq listener "$NET_KIND" 'net SARIF derives a listener logical kind without persisting it'
+  assert_eq 't1:listener.example:8443/tcp' "$NET_FQN" 'net SARIF derives the listener fqn from frozen location fields'
 else
   _t_ok 'python3 unavailable, case 1/2/4 location checks skipped'
 fi

@@ -285,6 +285,75 @@ _REDACTION_COMBINED=''
 declare -gA _REDACT_MEMO=()
 declare -ga _REDACTION_IDS=()
 
+# §9.6.2 is stronger than shape-based redaction: every value loaded from
+# config/auth.conf is secret, even when it has no matching vendored pattern.
+# These exact bytes live only in this process; they are never written to an
+# artifact or sent to another process as an argument.
+declare -gA _AUTH_REDACT_VALUE=()
+_AUTH_REDACT_OUT=''
+
+auth_redaction_clear() {
+  _AUTH_REDACT_VALUE=()
+  # A value could have been memoised before the auth configuration changed.
+  # Clear both memo layers so no writer can replay a stale masking result.
+  _REDACT_MEMO=()
+  if declare -p _REDACT_OUT_MEMO >/dev/null 2>&1; then
+    _REDACT_OUT_MEMO=()
+  fi
+  return 0
+}
+
+# Register every field of every parsed auth identity.  The frozen schema marks
+# the whole record secret, so this deliberately includes id and mode as well as
+# credential-bearing fields; choosing a hand-maintained subset would create a
+# future disclosure path when auth modes grow.  A scan loads one auth.conf;
+# replacing, rather than accumulating, values also keeps a library caller that
+# switches configs in one process from masking unrelated later diagnostics.
+auth_redaction_register() {
+  local set=$1 n i key value digest
+  auth_redaction_clear
+  records_count_into "$set"
+  n=$_RECORDS_COUNT_V
+  for (( i = 0; i < n; i++ )); do
+    while IFS= read -r key; do
+      [[ -n $key ]] || continue
+      records_field_or_into "$set" "$i" "$key" ''
+      value=$_RECORDS_FIELD_V
+      [[ -n $value ]] || continue
+      [[ -n ${_AUTH_REDACT_VALUE[$value]+set} ]] && continue
+      digest=$(printf '%s' "$value" | sha256_of)
+      _AUTH_REDACT_VALUE[$value]="<redacted:AUTH_CONF:${digest:0:8}>"
+    done <<<"$(records_keys "$set" "$i")"
+  done
+  return 0
+}
+
+# Scan left-to-right and choose the longest auth value at each position.
+# Repeated global substitutions are unsafe when one auth value is contained in
+# another, or when a short value occurs in the redaction placeholder itself.
+_auth_redact_values() {
+  local text=$1
+  local out='' best='' value i=0 n=${#text} best_len len
+  while (( i < n )); do
+    best='' best_len=0
+    for value in "${!_AUTH_REDACT_VALUE[@]}"; do
+      len=${#value}
+      (( len > best_len )) || continue
+      [[ ${text:i:len} == "$value" ]] || continue
+      best=$value
+      best_len=$len
+    done
+    if [[ -n $best ]]; then
+      out+=${_AUTH_REDACT_VALUE[$best]}
+      i=$(( i + best_len ))
+    else
+      out+=${text:i:1}
+      i=$(( i + 1 ))
+    fi
+  done
+  _AUTH_REDACT_OUT=$out
+}
+
 # The path argument is optional and defaults to the shipped file.  Callers that
 # pass one - the fixture harness and the test suites - live outside this file and
 # are therefore invisible to the linter.  Older releases report SC2120 here and
@@ -329,6 +398,12 @@ redaction_load() {
 # rules/RULE-FORMAT.md §8.2 exactly, on every host.
 redact() {
   local text=$1
+  # auth.conf values are never permitted to reach an artifact, even when an
+  # operator disabled the broader shape-based redact-secrets preference.
+  if (( ${#_AUTH_REDACT_VALUE[@]} > 0 )); then
+    _auth_redact_values "$text"
+    text=$_AUTH_REDACT_OUT
+  fi
   if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
     printf '%s' "$text"
     return 0
@@ -1355,6 +1430,10 @@ _finding_default_logical() {
       finding_set logical_kind control
       finding_set logical_fqn "${_F[loc_control_id]:-}"
       ;;
+    image)
+      finding_set logical_kind image
+      finding_set logical_fqn "image ${_F[loc_image_id]:-}: ${_F[check_id]:-}"
+      ;;
     # sca and derived always set their own logical identity before
     # finding_emit is called (modules/sca/, the composite path in this file) -
     # nothing to default.
@@ -1745,28 +1824,11 @@ derive_findings() {
   n=$(records_count derivedset)
   (( n > 0 )) || return 0
 
-  # Index this run's findings by (check_id, correlation key, correlation value).
-  _DERIVE_PRESENT=()
-  _DERIVE_SEV=()
-  local line ck ckey cv key
-  if [[ -s $rundir/findings.fields ]]; then
-    while IFS= read -r line; do
-      [[ -n $line ]] || continue
-      finding_decode "$line"
-      ck=${_DF[check_id]}
-      _DERIVE_SEV[${_DF[fingerprint]}]=$(severity_rank "${_DF[severity]}")
-      for ckey in none target account account-region file; do
-        cv=$(_corr_value_of "$ckey")
-        [[ -n $cv ]] || continue
-        key="$ck|$ckey|$cv"
-        if [[ -n ${_DERIVE_PRESENT[$key]:-} ]]; then
-          _DERIVE_PRESENT[$key]="${_DERIVE_PRESENT[$key]}"$'\n'"${_DF[fingerprint]}"
-        else
-          _DERIVE_PRESENT[$key]=${_DF[fingerprint]}
-        fi
-      done
-    done <"$rundir/findings.fields"
-  fi
+  # Index this run's findings by (check_id, correlation key, correlation
+  # value).  The same index also powers the post-dispatch §9.2.2 coverage-gap
+  # report, so both the firing and "could not correlate" paths answer from
+  # exactly the same input set.
+  _derive_index_findings "$rundir"
 
   # Composites go into their own shard, so appending them to the merged set
   # cannot re-append this worker's ordinary findings.
@@ -1793,6 +1855,33 @@ derive_findings() {
 declare -gA _DERIVE_PRESENT=()
 declare -gA _DERIVE_SEV=()
 declare -gA _DERIVE_BACKREF=()
+declare -gA _DERIVE_ANY=()
+
+_derive_index_findings() {
+  local rundir=$1 line ck ckey cv key
+  _DERIVE_PRESENT=()
+  _DERIVE_SEV=()
+  _DERIVE_ANY=()
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    ck=${_DF[check_id]}
+    _DERIVE_ANY[$ck]=1
+    _DERIVE_SEV[${_DF[fingerprint]}]=$(severity_rank "${_DF[severity]}")
+    for ckey in none target account account-region file; do
+      cv=$(_corr_value_of "$ckey")
+      [[ -n $cv ]] || continue
+      key="$ck|$ckey|$cv"
+      if [[ -n ${_DERIVE_PRESENT[$key]:-} ]]; then
+        _DERIVE_PRESENT[$key]="${_DERIVE_PRESENT[$key]}"$'\n'"${_DF[fingerprint]}"
+      else
+        _DERIVE_PRESENT[$key]=${_DF[fingerprint]}
+      fi
+    done
+  done <"$rundir/findings.fields"
+  return 0
+}
 
 # The correlation value of the last decoded finding, for one correlation key.
 _corr_value_of() {
@@ -1824,7 +1913,7 @@ _derive_one() {
       v=${k#"$c|$corr|"}
       if [[ -z ${seen[$v]:-} ]]; then
         seen[$v]=1
-        values+=("$v")
+        values[${#values[@]}]=$v
       fi
     done
   done <<<"$(_derived_contributors "$ridx")"
@@ -1839,6 +1928,94 @@ _derived_contributors() {
   records_list derivedset "$1" requires
   printf '\n'
   records_list derivedset "$1" any-of
+}
+
+# The presence predicate before correlation.  A missing contributor is an
+# ordinary absent link (and can be a clean result), not the §9.2.2 condition
+# that needs a coverage gap.  The gap is reserved for the materially different
+# case where the links are present but cannot be joined conservatively.
+_derived_contributors_present() {
+  local ridx=$1 c any=0
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    [[ -n ${_DERIVE_ANY[$c]:-} ]] || return 1
+  done <<<"$(records_list derivedset "$ridx" requires)"
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    [[ -n ${_DERIVE_ANY[$c]:-} ]] && any=1
+  done <<<"$(records_list derivedset "$ridx" any-of)"
+  if records_has derivedset "$ridx" any-of && (( any == 0 )); then
+    return 1
+  fi
+  return 0
+}
+
+# True when the requires/any-of predicate holds for one actual correlation
+# value.  Kept separate from _derive_fire so a coverage decision cannot create
+# a finding as a side effect.
+_derived_predicate_holds() {
+  local ridx=$1 corr=$2 val=$3 c any=0
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    [[ -n ${_DERIVE_PRESENT["$c|$corr|$val"]:-} ]] || return 1
+  done <<<"$(records_list derivedset "$ridx" requires)"
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    [[ -n ${_DERIVE_PRESENT["$c|$corr|$val"]:-} ]] && any=1
+  done <<<"$(records_list derivedset "$ridx" any-of)"
+  if records_has derivedset "$ridx" any-of && (( any == 0 )); then
+    return 1
+  fi
+  return 0
+}
+
+# True when at least one real correlation value joins the contributors.  The
+# candidate set comes only from contributor findings, so a non-contributor can
+# never make a chain look correlatable by happening to use the same value.
+_derived_has_shared_value() {
+  local ridx=$1 corr=$2 c k val
+  local -A values=()
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    for k in "${!_DERIVE_PRESENT[@]}"; do
+      [[ $k == "$c|$corr|"* ]] || continue
+      val=${k#"$c|$corr|"}
+      values[$val]=1
+    done
+  done <<<"$(_derived_contributors "$ridx")"
+  for val in "${!values[@]}"; do
+    _derived_predicate_holds "$ridx" "$corr" "$val" && return 0
+  done
+  return 1
+}
+
+# `derive_record_uncorrelated_gaps [RUNDIR]` is deliberately called once by
+# scan_main AFTER every selected module has completed.  Module run scripts
+# render intermediate reports while an `all` scan is still accumulating
+# contributors; recording this earlier could leave a false limitation behind
+# when a later module supplies the missing, matching value.  At this fixed
+# point, present-but-unjoinable contributors are exactly §9.2.2's coverage gap.
+derive_record_uncorrelated_gaps() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  local derived_file=${2:-$SCOURSH_INSTALL_ROOT/rules/derived.rules}
+  [[ -r $derived_file ]] || return 0
+  if [[ ${_REC_PATH[derivedset]:-} != "$derived_file" ]]; then
+    records_load "$derived_file" derived derivedset || die "$SCOURSH_EXIT_INPUT" \
+      "$derived_file failed to parse"
+  fi
+  _derive_index_findings "$rundir"
+  local n i id corr
+  n=$(records_count derivedset)
+  for (( i = 0; i < n; i++ )); do
+    id=$(records_id derivedset "$i")
+    _derived_record_selected "$id" || continue
+    corr=$(records_field derivedset "$i" correlate-on)
+    [[ $corr == none ]] && continue
+    _derived_contributors_present "$i" || continue
+    _derived_has_shared_value "$i" "$corr" && continue
+    run_record coverage_gap "composite: $id could not correlate its present contributors on $corr because they share no correlation value; it did not fire. This is a coverage gap, not a clean result."
+  done
+  return 0
 }
 
 _derive_fire() {

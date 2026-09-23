@@ -280,7 +280,7 @@
     <tr><td class="tool">IaC</td><td><span class="pill p-ok">landed</span></td><td>Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose</td><td>36</td></tr>
     <tr><td class="tool">DAST</td><td><span class="pill p-ok">landed</span></td><td>Full engine: auth, crawl, passive, safe-active, injection, tier-5</td><td>92</td></tr>
     <tr><td class="tool">Network / host</td><td><span class="pill p-ok">landed</span></td><td>Declared-listener reachability, banner/TLS/HTTP identification, transport posture &mdash; never a port sweep</td><td>15</td></tr>
-    <tr><td class="tool">Container image</td><td><span class="pill p-ok">landed</span></td><td>Offline apk/dpkg/rpm package + language-dep CVE matching against a <code>docker save</code> tarball or OCI layout &mdash; never a registry pull</td><td>11</td></tr>
+    <tr><td class="tool">Container image</td><td><span class="pill p-ok">landed</span></td><td>Offline apk/dpkg package + language-dependency CVE matching; real rpm databases report the declared <code>rpm_db_binary_format</code> reduction because binary RPM headers are not decoded</td><td>11</td></tr>
     <tr><td class="tool">Cloud / AWS</td><td><span class="pill p-ok">landed</span></td><td>30 services, read-only, multi-account (<code>--assume-role</code>), CIS/OWASP-mapped</td><td>112</td></tr>
   </tbody>
 </table>
@@ -302,7 +302,7 @@
   <li><strong>Persistent state and diff</strong> — findings classify as <code>new</code> / <code>recurring</code> / <code>fixed</code> / <code>unknown</code> against the prior run, with baseline suppression and a real <code>--fail-on-new</code> CI carve-out.</li>
   <li><strong>Optional engine adapters</strong> — semgrep and gitleaks for SAST, <code>trivy config</code> for IaC, all opt-in and vendored ahead of time. Nothing is fetched during a scan.</li>
   <li><strong>Guided mode</strong> — a bare <code>scan.sh</code> walks you through composing a real command and can print the exact non-interactive equivalent.</li>
-  <li><strong>Test rigour</strong> — <code>tests/run-tests.sh --list</code> is the source of truth for the current suite/linter count (141 suites, 7 linters as of this writing); 47% of the codebase is tests.</li>
+  <li><strong>Test rigour</strong> — <code>tests/run-tests.sh --list</code> is the source of truth for the current suite/linter count (142 suites, 7 linters as of this writing); roughly 45% of shell code is tests.</li>
 </ul>
 
 <!-- ============ LIMITS ============ -->
@@ -317,7 +317,7 @@
   <li><strong>Client-rendered apps.</strong> No JavaScript execution, so a single-page app&rsquo;s routes are invisible unless you supply an OpenAPI, HAR, Postman or GraphQL spec.</li>
   <li><strong>Advisory freshness.</strong> SCA is only as current as your last offline refresh — a deliberate, dated snapshot, never real-time.</li>
   <li><strong>Business logic.</strong> Authorization checks are detection-oriented; complete access-control correctness still needs human review.</li>
-  <li><strong>Speed.</strong> Measured: 114&nbsp;s for 52 files at the default single worker. <code>--jobs N</code> now gives real multi-worker fan-out for <code>sast</code>/<code>sca</code>/<code>iac</code> (byte-identical findings regardless of width), but each worker is still a shell pattern engine, not a compiled parser — compiled-Go competitors do comparable per-file work in a fraction of the time.</li>
+  <li><strong>Speed.</strong> Measured cost is roughly 38&nbsp;s of fixed startup plus ~0.3&nbsp;s per file; <code>jobs</code> defaults to 4. <code>--jobs N</code> gives real multi-worker fan-out for <code>sast</code>/<code>sca</code>/<code>iac</code> (byte-identical findings regardless of width), but each worker is still a shell pattern engine, not a compiled parser — compiled-Go competitors do comparable per-file work in a fraction of the time.</li>
   <li><strong>Not a pentest.</strong> Automated regression and posture scanning that complements a manual assessment; it does not replace one.</li>
 </ul>
 
@@ -676,9 +676,9 @@
   <tbody>
     <tr class="self">
       <td class="tool">scoursh</td>
-      <td>11 checks: installed apk/dpkg/rpm package CVEs, in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference)</td>
+      <td>11 checks: installed apk/dpkg package CVEs (rpm databases are detected but reported as a declared reduction), in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference)</td>
       <td><span class="pill p-ok">Apache-2.0</span></td>
-      <td>bash + <code>tar</code> (rpm also needs <code>sqlite3</code> on <code>PATH</code>)</td>
+      <td>bash + <code>tar</code></td>
       <td><strong>Reads only an operator-supplied <code>docker save</code> tarball or OCI layout — never a registry pull, no daemon socket</strong></td>
       <td><strong>Found / ran-clean / declared-skip kept as distinct states</strong></td>
       <td>Correlates a built-artifact finding with the Dockerfile source finding for the same image (<code>rules/derived.rules</code>)</td>
@@ -714,8 +714,7 @@
   egress model does not permit itself. What scoursh adds instead is the property the rest of the tool
   has: the same finding lands in one report alongside this image&rsquo;s own source-code, dependency,
   IaC, and (if scanned) cloud findings, with an absent advisory database or an unrecognised package
-  database (a distroless/scratch image, or an rpm database with no <code>sqlite3</code> on
-  <code>PATH</code>) reported as a declared reduction rather than folded into a silent clean pass. It
+  database (a distroless/scratch image, or an rpm database whose binary headers are not decoded) reported as a declared reduction rather than folded into a silent clean pass. It
   is also the <strong>built-artifact</strong> counterpart to <code>iac</code>&rsquo;s own Dockerfile
   <em>source</em> linting rather than a replacement for it &mdash; see
   <a href="checks.html">docs/CHECKS.md</a>&rsquo;s &ldquo;Container image&rdquo; section and
@@ -860,7 +859,7 @@
   <li><strong>SAST:</strong> scoursh ships 53 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.</li>
   <li><strong>IaC:</strong> scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.</li>
   <li><strong>Secrets:</strong> scoursh ships 7 dedicated secret checks against Gitleaks&rsquo; and TruffleHog&rsquo;s broad, purpose-built rulesets.</li>
-  <li><strong>Container image:</strong> scoursh ships 11 checks across three package managers (apk/dpkg/rpm) plus six language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface, refreshed continuously against a registry rather than an offline, hand-refreshed database.</li>
+  <li><strong>Container image:</strong> scoursh ships 11 checks across two package managers with working matching (apk/dpkg; rpm is detected but reported as a declared reduction) plus six language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface, refreshed continuously against a registry rather than an offline, hand-refreshed database.</li>
 </ul>
 <p>
   A roughly 50-to-1 rule-count gap does not require a benchmark to predict a specialist win on recall. A

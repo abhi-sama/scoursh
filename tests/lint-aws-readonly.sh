@@ -18,7 +18,7 @@
 #   3. an aws_ro call whose operation is a variable is permitted only when that
 #      variable is assigned from a `readonly` array of literals declared in the
 #      same file, and every literal in that array is checked;
-#   4. tests/aws-readonly-allow.txt entries that no longer appear in the code
+#   4. data/aws-readonly-allow.txt entries that no longer appear in the code
 #      are a failure, so the exception list cannot rot into a blanket
 #      permission.
 #
@@ -53,12 +53,12 @@ cd "$SCAN_ROOT"
 
 READONLY_PREFIXES='^(describe|list|get|search|lookup|select|head|batch-get|preview|estimate|simulate)(-|$)'
 # Always scoursh's own reviewed exception list, never the scanned tree's -
-# tests/aws-readonly-allow.txt is scoursh's exception file (docs/FOUNDATION.md
+# data/aws-readonly-allow.txt is scoursh's exception file (docs/FOUNDATION.md
 # tension 23 item 4), not something a fixture root would carry its own copy of.
 # SCOURSH_AWS_LINT_ALLOWFILE overrides it for tests/suites/aws-lint.sh only, so
 # that suite can exercise check 4 (a stale exception rots into a blanket
 # permission) without ever writing to the real, committed file.
-: "${SCOURSH_AWS_LINT_ALLOWFILE:=$ROOT/tests/aws-readonly-allow.txt}"
+: "${SCOURSH_AWS_LINT_ALLOWFILE:=$ROOT/data/aws-readonly-allow.txt}"
 ALLOW_FILE=$SCOURSH_AWS_LINT_ALLOWFILE
 
 FAILED=0

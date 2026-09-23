@@ -454,6 +454,52 @@ now_epoch() {
   fi
 }
 
+# --- advisory-data freshness -------------------------------------------------
+# Advisory databases are generated outside a scan.  Their # generated: stamp is
+# deliberately parsed here, with the other portable clock primitives, so SCA,
+# image and banner consumers cannot drift on what "30 days old" means.
+_advisory_days_from_civil() {
+  local y=$1 m=$2 d=$3 era yoe doy doe
+  (( m <= 2 )) && y=$(( y - 1 ))
+  if (( y >= 0 )); then era=$(( y / 400 )); else era=$(( (y - 399) / 400 )); fi
+  yoe=$(( y - era * 400 ))
+  if (( m > 2 )); then doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 )); else doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 )); fi
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  printf '%s' $(( era * 146097 + doe - 719468 ))
+}
+
+# `advisory_data_freshness PATH MAX_AGE_DAYS` sets the generated timestamp,
+# whole-day age and state (`fresh`, `stale`, or `unknown`).  Unknown is never
+# guessed: an old-looking name or filesystem mtime is not advisory provenance.
+#
+# SC2034: these three globals are this function's published output contract,
+# read by SCA, image, and banner consumers across the source-file boundary.
+# A command substitution would lose the assignments, so callers intentionally
+# read the globals after a direct invocation; shellcheck's per-file analysis
+# cannot see those reads.
+# shellcheck disable=SC2034
+advisory_data_freshness() {
+  local path=$1 max_age_days=$2 line='' stamp='' generated now age
+  ADVISORY_DATA_GENERATED=''
+  ADVISORY_DATA_AGE_DAYS=''
+  ADVISORY_DATA_FRESHNESS=unknown
+  [[ -r $path ]] || return 1
+  while IFS= read -r line; do
+    case $line in '# generated: '*) stamp=${line#'# generated: '}; break ;; esac
+  done <"$path"
+  [[ $stamp =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$ ]] || return 0
+  generated=$(_advisory_days_from_civil "$(( 10#${BASH_REMATCH[1]} ))" "$(( 10#${BASH_REMATCH[2]} ))" "$(( 10#${BASH_REMATCH[3]} ))")
+  generated=$(( generated * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]} ))
+  now=${SCOURSH_ADVISORY_NOW_EPOCH:-$(now_epoch)}
+  [[ $now =~ ^[0-9]+$ ]] || return 0
+  age=$(( (now - generated) / 86400 ))
+  (( age < 0 )) && age=0
+  ADVISORY_DATA_GENERATED=$stamp
+  ADVISORY_DATA_AGE_DAYS=$age
+  if (( age > max_age_days )); then ADVISORY_DATA_FRESHNESS=stale; else ADVISORY_DATA_FRESHNESS=fresh; fi
+  return 0
+}
+
 # Nanoseconds since the epoch.  SCOURSH_CLOCK_NS records whether the underlying
 # source is genuinely sub-second, so the rate limiter's arithmetic and the
 # msleep probe both know what they are working with.
@@ -809,6 +855,16 @@ scan_match_offsets() {
   scan_match "$out" -b -o -e "$pattern" -- "$file"
 }
 
+# The PCRE counterpart is deliberately separate from scan_match_offsets:
+# callers must make the §8.3 capability decision before reaching it, so an
+# unavailable optional dialect degrades into a recorded skip rather than an
+# internal engine error.  Once that decision has been made, offsets retain the
+# exact `line:byteoffset:match` shape the ERE path produces.
+scan_match_offsets_pcre() {
+  local out=$1 pattern=$2 file=$3
+  scan_match_pcre "$out" -b -o -e "$pattern" -- "$file"
+}
+
 # `scan_match_stdin PATTERN` - reads the text on stdin and prints one line per
 # MATCH.  Used by redact() (lib/findings.sh), which must apply the frozen §8.2
 # regex dialect to a string held in memory.
@@ -821,6 +877,17 @@ scan_match_stdin() {
   (( ${#SCOURSH_GREP_PLAIN[@]} > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine is not bound"
   "${SCOURSH_GREP_PLAIN[@]+"${SCOURSH_GREP_PLAIN[@]}"}" -o -e "$1" || rc=$?
   (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine failed (rc=$rc) on stdin match"
+  return "$rc"
+}
+
+# As scan_match_stdin, but for a record whose declared dialect is PCRE.  It is
+# used only after the caller's §8.3 skip gate, including context directives:
+# a record's dialect applies to pattern, context-require, and context-deny.
+scan_match_stdin_pcre() {
+  local rc=0
+  core_has_pcre || die "$SCOURSH_EXIT_INCOMPLETE" "scan_match_stdin_pcre called with no PCRE2 engine"
+  "${SCOURSH_GREP_PCRE[@]+"${SCOURSH_GREP_PCRE[@]}"}" -o -e "$1" || rc=$?
+  (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "PCRE pattern engine failed (rc=$rc) on stdin match"
   return "$rc"
 }
 
@@ -1176,10 +1243,21 @@ core_cleanup() {
 
 core_on_err() {
   local status=$1 line=$2 src=$3 cmd=$4
+  # An explicit `exit N` is a deliberate public contract of a caller, not an
+  # unexpected command failure.  lib/records.sh is shared by scan.sh and the
+  # standalone record linters; the latter deliberately exit 1 when they find
+  # a format violation, and must not have that documented result rewritten to
+  # the scanner's incomplete-run code.  `die` already clears ERR for its own
+  # intentional exits; this covers other small tools that do not use `die`.
+  if [[ $cmd == exit\ * ]]; then
+    return "$status"
+  fi
   # Nothing here may itself fail (tension 4 rule 5), so it is printf only.
   printf '%s error scoursh: command failed (status %s) at %s:%s: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$src" "$line" "$cmd" >&2
-  return "$status"
+  # An unhandled command failure is an incomplete run, never the findings
+  # gate's exit 1. `die` disables this trap for intentional 2/3/4/5 exits.
+  exit "$SCOURSH_EXIT_INCOMPLETE"
 }
 
 core_on_signal() {

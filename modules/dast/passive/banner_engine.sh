@@ -556,17 +556,18 @@ _banner_flush_endpoint() {
 # `look`-with-a-`grep -F`-fallback primitive - on the
 # `banner<TAB>product<TAB>version<TAB>` prefix.  No range arithmetic, no
 # comparison, no network.
+: "${SCOURSH_VERSIONS_DB:=}"
 : "${SCOURSH_DAST_VERSIONS_DB:=}"
+: "${SCOURSH_SCA_VERSIONS_DB:=}"
 
 # `banner_db_path` - the database this run reads.  The environment override is
 # the swappable-seam idiom lib/http.sh's transport and resolver hooks already
 # use, and it is what lets a suite point at a fixture database instead of the
 # shipped one.
 banner_db_path() {
-  if [[ -n ${SCOURSH_DAST_VERSIONS_DB:-} ]]; then
-    printf '%s' "$SCOURSH_DAST_VERSIONS_DB"
-    return 0
-  fi
+  if [[ -n ${SCOURSH_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_VERSIONS_DB"; return 0; fi
+  if [[ -n ${SCOURSH_DAST_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_DAST_VERSIONS_DB"; return 0; fi
+  if [[ -n ${SCOURSH_SCA_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_SCA_VERSIONS_DB"; return 0; fi
   printf '%s' "${SCOURSH_INSTALL_ROOT:-${BASH_SOURCE[0]%/*}/../../..}/data/versions.db"
 }
 
@@ -617,6 +618,19 @@ banner_db_state() {
     esac
   done <"$db"
   (( n > 0 )) && _BANNER_DB_STATE=present
+  return 0
+}
+
+# `banner_db_freshness` shares core.sh's portable generated-stamp parser with
+# SCA and image matching.  Callers own their coverage wording because DAST and
+# network have distinct check ids, but they all receive the same state.
+banner_db_freshness() {
+  local max_age
+  core_capture max_age config_scanner_value advisory-max-age-days
+  advisory_data_freshness "$(banner_db_path)" "$max_age"
+  _BANNER_DB_FRESHNESS=$ADVISORY_DATA_FRESHNESS
+  _BANNER_DB_AGE_DAYS=$ADVISORY_DATA_AGE_DAYS
+  _BANNER_DB_MAX_AGE_DAYS=$max_age
   return 0
 }
 

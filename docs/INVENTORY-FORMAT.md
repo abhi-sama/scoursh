@@ -1,5 +1,9 @@
 # The run inventory format
 
+> **Current-status note (2026-09-21).** Network scanning also writes
+> `reports/<run>/inventory/listeners.json` with schema `scoursh.inventory.listeners/1`; consumers do not
+> currently reject an unknown inventory `schema` value.
+
 This document is normative and self-contained, in the same way `rules/RULE-FORMAT.md` is for records
 and `docs/ADAPTERS.md` is for engine adapters.
 It defines the two files modules exchange target-surface information through:
