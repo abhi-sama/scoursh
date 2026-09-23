@@ -4689,6 +4689,13 @@ capability table (`file`, conditional on the declared key) and `tests/lint-rules
 established. `tests/suites/image-iac-correlate.sh` proves both directions against the real check ids
 and the real `rules/derived.rules`.
 
+## Release artifacts: `tools/build-release.sh` and the `tools/smoke-installed.sh` gate
+
+- **The tarball ships only `BR_RELEASE_PATHS` (`tools/build-release.sh`), and only COMMITTED bytes at the ref.** A new runtime file outside `lib/`, `modules/`, `rules/`, `data/`, `docs/`, `config/*.example` and the three listed `tools/` scripts will NOT ship until it is added there - and a runtime read from `tests/` or `bench/` breaks every installed copy (the reason the AWS allowlist moved to `data/`).
+- **The build refuses forbidden shapes even when committed**: vendored engine `bin/`/`rules/`, `*.db`, non-example config, a committed `.scoursh-packaged`. The marker and `bin/` links are generated, never committed.
+- **The gate (`tools/smoke-installed.sh`) is strict**: read-only extraction, a symlinked entry point, `scoursh paths` must place state and reports outside the install root, and a real `sast` scan must succeed. It refuses today's tree until the installed-layout resolver (packaging plan §3 C3) lands; `tests/suites/build-release.sh` section E accepts that refusal only while `lib/core.sh` lacks `SCOURSH_STATE_DIR`, then demands a PASS.
+- `.github/workflows/release.yml` publishes only from a `vX.Y.Z` tag whose commit is on `main` with a green push-to-main `ci.yml` run; `docs/USAGE.md` "Installing from a release" is the operator/maintainer procedure.
+
 ## `bench/` is a benchmark harness, NOT part of the scanner
 
 `bench/` measures scoursh's detection against other tools on neutral, pinned,
