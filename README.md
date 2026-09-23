@@ -103,6 +103,24 @@ cd scoursh
 ./scan.sh --help
 ```
 
+**From a release tarball.** Each release is one attested, reproducible `scoursh-X.Y.Z.tar.gz` plus
+`SHA256SUMS`. Verify it, extract it, and link `bin/scoursh` onto `PATH`:
+
+```sh
+V=1.0.0
+gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
+sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
+gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh
+mkdir -p ~/.local/share/scoursh ~/.local/bin
+tar -xzf "scoursh-$V.tar.gz" -C ~/.local/share/scoursh
+ln -sfn ~/.local/share/scoursh/scoursh-$V/bin/scoursh ~/.local/bin/scoursh
+scoursh --version && scoursh paths
+```
+
+An installed copy is `scoursh` rather than `./scan.sh`, and keeps its own files where
+`scoursh paths` says. Offline verification, rebuilding a release to compare checksums, and cutting a
+release: [`docs/USAGE.md`](docs/USAGE.md#installing-from-a-release).
+
 `tests/run-tests.sh` is the real test entry point; `pnpm test`/`npm test` are thin aliases for it -
 scoursh has no Node runtime dependency.
 
