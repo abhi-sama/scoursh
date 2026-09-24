@@ -8,7 +8,7 @@ The assignment-form matrix for `modules/sast/rules/secrets.rules`, consumed by
 open nothing; they exist so a rule change can be watched failing and then
 passing.  Nothing here is, or has ever been, a real credential.
 
-Each interesting line carries an inline `[[Pnn]]` or `[[Nnn]]` tag:
+Each interesting line carries an inline `[[Pnn]]`, `[[Nnn]]` or `[[Gnn]]` tag:
 
 - `Pnn` is a **positive control**: the scanner MUST report a `SAST-SEC-*`
   finding on that line.  A miss is a false negative, which for a secrets
@@ -18,6 +18,11 @@ Each interesting line carries an inline `[[Pnn]]` or `[[Nnn]]` tag:
   reference, a template, a path, a length, or a placeholder.  A hit is noise,
   and a rule set that flags every `KEY=value` line trains operators to ignore
   the tool - the same outcome as missing the secret.
+- `Gnn` is a **gap control** (`multiline.py`): a credential whose value sits on
+  a different line from its keyword, which no line-oriented pattern rule can
+  reach (`rules/RULE-FORMAT.md` §8.2). The suite asserts these lines neither
+  way; its section E pins the gap itself, so it stays visible instead of being
+  silently assumed covered.
 
 This is a DEDICATED tree, deliberately not `tests/fixtures/{vuln,clean}/`.
 Those two are scanned wholesale by every pack's suite, so a file added there

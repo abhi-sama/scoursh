@@ -13,7 +13,10 @@ state, reports, and a built advisory database must not live there.
 
 ## Decision
 
-`lib/core.sh` exports resolved config, data, state, and reports directories.
+`lib/core.sh` exports resolved config, data, state, and reports directories
+(`SCOURSH_CONF_DIR`, `SCOURSH_DATA_DIR`, `SCOURSH_STATE_DIR`,
+`SCOURSH_REPORTS_DIR`); the resolver is `lib/layout.sh`, which `lib/core.sh`
+sources.
 A checkout has no marker and retains its historical in-tree locations. A
 release build alone writes the uncommitted `.scoursh-packaged` marker, which
 selects the XDG layout: config in `${XDG_CONFIG_HOME:-~/.config}/scoursh`,

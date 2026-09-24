@@ -473,10 +473,13 @@ Take either side of the conflict and re-run `tools/gen-status.sh --write`: both 
 output, neither is more authoritative than a fresh generation, and hand-merging two generated tables is
 exactly how a wrong count gets committed with a straight face.
 
-**Current position, headline (updated 2026-09-21): every numbered `docs/DESIGN.md` §13 step has landed as scoped; the
+**Current position, headline (updated 2026-09-24): every numbered `docs/DESIGN.md` §13 step has landed as scoped; the
 separate follow-on Cloud posture work (POSTURE-02 through POSTURE-04) remains outstanding as stated below. Two
 surfaces outside the ten-step catalog - network/host scanning (`modules/network/`) and built-container-image
-scanning (`modules/image/`) - are also complete. `ROADMAP.md`'s own "Landed"/"Not yet started" sections
+scanning (`modules/image/`) - are also complete. The packaging surface (installed-copy layout, release
+build and gate, dormant release workflow, Homebrew template) has landed too - see "Release and packaging"
+below - while a published release, container image, `install.sh`, engine setup/pinning (`engines.lock`),
+and rpm package-database decoding remain unbuilt. `ROADMAP.md`'s own "Landed"/"Not yet started" sections
 are the terse, always-current mirror of this fact; if anything below this paragraph ever reads as
 contradicting it, `ROADMAP.md` and this headline win.** The paragraphs below walk through how each step
 got there, in landing order, for the detail a terse summary cannot carry.
@@ -1069,7 +1072,9 @@ under this ticket's own "correcting the stale `--format` prose" mandate. Two sta
 and deliberately left alone, reported as findings rather than fixed, since this ticket's scope is
 documentation only: `lib/report.sh` and `lib/findings.sh` each carry one source comment still reading
 "a SARIF emitter that does not exist yet", and `tests/suites/scan.sh`'s `--format sarif` test case
-carries a stale description and asserts nothing about `report.sarif` itself.
+carries a stale description and asserts nothing about `report.sarif` itself. (Re-checked 2026-09-24:
+`lib/report.sh`'s comment is gone; the `lib/findings.sh` comment and the `tests/suites/scan.sh` case
+description still say it.)
 
 **COMPLIANCE-01 and COMPLIANCE-02 (`docs/STEP10-SARIF-PLAN.md` Track B's unblocked OWASP half) have
 now landed, and so has COMPLIANCE-03 (the CIS half's own unblocked ticket) and COMPLIANCE-04 (the CIS
@@ -2346,14 +2351,12 @@ phase script `dast_run_phase` sources.
 Five things about it are worth carrying here, because a later ticket will otherwise rediscover them the
 expensive way:
 
-- **`docs/VERSIONS-DB.md` is the normative format for `data/versions.db`, and the file carries TWO
-  namespaces in one table.** Field 1 is an SCA ecosystem (`npm`, `pypi`, ...) for the rows
-  `tools/vendor-engines.sh advisories` writes, and the literal `banner` for the rows this check reads.
-  They coexist by construction rather than by luck: that writer replaces only the rows whose first field
-  equals the ecosystem it is writing, and `banner` sorts before every ecosystem name under `LC_ALL=C`,
-  so neither namespace can disturb the other's rows or the sort `db_lookup_exact` depends on. There is
-  no importer for the `banner` namespace yet; §5 of that document is the hand procedure, and it exists
-  because a list nobody can refresh becomes wrong quietly.
+- **`docs/VERSIONS-DB.md` is the normative format for `data/versions.db`, and since the 2026-09-21
+  advisory-data split the file carries ONE namespace, the literal `banner`.** When DAST-09 landed it
+  also held every SCA ecosystem's rows beside `banner`; `docs/FOUNDATION.md` tension 25's split
+  amendment moved those to `data/advisories.db` only, and every SCA/image refresh prunes legacy
+  non-banner rows out of `versions.db`. The banner namespace has had an importer since
+  (`tools/vendor-engines.sh advisories banner`, below; that document's §5 is its refresh procedure).
 - **The scanner does an exact table lookup and NOTHING else.** There is deliberately no "1.18.0 looks
   older than 1.27.0" heuristic: that is version-range arithmetic, which tension 25 moved off the scanner
   onto the networked box that has each ecosystem's real tooling. Do not add one here.
@@ -3107,10 +3110,13 @@ box with real tooling, never in the egress-restricted scan-time path); per-ecosy
 `modules/sca/engine.sh`'s, `php_engine.sh`'s and `go_engine.sh`'s own `sca_*_normalize_name`/
 `sca_go_normalize_version` functions verbatim (lazily sourced), so the writer and the reader of
 `data/advisories.db` can never drift apart on the frozen normalisation table.
-`data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
-own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
-server or TLS library with no SCA-ecosystem manifest at all) had been a stated, filed gap; a later
-ticket (below) closed it.
+**Current-status note (updated 2026-09-24):** this paragraph originally said the same writer also
+filled `data/versions.db` with every SCA row ("the same shape and the same rule"). The advisory-data
+split (`docs/FOUNDATION.md` tension 25's 2026-09-21 amendment) reversed that: SCA and image OS-package
+rows (and their summaries) go to `data/advisories.db`/`advisory-summaries.db` only, `data/versions.db`
+holds the `banner` namespace only, and every SCA/image refresh prunes legacy non-banner rows out of an
+existing `versions.db` (`_veng_versions_prune_to_banner`). The banner product catalog itself landed in a
+later ticket (below).
 `tests/suites/vendor-engines-advisories.sh` (85 assertions) is the fixture-driven proof, against
 hand-authored, OSV.dev-*shaped* (never live-fetched) fixtures under
 `tests/fixtures/vendor-engines/osv/` - the identical "no live network calls in CI" posture
@@ -3432,12 +3438,13 @@ the paragraph above.
 landed in full - see the SARIF-01 through SARIF-05 landing paragraphs above - and `state/` has since
 landed too, per `docs/STEP7-STATE-PLAN.md`); which module directories exist is in the generated block
 above.
-Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
-`coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
-`modules/sca/run.sh` now does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer, and Go.
-`sca` is DIFFERENT from that group in a way worth stating precisely, since it is easy to conflate the
-two separate coverage_reduction mechanisms `scan.sh` has: `scan_dispatch sca` itself no longer no-ops
-(its `reason=not_yet_built` no longer fires - `modules/sca/run.sh` is real), but
+**Current-status note (updated 2026-09-24):** every module now has a real entry point
+(`modules/{sast,sca,iac,dast,network,image}/run.sh` and `modules/cloud/aws/run.sh`), so
+`scan_dispatch`'s `reason=not_yet_built` no-op (`scan.sh`) is unreachable for every shipped command; it
+fires only if a module's `run.sh` is missing from disk.
+Two separate coverage_reduction mechanisms in `scan.sh` are still easy to conflate, and `sca` is where
+they differ: `scan_dispatch sca` does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer,
+and Go, but
 `_scan_apply_profile_filter sca` still records `reason=no_check_registry_on_disk_yet` on every run, and
 always will - by design, not because the module is unbuilt.
 `_scan_apply_profile_filter`'s check-registry side loads check ids from on-disk `*.rules` files
@@ -3872,7 +3879,9 @@ step 2 is next" above.
   supply, never duplicating a flag the caller passed (two `--region`s makes the winner a property of
   the CLI's argument parser). `scan.sh`'s `SCAN_FLAGS[profile]` still has zero readers, so
   `--profile staging` end to end is `modules/cloud/aws/run.sh`'s to close - the defect is narrowed
-  to one wiring site, not fixed.
+  to one wiring site, not fixed. (**Closed since:** `modules/cloud/aws/run.sh` now reads
+  `SCAN_FLAGS[profile]` and calls `aws_ro_use_profile` before the identity call, and the region pass
+  calls `aws_ro_use_region`.)
 - **`sts get-caller-identity` needs NO entry in `data/aws-readonly-allow.txt`** - the frozen `get`
   prefix already admits it, and an entry no code needs is what the lint's check 4 exists to reject.
   That file is still deliberately absent and is seeded by the `--assume-role` PR, not before.
@@ -4015,9 +4024,11 @@ into `modules/image/run.sh`'s real dispatch, distro-release detection, and the
 `data/advisories.db` reuse's exit-4 gate.** Three pieces:
 
 - **`tools/vendor-engines.sh advisories alpine`** - a SEVENTH advisory importer, alongside the six SCA
-  ecosystems and `banner`, writing `Alpine:vX.Y` rows to `data/advisories.db` (unlike `banner`, which
-  writes `data/versions.db` only - an Alpine row IS the exact-row shape `modules/sca/`-style consumers
-  read, so it belongs in both files for tension 25's own "same shape, same rule"). It needed a THIRD
+  ecosystems and `banner`, writing `Alpine:vX.Y` rows to `data/advisories.db` (`banner` writes
+  `data/versions.db` only). When this landed the Alpine rows were written to both files under tension
+  25's "same shape, same rule"; the 2026-09-21 advisory-data split amendment to that tension moved every
+  non-banner namespace to `data/advisories.db` alone, and a refresh now prunes them out of
+  `versions.db`. It needed a THIRD
   ecosystem-matching shape in `_veng_advisories_osv_extract_py` (section 3) beyond exact-match and
   `banner`'s bare `*` wildcard: OSV.dev keys Alpine advisories PER RELEASE
   (`Alpine:v3.18`, `Alpine:v3.19`, ...), so the `alpine` sentinel (`Alpine:*`) is a PREFIX match, and -
@@ -4598,7 +4609,10 @@ Three sharp edges this ticket hit, each worth knowing before touching the file a
 
 **The rpm slice is now COMPLETE end to end - the last rpm ticket adds the Red Hat advisory ecosystem
 and wires `rpm.sh`'s enumerator plus `rpm_version.sh`'s comparator into the real vulnerable-package
-finding path, mirroring IMG-09's identical completion of the dpkg (Debian/Ubuntu) slice.** It ships
+finding path, mirroring IMG-09's identical completion of the dpkg (Debian/Ubuntu) slice.** ("Complete" means the matching and emission path is wired and tested; because no real rpm database
+is readable as text - see IMG-12 above - a real rpm image still reports `IMAGE-COV-UNKNOWN_DISTRO-01`
+(`rpm_db_binary_format`) rather than package matches. Decoding binary RPM headers is open work, listed
+in `ROADMAP.md`.) It ships
 `modules/image/distro/rpm.sh`'s own section 2 (matching + `_rpm_emit_vulnerable_package`, emitting
 `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` - registered by `checks-rpm.rules` at IMG-12 but unreachable until
 now) and a new `tools/vendor-engines.sh advisories redhat` importer. Four things about it are worth
@@ -4689,12 +4703,28 @@ capability table (`file`, conditional on the declared key) and `tests/lint-rules
 established. `tests/suites/image-iac-correlate.sh` proves both directions against the real check ids
 and the real `rules/derived.rules`.
 
-## Release artifacts: `tools/build-release.sh` and the `tools/smoke-installed.sh` gate
+## Release and packaging: `tools/build-release.sh`, the `tools/smoke-installed.sh` gate, and the installed layout
 
+- **Checkout vs installed copy is decided by ONE generated marker, `.scoursh-packaged`, never by
+  install-root writability** (`docs/adr/0002-installed-layout.md`; `docs/FOUNDATION.md` tension 26's
+  2026-09-23 packaging amendment). `lib/layout.sh` (sourced by `lib/core.sh`) resolves and exports
+  `SCOURSH_CONF_DIR`/`SCOURSH_DATA_DIR`/`SCOURSH_STATE_DIR`/`SCOURSH_REPORTS_DIR`: a checkout (no marker)
+  keeps in-tree `config/`, `data/`, `state/`, `reports/` exactly as before; an installed copy uses
+  `${XDG_CONFIG_HOME:-~/.config}/scoursh`, `${XDG_DATA_HOME:-~/.local/share}/scoursh` and
+  `${XDG_STATE_HOME:-~/.local/state}/scoursh/{state,reports}`; `SCOURSH_HOME` wins in either mode as one
+  `{config,data,state,reports}` root. Rules, payloads, wordlists and compliance data always stay under
+  the install root; generated databases (`scoursh_data_file`) and vendored engine assets
+  (`scoursh_engine_dir`) prefer the user data dir and fall back to the install root, and the per-file
+  environment overrides still win. `scan.sh paths` (`scoursh paths` once installed) prints every
+  resolved location; `scan.sh --version` prints `VERSION`. New code that reads or writes operator data
+  resolves through these variables, never `$SCOURSH_INSTALL_ROOT/config` and friends -
+  `tests/suites/layout.sh` is the read-only installed-copy regression suite.
 - **The tarball ships only `BR_RELEASE_PATHS` (`tools/build-release.sh`), and only COMMITTED bytes at the ref.** A new runtime file outside `lib/`, `modules/`, `rules/`, `data/`, `docs/`, `config/*.example` and the three listed `tools/` scripts will NOT ship until it is added there - and a runtime read from `tests/` or `bench/` breaks every installed copy (the reason the AWS allowlist moved to `data/`).
-- **The build refuses forbidden shapes even when committed**: vendored engine `bin/`/`rules/`, `*.db`, non-example config, a committed `.scoursh-packaged`. The marker and `bin/` links are generated, never committed.
-- **The gate (`tools/smoke-installed.sh`) is strict**: read-only extraction, a symlinked entry point, `scoursh paths` must place state and reports outside the install root, and a real `sast` scan must succeed. It refuses today's tree until the installed-layout resolver (packaging plan §3 C3) lands; `tests/suites/build-release.sh` section E accepts that refusal only while `lib/core.sh` lacks `SCOURSH_STATE_DIR`, then demands a PASS.
-- `.github/workflows/release.yml` publishes only from a `vX.Y.Z` tag whose commit is on `main` with a green push-to-main `ci.yml` run; `docs/USAGE.md` "Installing from a release" is the operator/maintainer procedure.
+- **The build refuses forbidden shapes even when committed**: vendored engine `bin/`/`rules/`, `*.db`, non-example config, a committed `.scoursh-packaged`. The marker and the four `bin/` links (`scoursh`, `scoursh-vendor`, `scoursh-sandbox`, `scoursh-netns`) are generated, never committed.
+- **The gate (`tools/smoke-installed.sh`) is strict**: read-only extraction, a symlinked entry point, `scoursh paths` must place state and reports outside the install root, a real `sast` scan must succeed, and the install tree must be unchanged afterwards. Since the installed-layout resolver landed (#340) it PASSES on this tree (measured 2026-09-24: `tools/build-release.sh "$(cat VERSION)" DIR` then `tools/smoke-installed.sh DIR/scoursh-*.tar.gz`, about 40s). `tests/suites/build-release.sh` section E still decides "has the resolver landed" by grepping `lib/core.sh` for `SCOURSH_STATE_DIR`, which now lives in `lib/layout.sh`, so a regression that made the gate refuse would fall into its pre-resolver "refusal accepted" branch - a filed follow-up; do not trust a green section E alone.
+- **`.github/workflows/release.yml` is DORMANT**: it runs only on a pushed `vX.Y.Z`/`vX.Y.Z-*` tag whose commit is on `main` with a green push-to-main `ci.yml` run (a `workflow_dispatch` run is a dry run that publishes nothing); the build job holds no write token, the publish job runs no repository code, attests both assets and publishes an immutable release. No tag has been pushed. `docs/USAGE.md` "Installing from a release" is the operator/maintainer procedure.
+- **Homebrew**: `packaging/homebrew/scoursh.rb` is a formula TEMPLATE (`@VERSION@`/`@SHA256@` placeholders) that installs into `libexec` behind a wrapper pinning Homebrew's bash, and must install `.scoursh-packaged` explicitly (Ruby's `Dir["*"]` skips dotfiles). `packaging/homebrew/self-check.sh` audits/installs/tests it against a local tarball and skips cleanly without Homebrew. No tap repository exists yet; `packaging/homebrew/README.md` is the publication handoff.
+- **Not built yet** (see `ROADMAP.md`): a published container image, an `install.sh`, a setup-time engine install (for example semgrep), and an `engines.lock` pinning vendored engine versions/checksums.
 
 ## `bench/` is a benchmark harness, NOT part of the scanner
 
@@ -4880,10 +4910,11 @@ as a two-table structure -
 "where the specialists win, by how much" and "where scoursh wins, by how
 much" - built on top of, not replacing, the pre-existing 192-case pilot and
 its retract-and-explain narrative for the old fixture-measured numbers.
-DAST (B7) is stated on that page as an explicit not-yet-measured row, never a
-fabricated number; cloud and network are stated as out of scope for this
-benchmark. A future leg landing (B7, or a wider
-SCA/secrets corpus) updates that published section directly - re-read
+DAST (B7) was an explicit not-yet-measured row at that point; it has since
+landed (`bench/results/b7-dast-juiceshop/`, scoursh vs OWASP ZAP on a local
+Juice Shop) and replaced that row with its own table in the same change. Cloud
+and network remain stated as out of scope for this benchmark. A future leg (a
+wider SCA/secrets corpus, say) updates that published section directly - re-read
 `bench/README.md`'s "what must not be published" rules before editing it, the
 same four rules this landing was held to.
 
@@ -4903,9 +4934,11 @@ tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tens
 tests/lint-status.sh               # the generated build-status blocks are current, and the guard bites
 tests/lint-no-ai.sh                # no AI/LLM provider hostname, SDK name, or API-key env var
                                     # anywhere in the shipped tool (excludes docs and its own two files)
-tests/lint-source-graph.sh         # caps the shellcheck -x hub fan-out per entry point at 20 (see
+tests/lint-source-graph.sh         # caps the shellcheck -x hub fan-out per entry point at 17 (see
                                     # "Sharp edges" above); catches the shape in milliseconds, before
                                     # the shellcheck stage would spend minutes and 30+ GB finding it
+tests/lint-docs-build.sh           # docs/build.html stays static: no external resource, no
+                                    # network API, nothing executed
 tools/gen-status.sh --write        # regenerate those blocks after landing a module
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 tests/localstack/run.sh [up|verify|down|all]   # OPT-IN: real API shapes via a local emulator.

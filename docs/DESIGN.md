@@ -5,6 +5,8 @@
 > [`rules/RULE-FORMAT.md`](../rules/RULE-FORMAT.md), [`docs/USAGE.md`](USAGE.md),
 > [`docs/CHECKS.md`](CHECKS.md), and the egress-model correction in
 > [`docs/adr/0001-egress-model-correction.md`](adr/0001-egress-model-correction.md).
+> (2026-09-24:) §3's layout describes a git checkout; an installed copy keeps config, data, state and
+> reports outside its install root - see [`docs/adr/0002-installed-layout.md`](adr/0002-installed-layout.md).
 
 > Handoff spec. Build in the order given in §13. Each module is
 > independent and testable in isolation. Nothing in the core makes third-party

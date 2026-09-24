@@ -94,9 +94,10 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `scan.sh <command> --guided`, walks an operator through composing a real command - including the
   DAST target/intensity/affirmation flow - and `--print-command` prints the exact equivalent
   non-interactive invocation, verified byte-identical to what "Run it" actually executes. `cloud` is
-  now reachable at the G1 menu (`modules/cloud/aws/run.sh` exists), though its guided setup beyond the
-  scan type and `--fail-on` isn't wired into `--guided` yet - the menu says so and hands back the
-  equivalent direct command rather than asking questions it can't yet compose an answer to.
+  listed at the G1 menu (`modules/cloud/aws/run.sh` exists), but guided mode cannot yet configure an
+  AWS account scan safely, so choosing it refuses with exit 2 and a message pointing at
+  `scan.sh cloud --live` - nothing runs. (It used to fall through to a silent no-op; #332 made it
+  refuse.) `network` and `image` are not on the G1 menu at all.
   [`docs/build.html`](docs/build.html) is the click-through equivalent of the same idea: a static,
   offline command builder page (pick a surface, point it at a path or target, toggle options) that
   composes and displays the exact command rather than running anything.
@@ -144,14 +145,49 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `docs/DESIGN.md` §15 for what it deliberately does not do (no full-rootfs materialisation, no
   running-container/runtime inspection).
 
+- **Packaging and release tooling (#334, #337, #338, #340).** Symlink-safe entry points,
+  `scan.sh --version`, and `scan.sh paths`; an unwritable report or state directory is refused before
+  any scan (exit 4) and an unexpected internal error maps to exit 5. An installed copy (marked by the
+  generated `.scoursh-packaged` file) keeps config, generated data, state and reports outside its
+  install root - XDG directories by default, or one root under `SCOURSH_HOME` - while a checkout keeps
+  its in-tree paths ([`docs/adr/0002-installed-layout.md`](docs/adr/0002-installed-layout.md),
+  [`docs/USAGE.md`, "Where installed scoursh keeps its files"](docs/USAGE.md#where-installed-scoursh-keeps-its-files)).
+  `tools/build-release.sh` builds a reproducible tarball plus `SHA256SUMS` from committed files only;
+  `tools/smoke-installed.sh` is the release gate (read-only install, symlinked entry point, a real
+  `sast` scan, state and reports outside the install root) and passes on the current tree.
+  `.github/workflows/release.yml` is written but **dormant** - it runs only on a pushed `vX.Y.Z` tag on
+  a green `main`, and no release has been published. `packaging/homebrew/` holds a formula template and
+  a local self-check; the tap repository itself has not been created.
+- **Advisory data split and freshness (#335).** SCA and image OS-package advisories live only in
+  `data/advisories.db`; `data/versions.db` holds the DAST/network `banner` namespace only. Data whose
+  `# generated:` stamp is older than `advisory-max-age-days` (default 30) records a non-gating
+  `coverage_reduction`; findings and exit codes are unchanged. Weekly refresh recipes are in
+  [`docs/USAGE.md`](docs/USAGE.md#refresh-weekly).
+- **`rules/RULE-FORMAT.md`'s outstanding MUSTs are implemented (#336).** Every parsed
+  `config/auth.conf` value is redacted from evidence, logs, metadata and every output format;
+  `dialect: pcre` records run under a PCRE2 engine when one is available and are otherwise a recorded
+  `skipped_checks` entry (`reason=pcre-unavailable`) excluded from coverage; a selected composite whose
+  contributors cannot share a correlation value records a `coverage_gap`. §13's `--strict` mode and
+  codes `W047`, `E060`, `W061`, `E072` are marked **reserved** (specified, not emitted).
+
 ## Not yet started
 
-Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above. Remaining work is
-the cloud `posture/` phase (POSTURE-02..04), optional network Tier 4 (NET-13..15), and DAST's opt-in
-live user-enumeration probe.
-This section used to track one gap in an already-shipped feature - a macOS enforcement mechanism
-behind `--paranoid`'s detector - and that has since landed too (`tools/run-sandboxed.sh`'s three
-tiers; see "Landed" above). It is empty for the moment.
+Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above. What remains
+(checked against the tree on 2026-09-24):
+
+- **Cloud `posture/` phase** (POSTURE-02..04, `docs/DESIGN.md` §8.7's SSO/edge/session drift checks).
+  Only its config schema (`config/posture.conf.example`, POSTURE-01) exists, so a posture run is a
+  declared skip.
+- **rpm package-database decoding.** Real rpm databases (the sqlite backend's two-column native schema,
+  Berkeley DB, ndb) store binary RPM headers; scoursh reads none of them, so every real rpm image reports
+  `IMAGE-COV-UNKNOWN_DISTRO-01` (`rpm_db_binary_format`) instead of package matches.
+- **Distribution beyond the tarball.** No published container (OCI) image of scoursh, no `install.sh`,
+  no first-release tag, and no Homebrew tap repository yet.
+- **Engine setup and pinning.** Optional engines (semgrep, gitleaks, trivy) are vendored by hand with
+  operator-supplied URLs and checksums (`tools/vendor-engines.sh`); there is no setup-time install
+  step (for example for semgrep) and no committed `engines.lock` pinning engine versions and checksums.
+- **Smaller optional items:** network Tier 4 (NET-13..15) and DAST's opt-in live user-enumeration
+  probe.
 
 **Step 10 (SARIF output + compliance report) is complete and no longer listed here.**
 The SARIF half writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01
@@ -202,6 +238,13 @@ scheduled on its own.
 
 Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
 old behaviour can see what replaced it.
+
+- **Scanner defects found by the 2026-09 documentation audit (#332).** The local DAST test target now
+  binds to `127.0.0.1` only; `network` findings carry SARIF locations (without changing their JSON shape
+  or fingerprint); `run.json` records `circuit-breaker-5xx-failures` again; PyPI findings carry their
+  fix fields; `--guided cloud` refuses instead of silently doing nothing; several CIS v3.0.0 control
+  mappings in the IaC packs were corrected; and the top-level help lists `--guided` and
+  `--print-command` and names `tools/run-sandboxed.sh` under `--paranoid`.
 
 - **`--paranoid` had a real macOS *detector* but no macOS *guarantee*.**
   Of its three connection-observer backends, `ss` and `strace` are Linux-only; `lsof` was added as a
@@ -295,8 +338,8 @@ Network / host scanning still carries two deliberate, stated exclusions rather t
 patch-level inference (banner-version matching cannot see a distribution's backported fixes) and UDP
 (no connect handshake, so "open" and "filtered" are indistinguishable without a per-service payload).
 Container image scanning likewise carries stated exclusions rather than unbuilt work - no
-full-rootfs materialisation, no running-container/runtime inspection, and rpm package databases have
-binary headers scoursh does not decode, so real rpm images are a declared coverage reduction. See [`docs/CHECKS.md`](docs/CHECKS.md) and
+full-rootfs materialisation and no running-container/runtime inspection. (rpm package-database
+decoding is different: it is remaining work, listed under [Not yet started](#not-yet-started).) See [`docs/CHECKS.md`](docs/CHECKS.md) and
 `docs/DESIGN.md` §15 for both.
 
 ## Maintenance note: this file is not generated

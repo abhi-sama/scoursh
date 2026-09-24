@@ -12,7 +12,9 @@ was never on the table.
 Decision: self-host [OWASP Juice Shop](https://owasp.org/www-project-juice-shop/), a deliberately
 vulnerable application built for exactly this purpose, locally in Docker via `tools/dast-test-target.sh`.
 It runs on the operator's own machine, on a fixed local port, started and stopped by the operator's own
-tooling.
+tooling. The start command publishes it as `-p "127.0.0.1:<port>:3000"` - `<port>` comes from
+`SCOURSH_DAST_TEST_TARGET_PORT` and defaults to 3400 - so Docker binds it to loopback only, never
+`0.0.0.0` or a LAN interface.
 There is no legal ambiguity: it is the operator's own container, on the operator's own host, never
 reachable from outside it.
 
@@ -51,7 +53,7 @@ exactly the credential convention `rules/RULE-FORMAT.md` §9.6.2 already defines
 ## Standing authorization
 
 This record is the operator's standing authorization for scoursh (and any agent acting on the operator's
-behalf) to run DAST scans, including active/injection-class checks once they exist, against
+behalf) to run DAST scans, including the shipped active/injection-class checks, against
 `http://127.0.0.1:3400/` for as long as `tools/dast-test-target.sh` is the process that started it.
 It does not authorize scanning any other host reachable from the operator's machine, loopback or
 otherwise; every other target still requires its own explicit `config/scope.conf` entry, evaluated by the

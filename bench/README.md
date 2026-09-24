@@ -6,8 +6,9 @@ pinned, third-party corpora**, and for scoring the result honestly.
 This directory is tickets **B1 (harness)**, **B2 (corpus manifest)** and
 **B3 (scorer)** of the benchmark plan, plus the **B4 (SAST leg)** and
 **B5 (SCA leg)** measurements built on top of them. The remaining
-per-category legs (B6 IaC/secrets, …) and the published page (B9) are
-follow-ups in this historical introduction. B9 has since published the committed measurements in
+per-category legs (B6 IaC/secrets, B7 DAST, B8 honesty/egress) and the
+published page (B9) were follow-ups when this introduction was written; all of
+them have since landed, and B9 publishes the committed measurements in
 [`docs/COMPARISON.md`](../docs/COMPARISON.md).
 
 ---
@@ -267,9 +268,10 @@ per-category diagnosis, and what could not be measured here (Bandit, gosec,
 and a NIST Juliet slice, each with its own stated reason) are in that
 directory's own `README.md`.
 
-**It is not published anywhere in `docs/`.** That is ticket B9, deliberately
-kept separate so a launch page is composed once, from every landed leg, rather
-than assembled piecemeal as each leg lands.
+**Published by B9** in [`docs/COMPARISON.md`](../docs/COMPARISON.md) (and
+`docs/comparison.html`). When this leg landed it was deliberately held back so a
+launch page could be composed once, from every landed leg, rather than
+assembled piecemeal.
 
 ---
 
@@ -287,8 +289,8 @@ was resolved), and why loose ("any finding in this file") matching is a poor
 fit for SCA specifically, unlike SAST. Read it before citing a number from
 this leg anywhere.
 
-**It is not published anywhere in `docs/` either** - the same B9 deliberate
-deferral as the B4 leg above.
+**Published by B9** in `docs/COMPARISON.md`, like the B4 leg above (it was
+held back until then).
 
 ---
 
@@ -388,5 +390,5 @@ a real environmental interaction it found (`--paranoid`'s process-family
 enumeration degrades, but still reports correctly, when run nested inside
 the Seatbelt sandbox).
 
-**It is not published anywhere in `docs/` either** - the same B9 deliberate
-deferral as every other landed leg.
+**Published by B9** in `docs/COMPARISON.md`'s comparison table (the coverage
+honesty, zero-egress and footprint rows), like every other landed leg.

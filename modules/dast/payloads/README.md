@@ -26,6 +26,17 @@ Concretely, every payload in this directory is:
 A change here that adds a destructive, unbounded, or exfiltrating payload
 violates that contract and must be rejected in review.
 
+**Two families are gated as `intrusive` (status note, 2026-09-24).** No payload
+here writes to a data store, but two can change state the target holds for
+other requests: `crlf-payloads.txt`'s full response-split template (a forged
+second response a downstream cache could store and serve to someone else) and
+`protopollution-payloads.txt` / `protopollution-error-pairs.txt` (a write into a
+shared, process-wide object). Their three check ids
+(`DAST-INJ-CRLF_RESPONSE_SPLITTING-01`, both `DAST-INJ-PROTOPOLLUTION_*-01`)
+carry `tags: intrusive` in `modules/dast/active/checks.rules`, so they run only
+with `--allow-intrusive` on top of `--intensity active` and `--i-own-target`;
+that file's own comments give the boundary and the close calls it rules out.
+
 ## File format
 
 One payload per line.
@@ -36,8 +47,9 @@ Templates use two placeholders the probe substitutes before sending:
   the payload breaks out of the same value shape the endpoint normally sees;
 - `%N` - the **bounded sleep seconds** (time-based payloads only).
 
-The boolean-pair file is the one exception: each line is
-`<true-template><TAB><false-template>` - two payloads that are identical apart
+The `*-pairs.txt` files are the exception (`sqli-`, `nosqli-` and
+`ldapi-boolean-pairs.txt`, plus `protopollution-error-pairs.txt`, described
+below): each line is `<true-template><TAB><false-template>` - two payloads that are identical apart
 from a condition that is always true versus always false, which is exactly the
 "tautology vs contradiction that are otherwise identical" `docs/DESIGN.md` §7.3
 asks for.
@@ -99,6 +111,21 @@ carries no raw CR or LF byte on disk:
   baseline. See the file's own header for the full reasoning, including why
   its second template is sent only after the first already confirmed a
   signal.
+
+Four more files, each documented in full by its own header:
+
+- `openredirect-payloads.txt` (DAST-19) uses `%S`, a per-run random sentinel
+  host under the RFC 6761 `.invalid` TLD; `openredirect-params.txt` is a plain
+  list of parameter names that commonly carry a redirect destination.
+- `protopollution-payloads.txt` (DAST-25) uses `%K`/`%V`, a per-run random
+  property name and value; `protopollution-error-pairs.txt` is
+  `<pollute-template><TAB><control-template>`, two whole JSON literals of equal
+  nesting that REPLACE the value (no `%B`).
+- `ldapi-error-payloads.txt` / `ldapi-boolean-pairs.txt` (DAST-22) use `%B`
+  exactly as the SQLi files do.
+- `xss-marker-chars.txt` (DAST-15) is not a payload list: each row is
+  `<name><TAB><character><TAB><comma-separated escaped spellings>`, used to
+  tell an escaped reflection from a raw one.
 
 ## Graceful degradation
 

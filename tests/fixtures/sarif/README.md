@@ -3,7 +3,7 @@
 `sarif-schema-2.1.0.json` is the OASIS Static Analysis Results Format (SARIF)
 Version 2.1.0 JSON Schema, committed here so `tests/suites/sarif-schema.sh`
 can validate `report.sarif` against it with no network access at test time -
-the same vendored-data-file discipline `data/versions.db` and
+the same vendored-data-file discipline `data/owasp-categories.conf` and
 `data/severity-rubric.conf` already follow, and the reason it lives under
 `tests/fixtures/` rather than `data/`: it is test-time-only, never read by
 `lib/` or `modules/` at scan time.

@@ -1,7 +1,9 @@
 # Guided interactive mode sub-ticket plan
 
-> **Current-status note (2026-09-21).** This is a historical plan. Guided cloud currently does not compose
-> `--live`, so it does not start a live AWS scan; use the explicit `cloud --live` command for that surface.
+> **Current-status note (updated 2026-09-24).** This is a historical plan; GUIDE-01..07 have landed. Guided
+> cloud is still not supported: `cloud` is listed at the G1 menu, but choosing it now refuses with exit 2
+> and a message (since #332; before that it fell through to a run that never composed `--live`). Use the
+> explicit `scan.sh cloud --live` command for that surface. `network` and `image` are not offered at G1.
 
 This is a planning document only.
 It contains no shell code and changes no behavior.

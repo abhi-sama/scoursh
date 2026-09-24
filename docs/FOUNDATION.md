@@ -49,9 +49,9 @@
 | 24 | Runtime freeze: bash and coreutils portability | §4, §10 |
 | 25 | Offline version matching for SCA | §6.5 |
 | 26 | One record format for human-authored config | §11 |
-| 27 | Adapter integration and vendoring | §6.4, §9 |
-| 28 | Egress model correction | §2, §12 |
-| 29 | Documentation and verification evidence | §12 |
+| 27 | Optional engine adapters: quarantine and convention | §6.4, §9 |
+| 28 | The egress claim: air-gapped versus egress-restricted-by-destination | §1, §2, §12 |
+| 29 | The co-owned module check registry: one shared `checks.rules` versus one file per owner | `rules/RULE-FORMAT.md` §9 |
 
 ---
 
@@ -3892,6 +3892,13 @@ It is also the natural home for the per-`(service, region, account, operation, a
 `tests/lint-aws-readonly.sh` implements the four checks above, and a negative test asserts that a script
 calling a mutating operation fails both the lint and the runtime guard.
 
+**As built (status note, 2026-09-24).** Two details above differ from the shipped tree, both
+deliberately. `data/aws-readonly-allow.txt` (moved there from `tests/` so an installed copy ships it)
+holds `sts assume-role` only: `sts get-caller-identity` is already admitted by the `get` prefix, and
+listing it would be an entry the lint's own stale-entry check rejects. And `aws_ro` disables the pager
+with `AWS_PAGER=''` rather than `--no-cli-pager`, which is AWS CLI v2-only and fails argument parsing
+on v1 (finding F17, closed).
+
 ## Tension 24 - runtime freeze: bash and coreutils portability
 
 **The tension.**
@@ -4338,7 +4345,8 @@ scanned; the two are never interchangeable and are named differently for that re
 checkout, preserving existing configuration. In a packaged install (identified
 by its `.scoursh-packaged` marker), they resolve relative to the config file
 that names them; equivalent `--openapi`/`--har`/`--postman`/`--graphql-schema`
-CLI paths resolve from the operator's current working directory. This is the
+CLI paths resolve from the operator's current working directory (in a checkout
+too - `modules/dast/crawl.sh`'s `_crawl_resolve_input_path`). This is the
 narrow exception needed to keep an installed copy from resolving operator data
 inside its immutable install tree.
 
@@ -4346,7 +4354,8 @@ inside its immutable install tree.
 checkout layout remains byte-for-byte unchanged. A release build alone writes
 an uncommitted `.scoursh-packaged` marker, and `lib/core.sh` uses that marker -
 never install-root writability - to distinguish an installed copy from a
-checkout. A checkout retains its in-tree `config/`, `data/`, `state/`, and
+checkout (the resolver itself is `lib/layout.sh`, which `lib/core.sh` sources
+and runs at load time). A checkout retains its in-tree `config/`, `data/`, `state/`, and
 `reports/` locations. An installed copy resolves config to
 `${XDG_CONFIG_HOME:-~/.config}/scoursh`, generated data to
 `${XDG_DATA_HOME:-~/.local/share}/scoursh`, and state and reports to
@@ -5165,6 +5174,21 @@ landed.
   advancing what needed no AWS account; see `AGENTS.md`, "AWS module: what exists ahead of step 6".
 
 ## Where the build currently stands
+
+> **Current-status headline (2026-09-24).** Every `docs/DESIGN.md` §13 step (1-10) has landed, and so
+> have the two surfaces outside that catalog (network/host scanning, `modules/network/`, and
+> built-container-image scanning, `modules/image/`). Since the headline was last refreshed: the
+> advisory-data split and freshness check (tension 25's two 2026-09-21 amendments), the implementation
+> of `rules/RULE-FORMAT.md`'s three outstanding MUSTs (`config/auth.conf` value redaction,
+> `dialect: pcre` run-or-skip, the uncorrelatable-composite `coverage_gap`), and the packaging surface
+> (`scan.sh --version`/`paths`, the `.scoursh-packaged` installed layout of tension 26's 2026-09-23
+> amendment and `docs/adr/0002-installed-layout.md`, `tools/build-release.sh`,
+> `tools/smoke-installed.sh`, a dormant `.github/workflows/release.yml`, and a Homebrew formula
+> template). Still outstanding: the cloud `posture/` phase (POSTURE-02..04), rpm package-database
+> decoding, distribution beyond the release tarball (no published release, container image, or
+> `install.sh`), engine setup/pinning, and open finding F21. `ROADMAP.md` is the terse current list.
+> The paragraphs below are the landing-order narrative and use the tense of the day each was written:
+> a sentence such as "Step 5 (DAST) is under way" is history, not current state.
 
 **`docs/DESIGN.md` §13 step 1 is implemented.**
 `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh` exist, with
