@@ -79,6 +79,16 @@ surface, is [`docs/COMPARISON.md`](docs/COMPARISON.md) (also
 
 No build step, no runtime dependency beyond a standard Unix toolchain:
 
+### Where installed scoursh keeps your files
+
+An installed release keeps program files and rules in its install directory,
+but keeps your configuration in `~/.config/scoursh`, generated advisory data
+in `~/.local/share/scoursh`, and diff state plus reports in
+`~/.local/state/scoursh`. `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
+`XDG_STATE_HOME` change those bases. In containers, set `SCOURSH_HOME=/scoursh`
+to use `/scoursh/{config,data,state,reports}` as one mountable root. Run
+`scoursh paths` to see the exact locations.
+
 - **bash >= 4.2** (macOS ships 3.2 by default - install a newer one and put it ahead of `/bin/bash`
   on `PATH`; `scan.sh` checks this itself and refuses with a clear message otherwise), plus
   `grep`/`rg`, `awk`, and coreutils.
@@ -102,6 +112,24 @@ git clone https://github.com/abhi-sama/scoursh.git
 cd scoursh
 ./scan.sh --help
 ```
+
+**From a release tarball.** Each release is one attested, reproducible `scoursh-X.Y.Z.tar.gz` plus
+`SHA256SUMS`. Verify it, extract it, and link `bin/scoursh` onto `PATH`:
+
+```sh
+V=1.0.0
+gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
+sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
+gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh
+mkdir -p ~/.local/share/scoursh ~/.local/bin
+tar -xzf "scoursh-$V.tar.gz" -C ~/.local/share/scoursh
+ln -sfn ~/.local/share/scoursh/scoursh-$V/bin/scoursh ~/.local/bin/scoursh
+scoursh --version && scoursh paths
+```
+
+An installed copy is `scoursh` rather than `./scan.sh`, and keeps its own files where
+`scoursh paths` says. Offline verification, rebuilding a release to compare checksums, and cutting a
+release: [`docs/USAGE.md`](docs/USAGE.md#installing-from-a-release).
 
 `tests/run-tests.sh` is the real test entry point; `pnpm test`/`npm test` are thin aliases for it -
 scoursh has no Node runtime dependency.

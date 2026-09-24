@@ -1564,6 +1564,15 @@ if [[ -z ${SCOURSH_INSTALL_ROOT:-} ]]; then
   export SCOURSH_INSTALL_ROOT
 fi
 
+# The layout code is a separate, independently linted library because this
+# hub is expanded repeatedly by shellcheck -x.  It still runs here, before
+# any caller can consume a resolved location.  `/dev/null` cuts only this
+# redundant inline expansion; lib/layout.sh remains a normal lint entry point.
+# shellcheck source=/dev/null
+source "${BASH_SOURCE[0]%/*}/layout.sh"
+
+scoursh_layout_resolve
+
 # Order matters: the scratch directory must exist before the msleep probe, whose
 # FIFO fallback lives in it.  scratch_init is a no-op in a worker, which
 # inherits SCOURSH_SCRATCH from the parent and must never create its own.

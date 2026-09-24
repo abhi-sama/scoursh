@@ -627,11 +627,12 @@ scan_die_usage() {
 }
 
 scan_print_paths() {
+  scoursh_layout_resolve
   printf 'install: %s\n' "$SCOURSH_INSTALL_ROOT"
-  printf 'config: %s/config\n' "$SCOURSH_INSTALL_ROOT"
-  printf 'data: %s/data\n' "$SCOURSH_INSTALL_ROOT"
-  printf 'state: %s\n' "$(state_default_dir)"
-  printf 'reports: %s/reports\n' "$SCOURSH_INSTALL_ROOT"
+  printf 'config: %s\n' "$SCOURSH_CONF_DIR"
+  printf 'data: %s\n' "$SCOURSH_DATA_DIR"
+  printf 'state: %s\n' "$SCOURSH_STATE_DIR"
+  printf 'reports: %s\n' "$SCOURSH_REPORTS_DIR"
 }
 
 # -----------------------------------------------------------------------------
@@ -1113,7 +1114,8 @@ scan_parse_args() {
 #     ever acts on an unresolved, ambiguous value.
 # -----------------------------------------------------------------------------
 _scan_resolve_target_flags() {
-  local flag value path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  scoursh_layout_resolve
+  local flag value path=$SCOURSH_CONF_DIR/scope.conf
   local __tmp resolved rc
   for flag in target i-own-target; do
     value=${SCAN_FLAGS[$flag]:-}
@@ -2101,7 +2103,8 @@ _SCAN_PF_CLASS='' _SCAN_PF_MSG=''
 # `_scan_pf_check_target TARGET` - config_scope_require's own "does this id
 # resolve" question, without the die.
 _scan_pf_check_target() {
-  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  scoursh_layout_resolve
+  local target=$1 path=$SCOURSH_CONF_DIR/scope.conf
   if [[ ! -e $path ]]; then
     _SCAN_PF_CLASS=input
     _SCAN_PF_MSG="a --target-scoped command requires $path, and it does not exist"
@@ -2209,12 +2212,13 @@ _scan_preflight_output_state() {
 # fatal problem list and never changes the exit code - see that header for
 # why turning these fatal would be a real design change, not this ticket's.
 _scan_pf_warn_declared_skips() {
+  scoursh_layout_resolve
   local image_id=${SCAN_FLAGS[image]:-}
   if [[ -n $image_id && -z ${SCAN_FLAGS[source]:-} ]]; then
     # Mirrors modules/image/acquire.sh's own image_sources_load: same
     # schema/set pair, called directly (config_load_if_present can die on a
     # malformed images.conf, exactly like config_scope_load above).
-    config_load_if_present "$SCOURSH_INSTALL_ROOT/config/images.conf" image-source images >/dev/null || true
+    config_load_if_present "$SCOURSH_CONF_DIR/images.conf" image-source images >/dev/null || true
     if ! records_index_of_id images "$image_id" >/dev/null 2>&1; then
       log_warn "preflight: --image '$image_id' has no config/images.conf entry and no --source override - a declared, non-fatal coverage gap (rules/RULE-FORMAT.md §9.6.8), will be checked when the image module actually runs, not a preflight failure"
     fi
@@ -2223,7 +2227,7 @@ _scan_pf_warn_declared_skips() {
     sca | all)
       # Mirrors modules/sca/engine.sh's sca_advisories_db_path default;
       # keep the two in step if that resolution order ever changes.
-      local db=${SCOURSH_SCA_ADVISORIES_DB:-$SCOURSH_INSTALL_ROOT/data/advisories.db}
+      local db=${SCOURSH_SCA_ADVISORIES_DB:-$(scoursh_data_file advisories.db)}
       [[ -r $db ]] \
         || log_warn "preflight: $db is absent or unreadable - sca records this as a declared coverage_reduction and its own exit-4 input flag when it actually runs (docs/FOUNDATION.md tension 14), not a preflight failure"
       ;;
@@ -2415,7 +2419,8 @@ _SCAN_PF_OFFER_MADE=false
 # of which must abort rather than be swallowed, which is why this is called
 # directly and never through $(...) (see `_scan_require_readable_path`).
 _scan_pf_offer_authorize_target() {
-  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  scoursh_layout_resolve
+  local target=$1 path=$SCOURSH_CONF_DIR/scope.conf
   _SCAN_PF_OFFER_MADE=false
 
   # Property 3: only a value that can be re-resolved back to what was passed.
@@ -2570,7 +2575,7 @@ _scan_preflight() {
     # Property 5: today's message, unchanged, when the operator saw the offer
     # and declined it.  The hint is for the operator who did NOT see it.
     if [[ $_SCAN_PF_OFFER_MADE != true ]]; then
-      target_msg+=$(_scan_pf_target_hint "$SCOURSH_INSTALL_ROOT/config/scope.conf")
+      target_msg+=$(_scan_pf_target_hint "$SCOURSH_CONF_DIR/scope.conf")
     fi
     problems=("$target_msg" "${problems[@]+"${problems[@]}"}")
     if [[ $target_class == scope ]]; then
@@ -2856,7 +2861,8 @@ _scan_record_authorization() {
 # `dast` run cannot happen (config_scope_require already died) but for a future
 # caller might.
 _scan_scope_conf_sha256() {
-  local f=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  scoursh_layout_resolve
+  local f=$SCOURSH_CONF_DIR/scope.conf
   [[ -r $f ]] || { printf '%s' ''; return 0; }
   # Piped rather than fed by an input redirection, matching every other shipped
   # call site: tests/lint-shell.sh's tension-9 check reads a redirection here
@@ -2871,7 +2877,8 @@ _scan_scope_conf_sha256() {
 # scanner.conf the same file a reviewer is looking at now", the identical
 # question scope_conf_sha256 already answers for the scope gate.
 _scan_scanner_conf_sha256() {
-  local f=$SCOURSH_INSTALL_ROOT/config/scanner.conf
+  scoursh_layout_resolve
+  local f=$SCOURSH_CONF_DIR/scanner.conf
   [[ -r $f ]] || { printf '%s' ''; return 0; }
   # shellcheck disable=SC2002
   cat -- "$f" | sha256_of
@@ -2984,6 +2991,7 @@ _scan_announce_unrestricted() {
 # -----------------------------------------------------------------------------
 scan_main() {
   local _scan_t0=$SECONDS
+  scoursh_layout_resolve
 
   # docs/STEP-GUIDE-PLAN.md GUIDE-02: the zero-argument branch of guided-mode
   # routing (section 4c above).  A bare `scan.sh` is "asked for" per the
@@ -3071,7 +3079,7 @@ scan_main() {
   core_require_baseline
   [[ ${SCAN_FLAGS[history]:-} != true ]] || require_cmd git
 
-  _SCAN_OUT_DIR=${SCAN_FLAGS[out]:-"$SCOURSH_INSTALL_ROOT/reports/$(now_iso | tr ':' '-')"}
+  _SCAN_OUT_DIR=${SCAN_FLAGS[out]:-"$SCOURSH_REPORTS_DIR/$(now_iso | tr ':' '-')"}
 
   # Output/state writability must be known before run_init creates the run
   # directory, so those failures are exit 4 before any module can scan.  The
@@ -3097,7 +3105,7 @@ scan_main() {
   # CLI > env > file > default chain lib/config.sh already implements, with
   # this invocation's flags as the CLI layer.  Called with no argument on
   # purpose, to pick up config_scanner_load's own default path
-  # ($SCOURSH_INSTALL_ROOT/config/scanner.conf, lib/config.sh) - $1 there is
+  # ($SCOURSH_CONF_DIR/scanner.conf, lib/config.sh) - $1 there is
   # an explicit optional override, not scan_main's own args forwarded, so
   # this is not the "$@" case SC2119 warns about.  Older shellcheck reports
   # it here and 0.11.0 does not (AGENTS.md "Things measured on this

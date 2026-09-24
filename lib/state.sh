@@ -122,8 +122,8 @@ _state_valid_scope() {
 # test (or a future caller before scan.sh wiring exists) can point it at a
 # scratch directory instead of the real install tree.
 state_default_dir() {
-  : "${SCOURSH_INSTALL_ROOT:?state_default_dir: SCOURSH_INSTALL_ROOT is not set}"
-  printf '%s/state' "$SCOURSH_INSTALL_ROOT"
+  scoursh_layout_resolve
+  printf '%s' "$SCOURSH_STATE_DIR"
 }
 
 # ---------------------------------------------------------------------------

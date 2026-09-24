@@ -125,7 +125,7 @@ if [[ -n ${SCOURSH_TRIVY_ADAPTER_SOURCED:-} ]]; then
 fi
 SCOURSH_TRIVY_ADAPTER_SOURCED=1
 
-TRIVY_ADAPTER_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+TRIVY_ADAPTER_DIR=$(scoursh_engine_dir iac trivy)
 TRIVY_BIN=$TRIVY_ADAPTER_DIR/bin/trivy
 
 # Every finding this adapter can ever emit in one run is bounded - the same

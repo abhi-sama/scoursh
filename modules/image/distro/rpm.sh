@@ -472,7 +472,7 @@ _rpm_row_still_vulnerable() {
 # redirects this lookup too.
 _rpm_summary_for() {
   local advisory=$1 db prefix row marked _adv summary
-  db=${SCOURSH_SCA_SUMMARIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisory-summaries.db}
+  if [[ -n ${SCOURSH_SCA_SUMMARIES_DB:-} ]]; then db=$SCOURSH_SCA_SUMMARIES_DB; else db=$(scoursh_data_file advisory-summaries.db); fi
   prefix=$(printf '%s\t' "$advisory")
   row=$(db_lookup_exact "$prefix" "$db") || { printf 'no summary available'; return 0; }
   marked=${row//$'\t'/$'\x1f'}

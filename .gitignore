@@ -8,6 +8,7 @@
 # silently never added.
 /reports/
 /state/
+/.scoursh-packaged
 
 # Suite-run artifacts, never sources.  tools/daily-suite.sh writes its own
 # results under $SCOURSH_DAILY_DIR (outside the checkout), but a leg run by hand

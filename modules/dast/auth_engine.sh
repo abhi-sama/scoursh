@@ -259,7 +259,8 @@ dast_auth_skip_reason() {
 DAST_AUTH_LOADED=0
 
 dast_auth_conf_path() {
-  printf '%s' "${SCOURSH_DAST_AUTH_CONF:-$SCOURSH_INSTALL_ROOT/config/auth.conf}"
+  scoursh_layout_resolve
+  printf '%s' "${SCOURSH_DAST_AUTH_CONF:-$SCOURSH_CONF_DIR/auth.conf}"
   return 0
 }
 
