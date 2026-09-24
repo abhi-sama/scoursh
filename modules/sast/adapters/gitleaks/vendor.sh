@@ -54,7 +54,7 @@ gitleaks_vendor() {
   fi
 
   local adapter_dir
-  adapter_dir=$(scoursh_engine_dir_for_write sast gitleaks)
+  adapter_dir=$(scoursh_engine_dir_for_write sast gitleaks "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)")
   local bin_dir=$adapter_dir/bin
   local rules_dir=$adapter_dir/rules
   mkdir -p "$bin_dir" "$rules_dir"

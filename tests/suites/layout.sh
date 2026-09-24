@@ -76,6 +76,30 @@ DB_OVERRIDE=$(env -u SCOURSH_HOME -u SCOURSH_INSTALL_ROOT HOME="$TEST_HOME" XDG_
   bash -c 'source "$1/lib/core.sh"; source "$1/modules/sca/engine.sh"; sca_advisories_db_path' _ "$PKG")
 assert_eq "$W/override.db" "$DB_OVERRIDE" 'per-file advisory override beats the resolved data directory'
 
+t_case 'engine assets use package fallback until installed user data is present'
+# The reader must keep finding an existing package-local vendor until an
+# installed copy has user-owned assets; the writer always names that user
+# location so a read-only package is never modified.
+# shellcheck disable=SC2016
+ENGINE_FALLBACK=$(env -u SCOURSH_HOME -u SCOURSH_INSTALL_ROOT HOME="$TEST_HOME" XDG_CONFIG_HOME="$XDG_CONFIG" \
+  XDG_DATA_HOME="$XDG_DATA" XDG_STATE_HOME="$XDG_STATE" bash -c \
+  'source "$1/lib/core.sh"; scoursh_engine_dir sast semgrep' _ "$PKG")
+assert_eq "$PKG/modules/sast/adapters/semgrep" "$ENGINE_FALLBACK" \
+  'an installed reader falls back to the package adapter when no user engine exists'
+# shellcheck disable=SC2016
+ENGINE_WRITE=$(env -u SCOURSH_HOME -u SCOURSH_INSTALL_ROOT HOME="$TEST_HOME" XDG_CONFIG_HOME="$XDG_CONFIG" \
+  XDG_DATA_HOME="$XDG_DATA" XDG_STATE_HOME="$XDG_STATE" bash -c \
+  'source "$1/lib/core.sh"; scoursh_engine_dir_for_write sast semgrep' _ "$PKG")
+assert_eq "$XDG_DATA/scoursh/engines/sast/semgrep" "$ENGINE_WRITE" \
+  'an installed writer selects user data, never the package adapter'
+mkdir -p "$XDG_DATA/scoursh/engines/sast/semgrep"
+# shellcheck disable=SC2016
+ENGINE_USER=$(env -u SCOURSH_HOME -u SCOURSH_INSTALL_ROOT HOME="$TEST_HOME" XDG_CONFIG_HOME="$XDG_CONFIG" \
+  XDG_DATA_HOME="$XDG_DATA" XDG_STATE_HOME="$XDG_STATE" bash -c \
+  'source "$1/lib/core.sh"; scoursh_engine_dir sast semgrep' _ "$PKG")
+assert_eq "$ENGINE_WRITE" "$ENGINE_USER" \
+  'once user engine storage exists, reader and writer resolve the identical directory'
+
 t_case 'a read-only installed root writes SAST state and reports only to writable XDG locations'
 TARGET=$W/target
 mkdir -p "$TARGET"
