@@ -144,7 +144,8 @@ config_load_if_present() {
 CONFIG_SCANNER_LOADED=0
 
 config_scanner_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/config/scanner.conf}
+  scoursh_layout_resolve
+  local path=${1:-$SCOURSH_CONF_DIR/scanner.conf}
   CONFIG_SCANNER_LOADED=0
   config_load_if_present "$path" scanner-config scanner || return 0
   CONFIG_SCANNER_LOADED=1
@@ -455,7 +456,8 @@ config_scanner_list() {
 CONFIG_SCOPE_LOADED=0
 
 config_scope_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local path=${1:-$SCOURSH_CONF_DIR/scope.conf}
   CONFIG_SCOPE_LOADED=0
   config_load_if_present "$path" scope-target scope || return 1
   CONFIG_SCOPE_LOADED=1
@@ -484,7 +486,8 @@ config_scope_load() {
 # for.  Call it directly, then read the target through
 # config_scope_field[_or] or `records_index_of_id scope TARGET_ID`.
 config_scope_require() {
-  local target=$1 path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local target=$1 path=${2:-$SCOURSH_CONF_DIR/scope.conf}
   [[ -n $target ]] || die "$SCOURSH_EXIT_USAGE" 'config_scope_require called with no target id'
   # Module-agnostic wording (NET-04): this function is now called by both
   # `dast` and `network`, and a hardcoded "dast requires" here would
@@ -676,7 +679,8 @@ _scope_authority_eq() {
 # for the identical subshell-swallows-die() reason documented on
 # config_scope_require's own header above.
 config_scope_resolve_target() {
-  local target=$1 path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local target=$1 path=${2:-$SCOURSH_CONF_DIR/scope.conf}
   _scope_looks_like_url_or_hostport "$target" || return 1
   [[ -e $path ]] || return 1
   config_scope_load "$path" || return 1

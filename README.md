@@ -79,6 +79,16 @@ surface, is [`docs/COMPARISON.md`](docs/COMPARISON.md) (also
 
 No build step, no runtime dependency beyond a standard Unix toolchain:
 
+### Where installed scoursh keeps your files
+
+An installed release keeps program files and rules in its install directory,
+but keeps your configuration in `~/.config/scoursh`, generated advisory data
+in `~/.local/share/scoursh`, and diff state plus reports in
+`~/.local/state/scoursh`. `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
+`XDG_STATE_HOME` change those bases. In containers, set `SCOURSH_HOME=/scoursh`
+to use `/scoursh/{config,data,state,reports}` as one mountable root. Run
+`scoursh paths` to see the exact locations.
+
 - **bash >= 4.2** (macOS ships 3.2 by default - install a newer one and put it ahead of `/bin/bash`
   on `PATH`; `scan.sh` checks this itself and refuses with a clear message otherwise), plus
   `grep`/`rg`, `awk`, and coreutils.

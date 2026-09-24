@@ -924,6 +924,7 @@ _crawl_scan() {
   _RC=0
   : >"$REQLOG"
   SCOURSH_INSTALL_ROOT=$FIX \
+    XDG_CONFIG_HOME=${CRAWL_TEST_XDG_CONFIG_HOME:-${XDG_CONFIG_HOME:-}} \
     SCOURSH_HTTP_TRANSPORT=$STUB_DIR/transport \
     SCOURSH_HTTP_RESOLVE=$STUB_DIR/resolve \
     CRAWL_STUB_LOG=$REQLOG \
@@ -948,18 +949,22 @@ assert_contains "$PARJSON" '"name": "q"' 'and its query parameter is in paramete
 assert_contains "$PARJSON" '"name": "page"' 'both of them'
 
 t_case 'a packaged discovery.conf resolves a relative specification beside that config file'
-mkdir -p "$FIX/config/specs"
-cp "$FIXTURES/specs/openapi.json" "$FIX/config/specs/packaged-openapi.json"
-cat >"$FIX/config/discovery.conf" <<'EOF'
+PACKAGED_CONFIG=$W/packaged-xdg-config/scoursh
+mkdir -p "$PACKAGED_CONFIG/specs"
+cp "$FIX/config/scope.conf" "$PACKAGED_CONFIG/scope.conf"
+cp "$FIXTURES/specs/openapi.json" "$PACKAGED_CONFIG/specs/packaged-openapi.json"
+cat >"$PACKAGED_CONFIG/discovery.conf" <<'EOF'
 id: crawl-fixture
 openapi-path: specs/packaged-openapi.json
 EOF
 : >"$FIX/.scoursh-packaged"
+CRAWL_TEST_XDG_CONFIG_HOME=$W/packaged-xdg-config
 _crawl_scan "$W/run-packaged-relative"
 assert_eq 0 "$_RC" 'a packaged relative config path is read successfully'
 assert_contains "$(_slurp "$W/run-packaged-relative/inventory/endpoints.json")" '"path": "/api/v2/pets"' \
   'the OpenAPI document was found relative to config/discovery.conf, not the install root'
-rm -f "$FIX/.scoursh-packaged" "$FIX/config/discovery.conf"
+unset CRAWL_TEST_XDG_CONFIG_HOME
+rm -f "$FIX/.scoursh-packaged"
 
 t_case 'the crawl phase records structured per-source surface counts (IMPORT-06), not only the notes[] prose'
 SURF_EP=$(_slurp "$W/run-basic/meta/dast_surface_endpoints_by_source")

@@ -4342,6 +4342,22 @@ CLI paths resolve from the operator's current working directory. This is the
 narrow exception needed to keep an installed copy from resolving operator data
 inside its immutable install tree.
 
+**Packaging amendment (2026-09-23, ADR 0002).** `docs/DESIGN.md` §3's
+checkout layout remains byte-for-byte unchanged. A release build alone writes
+an uncommitted `.scoursh-packaged` marker, and `lib/core.sh` uses that marker -
+never install-root writability - to distinguish an installed copy from a
+checkout. A checkout retains its in-tree `config/`, `data/`, `state/`, and
+`reports/` locations. An installed copy resolves config to
+`${XDG_CONFIG_HOME:-~/.config}/scoursh`, generated data to
+`${XDG_DATA_HOME:-~/.local/share}/scoursh`, and state and reports to
+`${XDG_STATE_HOME:-~/.local/state}/scoursh/{state,reports}`. `SCOURSH_HOME`
+takes precedence in either mode and is the single-root container layout.
+Rules, payloads, wordlists, severity/compliance data, and module rule packs
+remain install-root data. Generated databases prefer the resolved data
+directory but fall back to an install-root copy, with existing per-file
+environment overrides still taking precedence. `scoursh paths` reports the
+resolved locations.
+
 One parser, `lib/records.sh`, serves all of it.
 One linter covers all of it, so a typo in `scanner.conf` fails the same way a typo in a rule pack does,
 with a file, line, column, and error code.

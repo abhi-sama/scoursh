@@ -568,7 +568,7 @@ banner_db_path() {
   if [[ -n ${SCOURSH_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_VERSIONS_DB"; return 0; fi
   if [[ -n ${SCOURSH_DAST_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_DAST_VERSIONS_DB"; return 0; fi
   if [[ -n ${SCOURSH_SCA_VERSIONS_DB:-} ]]; then printf '%s' "$SCOURSH_SCA_VERSIONS_DB"; return 0; fi
-  printf '%s' "${SCOURSH_INSTALL_ROOT:-${BASH_SOURCE[0]%/*}/../../..}/data/versions.db"
+  scoursh_data_file versions.db
 }
 
 # `banner_summaries_db_path` - data/version-summaries.db's location (or the
@@ -583,7 +583,7 @@ banner_summaries_db_path() {
     printf '%s' "$SCOURSH_DAST_VERSION_SUMMARIES_DB"
     return 0
   fi
-  printf '%s' "${SCOURSH_INSTALL_ROOT:-${BASH_SOURCE[0]%/*}/../../..}/data/version-summaries.db"
+  scoursh_data_file version-summaries.db
 }
 
 # `banner_db_state` - sets `_BANNER_DB_STATE` to one of:

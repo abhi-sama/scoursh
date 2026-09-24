@@ -133,7 +133,7 @@ if [[ -n ${SCOURSH_SEMGREP_ADAPTER_SOURCED:-} ]]; then
 fi
 SCOURSH_SEMGREP_ADAPTER_SOURCED=1
 
-SEMGREP_ADAPTER_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+SEMGREP_ADAPTER_DIR=$(scoursh_engine_dir sast semgrep)
 SEMGREP_BIN=$SEMGREP_ADAPTER_DIR/bin/semgrep
 SEMGREP_RULES_DIR=$SEMGREP_ADAPTER_DIR/rules
 

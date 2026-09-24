@@ -44,6 +44,22 @@ record of it.
 scan.sh <command> [options]
 ```
 
+## Where installed scoursh keeps its files
+
+A checkout keeps its historical `config/`, `data/`, `state/`, and `reports/`
+directories below the checkout root. A packaged release stores operator
+configuration in `${XDG_CONFIG_HOME:-~/.config}/scoursh`, generated advisory
+data in `${XDG_DATA_HOME:-~/.local/share}/scoursh`, and diff state plus reports
+in `${XDG_STATE_HOME:-~/.local/state}/scoursh/{state,reports}`. This survives a
+package upgrade or uninstall.
+
+Set `SCOURSH_HOME=/path` for the single-root
+`/path/{config,data,state,reports}` layout, useful for a container volume.
+`scoursh paths` prints the actual resolved locations. Rules, payloads,
+wordlists, and compliance data always remain read-only install-root data.
+Advisory databases prefer the resolved data directory and fall back to an
+install-root copy; existing per-file database overrides still take precedence.
+
 | Command | Flags | Status | Notes |
 |---|---|---|---|
 | `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |

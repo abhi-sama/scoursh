@@ -120,7 +120,8 @@ source "${BASH_SOURCE[0]%/*}/crawl_engine.sh"
 # data, and sourcing one would execute operator-supplied text before the scope
 # gate is consulted.  tests/lint-shell.sh fails the build on the attempt.
 _crawl_discovery_load() {
-  local target=$1 path=${SCOURSH_INSTALL_ROOT:-.}/config/discovery.conf idx
+  scoursh_layout_resolve
+  local target=$1 path=$SCOURSH_CONF_DIR/discovery.conf idx
   _CRAWL_D_OPENAPI='' _CRAWL_D_GRAPHQL='' _CRAWL_D_POSTMAN='' _CRAWL_D_HAR=''
   _CRAWL_D_DEPTH=3
   # Default ON: this adds no fetch of its own (docs/INVENTORY-FORMAT.md's
@@ -217,7 +218,7 @@ _crawl_discovery_apply_cli_overrides() {
 # A path supplied on the command line is resolved from the current working
 # directory. A path from config/discovery.conf is config-directory-relative in
 # a packaged install, while a checkout keeps the historical install-root
-# behaviour until the installed-layout resolver lands.
+# behaviour as required by the installed-layout resolver.
 _crawl_resolve_input_path() {
   local p=$1 source=${2:-config} base
   [[ -n $p ]] || { printf ''; return 0; }
@@ -228,7 +229,7 @@ _crawl_resolve_input_path() {
   if [[ $source == cli ]]; then
     base=$(pwd -P)
   elif [[ -f ${SCOURSH_INSTALL_ROOT:-.}/.scoursh-packaged ]]; then
-    base=${_CRAWL_D_CONFIG_DIR:-${SCOURSH_INSTALL_ROOT:-.}/config}
+    base=${_CRAWL_D_CONFIG_DIR:-$SCOURSH_CONF_DIR}
   else
     base=${SCOURSH_INSTALL_ROOT:-.}
   fi
