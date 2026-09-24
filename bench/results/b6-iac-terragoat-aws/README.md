@@ -2,9 +2,9 @@
 
 **This is the B6 IaC leg's Terraform half.** Its sibling is
 `bench/results/b6-iac-kubernetes-goat/`; the secrets half is
-`bench/results/b6-secrets-leaky-repo/`. None of it is published anywhere in
-`docs/` — that is ticket B9, deliberately separate, per `bench/README.md`'s
-"what must not be published" rules.
+`bench/results/b6-secrets-leaky-repo/`. None of it was published in `docs/` when this leg landed (ticket B9 was deliberately separate); B9
+has since published it in `docs/COMPARISON.md`. `bench/README.md`'s "what must not be
+published" rules still govern any quotation of it.
 
 ## What was run
 

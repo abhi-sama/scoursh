@@ -22,9 +22,9 @@ tests/fixtures/aws/<check-id>/bad.json         # single-call mode: MUST be flagg
 tests/fixtures/aws/<check-id>/<operation>.json # routed mode: this operation's own response
 ```
 
-`<check-id>` is a short, descriptive slug - it does not have to match a real
-`check_id` yet, since no check ids are minted until step 6 assigns them from
-the `docs/DESIGN.md` §8.1 catalog. Every file is exactly what `aws_ro` would
+`<check-id>` is a short, descriptive slug; it does not have to match a real
+`check_id` (when this was written no `CLOUD-*` ids existed yet; step 6 has
+since minted them, and the real sets below are named `cloud-<service>/`). Every file is exactly what `aws_ro` would
 have printed: the real `--output json` body for the operation the check
 calls, hand-written or recorded from a real (throwaway, sanitised) account or
 from LocalStack. Never a real account's actual identifiers, ARNs, or resource
@@ -135,7 +135,8 @@ including the unmatched-pair failure case, against
 
 ## The real fixture sets
 
-There are now 26 `cloud-*` fixture sets, one per landed AWS service, each consumed by its own
+There are now 26 `cloud-*` fixture sets covering all 30 landed AWS services (`cloud-governance/` bundles
+cloudtrail, config, guardduty, inspector and macie), each consumed by its own
 `tests/suites/cloud-<service>.sh` suite driving the real `modules/cloud/aws/live/<service>.sh` through a
 real `scan.sh cloud --live` subprocess.
 

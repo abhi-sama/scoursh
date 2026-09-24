@@ -350,6 +350,13 @@ When that happens the engine MUST:
    findings as `unknown` rather than manufacturing a wave of `fixed`
    (`docs/FOUNDATION.md` tension 12).
 
+**Implemented.** `modules/sast/engine.sh`'s `sast_filter_pcre_ids` (used by both the SAST and IaC
+walks) makes this decision once per run, before the walk: an unavailable engine removes the record,
+records `check=<id> reason=pcre-unavailable` under `skipped_checks`, and keeps the id out of
+`checks_run` and `state/` coverage. When a PCRE2 engine is available the record's `pattern`,
+`context-require` and `context-deny` are all matched under PCRE (`scan_match_offsets_pcre`,
+`scan_match_stdin_pcre` in `lib/core.sh`).
+
 Because a skipped check is a silent coverage hole, `pcre` is a last resort.
 Most patterns that reach for a lookahead are better written as an `ere` `pattern` plus a
 `context-deny` (§10); the worked example `PY-YAML-LOAD-01` in §12.2 shows exactly that rewrite of the
@@ -703,6 +710,10 @@ that composite.
 Neither case is an error, and neither is silent: a composite that never fires because its contributors
 never share a correlation value is reported in `run.json` under `coverage_gap`, so the operator sees a
 chain that cannot correlate rather than a chain that is clean.
+**Implemented** by `lib/findings.sh`'s `derive_record_uncorrelated_gaps`, which `scan.sh` calls once
+after every module selected for the command has run (so an `all` run does not record a gap a later
+module would have closed) and before the final report render, so every selected output format carries
+it.
 
 **Cloud target attribution.**
 A cloud-live finding has no scope-target name in its own identity, so `target` is supplied by an
@@ -818,7 +829,7 @@ patterns do.
 | `cis` | optional | repeatable | no | As §9.1. |
 | `severity-floor` | optional | single | no | As §9.1. |
 | `severity-ceiling` | optional | single | no | As §9.1. |
-| `fix-cli` | optional | single | no | A deterministic remediation command, when the check can safely supply one. |
+| `fix-cli` | optional | single | no | A deterministic remediation command TEMPLATE, when the check can safely supply one. The literal `%RESOURCE%` is replaced per finding with the last `:`-separated segment of its `loc_resource_key` (for S3, the bucket name). Carried onto the finding as `fix_cli` by `finding_from_record`; `--format agent` always labels it assisted (never auto-applied). Additive and optional (§14 item 2 only). Shipped today on three S3 checks in `modules/cloud/aws/live/checks.rules`; see `docs/AGENT-FORMAT.md`. |
 
 A script check has no `pattern`, `dialect`, `files`, or `context-*` key; those are `E017` here.
 
@@ -972,9 +983,11 @@ living here.
 They do not: `docs/FOUNDATION.md` tension 15 computes profile membership from each check's own record,
 so there is no profile definition to store and no way for a profile list to drift out of sync with the
 checks it names.
-(Exactly *which* field of the record decides `compliance` - the `compliance` tag of §9.1.3, or a
-non-empty `cis` / `owasp` per tension 15 - is open as finding **F3** in that document's known
-follow-ups, and is not settled here.)
+(Which field of the record decides `compliance` - the `compliance` tag of §9.1.3, or a non-empty
+`cis` / `owasp` per tension 15 as first written - was open as finding **F3** when this was written. It
+is **closed** on the TAG reading: `lib/checks.sh` selects the `compliance` profile by the §9.1.3
+`compliance` tag, because `owasp` is required on every check and so "non-empty `owasp`" would select the
+whole catalog. `docs/FOUNDATION.md` tension 15 and its F3 entry record the closure.)
 
 #### 9.6.2 `config/auth.conf` - auth identity
 
@@ -982,6 +995,10 @@ One record per (target, identity).
 File permissions MUST be `600` (`E073`).
 Every value in this schema is marked **secret**, so `redact()` covers it in every log, report, and
 evidence field (`docs/FOUNDATION.md` tension 9).
+**Implemented**: when `modules/dast/auth_engine.sh` loads the file it calls `lib/findings.sh`'s
+`auth_redaction_register`, which registers every field value of every record (including `id` and
+`mode`); `redact()` then masks each occurrence as `<redacted:AUTH_CONF:DDDDDDDD>` even when no
+`rules/redaction.rules` pattern matches its shape.
 
 | Key | Req | Card | Multi-line | Value |
 |---|---|---|---|---|

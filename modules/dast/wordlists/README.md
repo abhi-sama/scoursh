@@ -31,6 +31,11 @@ Put a plain-text file on disk and point the scanner at it:
   clone; create it here, or
 - **override** with `SCOURSH_DAST_DISCOVERY_WORDLIST=/path/to/your-wordlist.txt`.
 
+The default path is under the install root, not the resolved data directory,
+so in a read-only installed copy (a release tarball or Homebrew install; see
+`docs/adr/0002-installed-layout.md`) the environment override is the way to
+supply a wordlist.
+
 When no wordlist is found at either location, the wordlist-based technique
 degrades to a **recorded coverage gap** (`docs/DESIGN.md` §15) - it never errors
 and never reports its silence as a clean result. The fixed, in-code

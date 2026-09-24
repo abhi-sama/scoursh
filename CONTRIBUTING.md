@@ -20,11 +20,18 @@ sharp-edges register (most of it applies to agents and humans alike).
   rather than silently reporting clean. If your change makes a check skip, degrade, or not run under
   some condition, it needs to record that honestly, the same way every existing module does.
 - **The egress model is load-bearing.** scoursh is egress-restricted by destination: SAST, SCA, and
-  IaC make zero network calls; DAST and live AWS scanning talk only to what the operator explicitly
-  authorized in `config/scope.conf`, and only through the two chokepoints (`lib/http.sh`'s `curl`
+  IaC make zero network calls; DAST, network/host scanning and live AWS scanning talk only to what the
+  operator explicitly authorized (`config/scope.conf` targets, or their own AWS account), and only
+  through the two chokepoints (`lib/http.sh`'s `curl`
   wrapper, `lib/awscli.sh`'s `aws_ro`). See `docs/DESIGN.md` §2 and `AGENTS.md`'s "The no-egress rule"
   section. A change that adds a new way to reach the network outside those two wrappers will not be
   accepted; `tests/lint-shell.sh` also enforces this mechanically.
+- **Code must work from an installed copy, not only a checkout.** A release tarball is read-only and
+  carries only the paths in `tools/build-release.sh`'s `BR_RELEASE_PATHS` (no `tests/`, no `bench/`).
+  Read and write operator config, generated data, state and reports through `SCOURSH_CONF_DIR`,
+  `SCOURSH_DATA_DIR`, `SCOURSH_STATE_DIR` and `SCOURSH_REPORTS_DIR` (resolved by `lib/layout.sh`; see
+  [`docs/adr/0002-installed-layout.md`](docs/adr/0002-installed-layout.md)), never a path under the
+  install root. `tools/smoke-installed.sh` on a `tools/build-release.sh` tarball is the check.
 - **No target-specific names, ever.** scoursh is target-agnostic by design (`docs/DESIGN.md` §1): no
   application, company, product, environment, or endpoint name is baked into a script, rule, or doc.
   Rules describe classes of issue, never a specific system.
