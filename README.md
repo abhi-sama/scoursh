@@ -428,7 +428,7 @@ Every normal `sast`/`sca`/`iac`/`dast`/`cloud`/`network`/`image` run already aut
 findings against `state/latest.json` - each present finding's `status` in that run's own `findings.jsonl`
 is `new` or `recurring`. Prior findings absent this run are classified `fixed`/`unknown` in the run's
 report, `run.json` status counts, and `meta/diff_absent`. **`diff --against` itself is currently broken
-(as of `0.1.0-dev`)**: the classification it computes is correct (visible in
+(as of `1.0.0`)**: the classification it computes is correct (visible in
 `meta/diff_present`/`meta/diff_absent` in its output directory), but the rendered `report.md`/`run.json`
 counts always read 0/0/0/0 regardless - verified by reproducing it from a clean `state/` directory twice.
 Until fixed, read a normal scan's report (or `meta/diff_absent`) instead of running `diff` standalone.
