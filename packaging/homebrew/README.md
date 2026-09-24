@@ -3,6 +3,10 @@
 This directory is the source repository's formula template and release check. It
 does not create or publish a tap.
 
+**Current status:** `abhi-sama/homebrew-scoursh` is not published yet. The
+`brew install` command below becomes available only after the captain creates
+that public tap and merges its rendered formula.
+
 ## Captain publication steps
 
 1. Create the public repository `abhi-sama/homebrew-scoursh`; do not create it

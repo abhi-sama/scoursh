@@ -71,7 +71,7 @@ install-root copy; existing per-file database overrides still take precedence.
 | `image` | `--image ID` `[--source PATH]` | live, needs an advisory database for OS-package/dependency matching | Offline installed-package enumeration and CVE matching against a **built** container image - `ID` names an `id` record in `config/images.conf` pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory (`source: oci-layout`); never a registry pull, and `--image` is the only required flag. `--source PATH` overrides the configured path for this run only (the shape is inferred from the filesystem - a directory is `oci-layout`, a file is `docker-archive`); with no `config/images.conf` record for `ID` at all, `--source` is the only way to run. Enumerates and matches apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH` - its package database is a binary format, a declared coverage reduction rather than a silent skip when absent), plus language dependencies found at a bounded set of conventional manifest locations inside the image's own rootfs (reusing `sca`'s tree-walkers). Also reads the image's config blob for its effective runtime user, exposed ports, and whether its recorded base reference is a mutable tag - these three checks need no advisory database and run on every opened image regardless of distro. No advisory data for the image's release is `IMAGE-COV-NO_ADVISORY_DB-01` and exit `4` when `image` is the selected command (a declared skip under `all`, per the identical SCA precedent). `--format agent` works here the same as every other module. See ["Dependency data"](#dependency-data-dataadvisoriesdb) and `docs/CHECKS.md`'s "Container image" section. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), image only if `--image` is given, and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
-| `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory: it must contain `findings.jsonl` AND a non-empty, well-formed `run.json` AND `findings.fields` AND `meta/` - all four, a stricter check than `diff --against`'s. Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. An aborted run's directory therefore never qualifies, since it never writes `findings.jsonl`. See ["`report --from DIR`"](#report---from-dir). |
+| `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory: it must contain `findings.jsonl` AND a non-empty, well-formed `run.json` AND `findings.fields` AND `meta/` - all four, a stricter check than `diff --against`'s. Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. An abort writes `findings.jsonl`; it can be regenerated when it reached a merged `findings.fields`, while a pre-dispatch abort has no such file. See ["`report --from DIR`"](#report---from-dir). |
 
 `-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
 
@@ -217,13 +217,12 @@ walking through questions for a scan that cannot do anything yet.
 | Dependencies/lockfiles (`sca`) | **fully wired end to end** | Asks path only. If `data/advisories.db` is missing it says so and explains the run will still proceed as a declared coverage gap - the identical honesty `scan.sh sca` already gives outside guided mode. |
 | Infrastructure as code (`iac`) | **fully wired end to end** | Asks path only. |
 | A running web application (`dast`) | **fully wired end to end** | Target, then intensity, then - only above `passive` - the own-your-target affirmation and each raised limit. Picking `passive` asks nothing further: no affirmation, no rate/budget menus, no side-effecting-checks question. |
-| An AWS account, read-only (`cloud`) | **partially wired** | `modules/cloud/aws/run.sh` exists and is reachable at the scan-type menu, but its guided setup beyond the scan type and the CI gate isn't wired into `--guided` yet - only `--fail-on` is asked. The session prints a note saying so and hands back the direct-command equivalent (`scan.sh cloud --live ...`) once you have a target account. |
-| Everything this checkout can actually do (`all`) | **partially wired** | Asks path/languages/history exactly like `sast` (when not already given), then the CI gate. It does **not** route through the `dast` target/intensity/affirmation questions, nor the `cloud` account/region questions, at all: `scan.sh all` only runs `dast` when `--target` was already given on the command line before `--guided`, and only runs `cloud` when `--live` was already given - otherwise both are recorded as declared `coverage_reduction` facts, exactly as a non-guided `scan.sh all` with neither flag already does. A guided `all` session is therefore never how an operator first authorises a DAST target or a cloud account; that has to happen through `scan.sh dast --guided` / `scan.sh cloud --guided` (or their own menu items) first. |
+| An AWS account, read-only (`cloud`) | **refused** | `scan.sh cloud --guided` exits `2` with `--guided cloud cannot safely configure an AWS account scan yet; nothing was run.` It does not scan and does not offer a partial questionnaire. Use `scan.sh cloud --live` directly after choosing the intended AWS credentials and profile. |
+| Everything this checkout can actually do (`all`) | **partially wired** | Asks path/languages/history exactly like `sast` (when not already given), then the CI gate. It does **not** route through the `dast` target/intensity/affirmation questions, nor the `cloud` account/region questions, at all: `scan.sh all` only runs `dast` when `--target` was already given on the command line before `--guided`, and only runs `cloud` when `--live` was already given - otherwise both are recorded as declared `coverage_reduction` facts, exactly as a non-guided `scan.sh all` with neither flag already does. A guided `all` session is therefore never how an operator first authorises a DAST target or a cloud account; use `scan.sh dast --guided` for DAST and configure Cloud directly with `scan.sh cloud --live`. |
 
 **Guided mode never walks through configuring a surface and then runs something not wired up.**
-`cloud` is reachable rather than refused, but its account/region questions genuinely aren't composed
-yet - the session says so plainly and falls back to naming the direct command, rather than asking
-questions it can't yet turn into flags.
+Cloud account/region questions are not composed, so `--guided cloud` refuses before any scan or
+partial questionnaire; it names the direct `scan.sh cloud --live` path instead.
 
 ### Flag equivalence
 
@@ -359,6 +358,19 @@ that ever reaches the network; build the advisory database with it once after in
 [Dependency data](#dependency-data-dataadvisoriesdb)). Upgrading is extracting the new version beside
 the old one and re-pointing the two links; your configuration, state and reports live outside the
 extracted tree, so they carry over.
+
+### Homebrew (not published yet)
+
+The planned tap, `abhi-sama/homebrew-scoursh`, is **not published yet**, so no Homebrew install is
+available today. After the tap is published and its formula PR has been merged, its supported install
+command will be:
+
+```sh
+brew install abhi-sama/scoursh/scoursh
+```
+
+Like a tarball installation, the formula uses the installed-copy layout: `scoursh paths` shows the
+configuration, advisory-data, state, and reports directories that Homebrew upgrades leave alone.
 
 ### Cutting a release (maintainers)
 
@@ -799,9 +811,10 @@ prior run's state before its own gate is evaluated.
 
 `DIR` is validated more strictly than `diff --against` is: it must contain `findings.jsonl` AND a
 non-empty, well-formed `run.json` AND `findings.fields` AND `meta/` - all four are required, never
-just one of `findings.jsonl`/`run.json` the way `diff --against` accepts. A consequence: `report
---from` cannot run against an aborted run's own output directory, since an abort never writes
-`findings.jsonl`. The run regenerates `report.md`, `report.html`,
+just one of `findings.jsonl`/`run.json` the way `diff --against` accepts. The abort path writes
+`findings.jsonl` too, so a partially completed run can be regenerated if it reached a merged
+`findings.fields`; a pre-dispatch abort cannot, because it has no `findings.fields` to render. The run
+regenerates `report.md`, `report.html`,
 `report.sarif`, and `report-audit.html` (honouring `--format`) from `DIR`'s own persisted
 `findings.fields`/`meta/` facts, with no module dispatched and no rescan.
 
@@ -1143,7 +1156,7 @@ Checked in this fixed order - the first true condition wins, never "worst findin
 | `1` | Findings at or above `--fail-on` (the CI gate). |
 | `2` | Usage error (bad flag, bad value, missing required flag). |
 | `3` | Scope violation (`dast --target` not found in `config/scope.conf`), or a `--paranoid` connection observed outside the allowlist. |
-| `4` | Missing required input (unreadable path, missing config file, missing required command, or `sca` with no `data/advisories.db` - see ["Dependency data"](#dependency-data-dataadvisoriesdb)). |
+| `4` | Missing required input or unusable local storage: unreadable path, missing config file, missing required command, `sca` with no `data/advisories.db` (see ["Dependency data"](#dependency-data-dataadvisoriesdb)), or a report/state directory that cannot be created or written. The latter is checked before dispatch, so a scan does not consume time before failing. |
 | `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
 
 A run that terminates on any of codes `2`/`3`/`4` records *why* in `run.json`'s `abort_reason` field
