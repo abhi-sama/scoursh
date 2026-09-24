@@ -5,6 +5,13 @@ This is a research spike.
 It ships no production code.
 Its findings and recommendation feed the `scan.sh` skeleton ticket (`docs/DESIGN.md` §13 build-order step 2), which owns the actual decision and implementation.
 
+> **Status note (2026-09-24).** Step 2 has shipped: `scan.sh` uses a hand-rolled parser in the spirit of
+> the recommendation below, accepting both `--flag value` and `--flag=value`, but table-driven through
+> `_SCAN_FLAG_KIND`/`scan_flag_kind` rather than one `case` arm per flag, and it refuses any argument after
+> `--` rather than collecting positionals. The project later fixed its minimum at bash 4.2
+> (`docs/FOUNDATION.md` tension 24; `lib/core.sh` refuses anything older), so the "bash 3.2 as shipped by
+> Apple" remarks below describe the spike's measurement, not a supported runtime.
+
 ```
 // ADR: candidate approach for scan.sh's long-option CLI parsing
 // Context: scan.sh's CLI surface (docs/DESIGN.md §5) is long-option-only

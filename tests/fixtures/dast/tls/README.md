@@ -5,8 +5,9 @@ No file in this directory came from, or names, a real host: every certificate is
 `fixture.example` domain (RFC 6761 `.example`), and every transcript is assembled from those
 certificates rather than captured from a live target.
 `docs/DESIGN.md` §12 requires DAST logic to be testable against recorded responses with no live target,
-and `tests/lint-shell.sh`'s DAST-35 checks scan `tests/` for exactly this reason - a fixture naming a
-resolvable host would fail the build.
+and `tests/lint-shell.sh`'s DAST-35 checks scan `tests/` - but only `base-url:`/`extra-host:` records in
+`*.sh`, `*.rules`, `*.conf` and `*.example` files, so the `.pem` and `.transcript` files here are kept on
+`fixture.example` by review, not by that lint.
 
 ## Certificates
 

@@ -24,8 +24,12 @@ a package rather than filtering the way the six SCA ecosystems do.
 (docs/VERSIONS-DB.md §3: "a row with none lands on `high`") rather than the
 SCA rows' own `medium` default.
 
+The four distro importers below write `data/advisories.db` only. (Until the
+2026-09-21 advisory-data split they also wrote `data/versions.db`, which now
+holds the `banner` namespace alone; the suite asserts their rows stay out of it.)
+
 `SCOURSH-FIXTURE-OSV-ALPINE-1.json` and `SCOURSH-FIXTURE-OSV-ALPINE-2.json`
-are for `veng_advisories_alpine` (data/advisories.db and data/versions.db's
+are for `veng_advisories_alpine` (data/advisories.db's
 `Alpine:vX.Y` namespace, IMG-03). `-ALPINE-1` carries THREE `affected[]`
 entries: `Alpine:v3.18` and `Alpine:v3.19` (two DIFFERENT releases, each with
 its own `fixed` version, for the SAME package - proving one import can
@@ -37,7 +41,7 @@ names a different package under `Alpine:v3.18` only, for the
 replace-the-whole-namespace test.
 
 `SCOURSH-FIXTURE-OSV-DEBIAN-1.json` and `SCOURSH-FIXTURE-OSV-DEBIAN-2.json`
-are for `veng_advisories_debian` (data/advisories.db and data/versions.db's
+are for `veng_advisories_debian` (data/advisories.db's
 `Debian:N` namespace, IMG-09) - Debian's sibling to the two `-ALPINE-*`
 fixtures above. `-DEBIAN-1` carries THREE `affected[]` entries: `Debian:11`
 and `Debian:12` (two DIFFERENT releases, each with its own `fixed` version,
@@ -50,7 +54,7 @@ different source package (`bash`) under `Debian:12` only, for the
 replace-the-whole-namespace test.
 
 `SCOURSH-FIXTURE-OSV-UBUNTU-1.json` is for `veng_advisories_ubuntu`
-(data/advisories.db and data/versions.db's `Ubuntu:XX.YY` namespace, IMG-09).
+(data/advisories.db's `Ubuntu:XX.YY` namespace, IMG-09).
 It carries THREE `affected[]` entries: `Ubuntu:20.04` and `Ubuntu:22.04` (two
 DIFFERENT releases, each with its own `fixed` version, for the SAME source
 package `openssl`) plus a `Debian:12` entry for the identical package, which
@@ -59,13 +63,14 @@ must be SKIPPED - proving the `Ubuntu:*` sentinel does not also admit
 sharing the same `eco.endswith(':*')` extraction path.
 
 `SCOURSH-FIXTURE-OSV-REDHAT-1.json` and `SCOURSH-FIXTURE-OSV-REDHAT-2.json`
-are for `veng_advisories_redhat` (data/advisories.db and data/versions.db's
+are for `veng_advisories_redhat` (data/advisories.db's
 `Red Hat` namespace, the last rpm ticket) - UNLIKE its three distro siblings
 above, `Red Hat` is a single FLAT ecosystem string with no per-release
 variant, so `-REDHAT-1` carries only ONE `Red Hat` entry (`openssl-libs`,
 with an EPOCH in both its installed and fixed version - `1:1.1.1k-9.el8` /
-`1:1.1.1k-9.el8_6` - proving the epoch-aware rpmvercmp comparator is what
-orders it, never a lexical/semver comparison) plus a `Debian:12` entry for a
+`1:1.1.1k-9.el8_6` - proving the epoch is carried verbatim into the flat
+`Red Hat` row, never stripped; ordering it is the scan-time comparator's job,
+`modules/image/distro/rpm_version.sh`, which this fixture does not exercise) plus a `Debian:12` entry for a
 different-but-similarly-named package (`openssl`), which must be SKIPPED -
 proving the exact-match branch (`_veng_advisories_osv_ecosystem`'s `'Red
 Hat'` case) never falls back to a prefix or wildcard match. `-REDHAT-2`
