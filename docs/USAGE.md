@@ -268,6 +268,104 @@ Colour on stderr is resolved from `SCOURSH_COLOR` and `NO_COLOR`, checked in thi
 allows an explicit user flag to override it, and `SCOURSH_COLOR` set to a specific value is exactly
 that - an operator who typed `always` gets `always`, not a value NO_COLOR silently downgraded.
 
+## Installing from a release
+
+Every release is one architecture-independent tarball, `scoursh-X.Y.Z.tar.gz`, plus a `SHA256SUMS`
+file, published as an immutable GitHub Release by `.github/workflows/release.yml`. The tarball holds
+the scanner and its read-only data (`scan.sh`, `lib/`, `modules/`, `rules/`, `data/`, `docs/`, the
+`config/*.example` files, and the three user-facing `tools/` scripts), plus two things a checkout
+does not have: a `bin/` directory of entry-point links (`scoursh`, `scoursh-vendor`,
+`scoursh-sandbox`, `scoursh-netns`), and the `.scoursh-packaged` marker that tells scoursh it is an
+installed copy rather than a checkout. It holds no tests, no benchmark harness, no advisory database
+(build it yourself, below), and no third-party engine binaries (engines are pinned to their upstream
+downloads, never re-hosted).
+
+### Verify a download
+
+```sh
+V=1.0.0
+gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
+sha256sum -c SHA256SUMS                  # macOS: shasum -a 256 -c SHA256SUMS
+gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh \
+  --signer-workflow abhi-sama/scoursh/.github/workflows/release.yml
+gh release verify "v$V" --repo abhi-sama/scoursh
+```
+
+| Check | What it proves |
+|---|---|
+| `sha256sum -c` | The bytes you hold are the bytes listed in `SHA256SUMS` (integrity only: anyone who could swap the tarball could swap the checksum file beside it). |
+| `gh attestation verify` | A Sigstore-signed SLSA build-provenance attestation says this exact file was built by this repository's `release.yml`, from the tagged commit. This is the check that proves *origin*. |
+| `gh release verify` | The release is immutable: its tag and assets cannot have been replaced after it was published. |
+
+**Air-gapped hosts.** On a networked box, fetch the attestation bundle and the Sigstore trust root,
+carry both across with the tarball, and verify offline:
+
+```sh
+gh attestation download "scoursh-$V.tar.gz" --repo abhi-sama/scoursh    # writes sha256:<digest>.jsonl
+gh attestation trusted-root >trusted_root.jsonl
+# on the isolated host:
+gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh \
+  --bundle "sha256:<digest>.jsonl" --custom-trusted-root trusted_root.jsonl
+```
+
+**Rebuild it yourself.** The build is reproducible, so a release can be checked without trusting
+the release pipeline at all:
+
+```sh
+git clone https://github.com/abhi-sama/scoursh.git && cd scoursh && git checkout "v$V"
+tools/build-release.sh "$V" /tmp/rebuild     # needs git and python3; no network
+cmp /tmp/rebuild/scoursh-$V.tar.gz "scoursh-$V.tar.gz" && echo identical
+```
+
+`tools/build-release.sh` builds only committed files from an explicit allowlist, sorts every entry,
+stamps each with the tagged commit's own time, zeroes owner and group, and writes the gzip stream
+without a name or timestamp, so the same tag yields the same sha256 on any host.
+
+### Install the tarball
+
+scoursh needs bash >= 4.2 on `PATH` (macOS ships 3.2: `brew install bash`). On Windows, use WSL;
+Git Bash is not supported. Extract anywhere you like - the extracted tree is never written to - and
+link the entry points onto `PATH`:
+
+```sh
+mkdir -p ~/.local/share/scoursh ~/.local/bin
+tar -xzf "scoursh-$V.tar.gz" -C ~/.local/share/scoursh
+ln -sfn ~/.local/share/scoursh/scoursh-$V/bin/scoursh        ~/.local/bin/scoursh
+ln -sfn ~/.local/share/scoursh/scoursh-$V/bin/scoursh-vendor ~/.local/bin/scoursh-vendor
+scoursh --version
+scoursh paths          # where this installed copy keeps config, data, state and reports
+```
+
+`scoursh` is `scan.sh` under its installed name: every `./scan.sh ...` example in this document is
+`scoursh ...` for an installed copy. `scoursh-vendor` is `tools/vendor-engines.sh`, the only command
+that ever reaches the network; build the advisory database with it once after installing
+(`scoursh-vendor advisories bulk --all --accept-unverified`, see
+[Dependency data](#dependency-data-dataadvisoriesdb)). Upgrading is extracting the new version beside
+the old one and re-pointing the two links; your configuration, state and reports live outside the
+extracted tree, so they carry over.
+
+### Cutting a release (maintainers)
+
+1. Bump `VERSION` (for example to `1.0.0`) on `dev`, and promote `dev` to `main` as usual.
+2. Wait for `main`'s own `tests` workflow to pass for that exact commit - `release.yml` refuses a
+   commit whose push-to-main CI run did not conclude `success`, or that was never a `main` tip.
+3. Tag that commit `vX.Y.Z` (it must equal `VERSION`) and push the tag. `release.yml` then builds the
+   tarball, runs the release gate (`tools/smoke-installed.sh`: extract read-only, link onto a scratch
+   `PATH`, and prove `--version`, `paths`, and a real `sast` scan all work from the installed layout),
+   attests both files, and publishes the release. A `-PRERELEASE` suffix (`v1.0.0-rc.1`) publishes a
+   pre-release.
+
+Before the first tag: turn on **immutable releases** in the repository settings (the publish job
+fails loudly on a release that did not lock), restrict who may create `v*` tags with a tag ruleset,
+and optionally give the `release` environment a required reviewer. A manual `workflow_dispatch` run
+of `release.yml` is a dry run - it builds and gates whatever ref it is started on and publishes
+nothing. Locally, the same two steps are:
+
+```sh
+tools/build-release.sh "$(cat VERSION)" dist
+tools/smoke-installed.sh "dist/scoursh-$(cat VERSION).tar.gz"
+```
+
 ## Recipes
 
 Task-flow, copy-paste command sequences. Every command below is exact and runnable as written from a

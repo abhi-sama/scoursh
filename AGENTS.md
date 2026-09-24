@@ -4689,6 +4689,13 @@ capability table (`file`, conditional on the declared key) and `tests/lint-rules
 established. `tests/suites/image-iac-correlate.sh` proves both directions against the real check ids
 and the real `rules/derived.rules`.
 
+## Release artifacts: `tools/build-release.sh` and the `tools/smoke-installed.sh` gate
+
+- **The tarball ships only `BR_RELEASE_PATHS` (`tools/build-release.sh`), and only COMMITTED bytes at the ref.** A new runtime file outside `lib/`, `modules/`, `rules/`, `data/`, `docs/`, `config/*.example` and the three listed `tools/` scripts will NOT ship until it is added there - and a runtime read from `tests/` or `bench/` breaks every installed copy (the reason the AWS allowlist moved to `data/`).
+- **The build refuses forbidden shapes even when committed**: vendored engine `bin/`/`rules/`, `*.db`, non-example config, a committed `.scoursh-packaged`. The marker and `bin/` links are generated, never committed.
+- **The gate (`tools/smoke-installed.sh`) is strict**: read-only extraction, a symlinked entry point, `scoursh paths` must place state and reports outside the install root, and a real `sast` scan must succeed. It refuses today's tree until the installed-layout resolver (packaging plan §3 C3) lands; `tests/suites/build-release.sh` section E accepts that refusal only while `lib/core.sh` lacks `SCOURSH_STATE_DIR`, then demands a PASS.
+- `.github/workflows/release.yml` publishes only from a `vX.Y.Z` tag whose commit is on `main` with a green push-to-main `ci.yml` run; `docs/USAGE.md` "Installing from a release" is the operator/maintainer procedure.
+
 ## `bench/` is a benchmark harness, NOT part of the scanner
 
 `bench/` measures scoursh's detection against other tools on neutral, pinned,
@@ -5131,6 +5138,7 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - `-n -b -o` produces byte-identical output under ripgrep 15.1.0 and BSD grep 2.6.0-FreeBSD, which is what `rules/RULE-FORMAT.md` §10.3's per-match ordinal needs.
 - **`&` in the REPLACEMENT half of `${var//pattern/replacement}` expands to the MATCHED TEXT on bash 5.2 and later**, sed-style, where bash 4.2 - this project's frozen minimum - treats it as an ordinary character. So `${v//%3C/&lt;}` yields `%3Clt;` on a current macOS bash and `&lt;` on the oldest bash we support: the same line means two different things across the two userlands `tools/daily-suite.sh` deliberately runs. Write `\&` whenever the ampersand must stay literal. Measured in `tests/suites/dast-xss.sh`, where the unescaped spelling silently filled every "correctly HTML-escaped" control fixture with gibberish; because gibberish contains no raw `<` either, three of the four controls stayed GREEN and the mistake was caught only by the one case whose `&` sat mid-string rather than at the front. This is the failure shape to fear - a fixture that is wrong in the direction that still passes.
 - `printf '--- ...'` is parsed as options by bash's builtin printf; use `printf -- '--- ...'`.
+- **Never pass `-F` (or any other matcher flag) to `scan_match`.** Under the grep engine it already binds `grep -E`, and GNU grep refuses `-E -F` outright ("conflicting matchers specified", rc 2, so `scan_match` dies exit 5) where BSD grep silently lets the last flag win - green on macOS, red on the Ubuntu CI leg. For a literal, pass it as an ERE: fine as-is when it holds no metacharacter, else escape it (`_hh_ere_escape`, `modules/dast/active/hosthdr_engine.sh`).
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
 - ShellCheck versions disagree: Debian's reports `SC2119`/`SC2120` where 0.11.0 does not. The BSD leg runs whatever Homebrew installed and the GNU leg whatever the container image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
 - A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.
