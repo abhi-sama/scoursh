@@ -222,10 +222,12 @@ emptiness - `[]` for an empty array is still a fact, not silence):
 
 `report_agent` is not gated on the run having actually reached `report_all`. `die()` (`lib/core.sh`,
 exit codes 2/3/4/5) terminates the process directly, and its own abort-refresh path
-(`run_json_refresh_incomplete`) re-renders `run.json`, `report.md`, `report.html` **and**
-`agent-fix.json` in that order before the process exits - the identical four-writer list, so an
-aborted run's `agent-fix.json` is never stale or absent. This closes what would otherwise be the
-worst case for a consumer that reads only this one file by default: no file at all on an abort reads
+(`run_json_refresh_incomplete`) always re-renders `run.json` and `findings.jsonl`, then renders every
+optional artifact selected by `--format` (`findings.json`, `report.md`, `report.html`, `report.sarif`,
+`report-audit.html`, and `agent-fix.json`) before the process exits. Thus, when `agent` is selected
+(including the default format list), an aborted run's `agent-fix.json` is never stale or absent. This
+closes what would otherwise be the worst case for a consumer that reads only this one file by default:
+no file at all on an abort reads
 as "never fetched", not as "clean", but it is still strictly worse than an explicit aborted state,
 because it gives a downstream fixing agent nothing to branch on.
 

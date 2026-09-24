@@ -151,9 +151,10 @@
   <h1>Command builder</h1>
   <p class="sub">Pick a surface, point it at a path or target, toggle options, and copy the exact
   <code>scan.sh</code> invocation. This page composes a command string only &mdash; it never runs
-  anything, and it makes no network request of any kind. The terminal equivalent is
-  <code>./scan.sh &lt;command&gt; --guided --print-command</code>, which asks the same questions
-  interactively and prints the command instead of running it. See also
+  anything, and it makes no network request of any kind. For commands supported by guided mode, the
+  terminal equivalent is <code>./scan.sh &lt;command&gt; --guided --print-command</code>, which asks the
+  same questions interactively and prints the command instead of running it. <code>--guided cloud</code>
+  deliberately refuses rather than scanning; the Cloud panel below explains the direct path. See also
   <a href="checks.html">docs/checks.html</a> for what each check needs, and
   <code>docs/USAGE.md</code> for the full flag reference.</p>
 </header>
@@ -611,7 +612,10 @@ var STATIC_NOTES = {
   sca: [{kind: "info", text: "Needs data/advisories.db - build it once (a networked, off-scan-time step) with tools/vendor-engines.sh advisories bulk --all. Without it, sca records why it could not look rather than a false all-clear."}],
   iac: [],
   dast: [{kind: "info", text: "--target takes a config/scope.conf id, or that target's own base-url/extra-host value (scan.sh resolves it to the id on exactly one match). --authed additionally needs config/auth.conf's identities."}],
-  cloud: [{kind: "info", text: "Needs resolvable AWS credentials (profile, environment, or instance role). Every call is read-only, enforced by lib/awscli.sh's aws_ro chokepoint. Without --live, no AWS API call is made at all."}],
+  cloud: [
+    {kind: "info", text: "Needs resolvable AWS credentials (profile, environment, or instance role). Every call is read-only, enforced by lib/awscli.sh's aws_ro chokepoint. Without --live, no AWS API call is made at all."},
+    {kind: "warn", text: "--guided cloud is deliberately not available: it refuses with exit 2 and does not scan. Use this builder or run scan.sh cloud --live directly after choosing the intended credentials and profile."}
+  ],
   network: [{kind: "info", text: "--target takes a config/scope.conf id, or that target's own base-url/extra-host value (scan.sh resolves it to the id on exactly one match)."}],
   image: [{kind: "info", text: "--image must name an id record in config/images.conf pointing at a docker-save tarball or an OCI layout directory - or pass --source to point at one directly for this run."}],
   all: [{kind: "info", text: "Runs every module whose inputs are configured above; a module with nothing configured is skipped with a recorded coverage_reduction, not silently dropped."}],
