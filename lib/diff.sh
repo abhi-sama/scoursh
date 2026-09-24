@@ -672,7 +672,8 @@ _baseline_resolve_file_set() {
     _BASELINE_FILE=${SCAN_FLAGS[baseline]}
   else
     _BASELINE_EXPLICIT=false
-    _BASELINE_FILE="$SCOURSH_INSTALL_ROOT/config/baseline.json"
+    scoursh_layout_resolve
+    _BASELINE_FILE="$SCOURSH_CONF_DIR/baseline.json"
   fi
 }
 

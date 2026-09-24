@@ -802,15 +802,15 @@ guide_dast_budget_menu() {
     printf '\n'
   } >&2
   local -a items=("$ceil    - the conservative default (default)")
-  local -a values=("$ceil")
+  local -a budget_values=("$ceil")
   if [[ -n $file_val ]]; then
     items+=("$file_val   - the value in your config/scanner.conf")
-    values+=("$file_val")
+    budget_values+=("$file_val")
   fi
   items+=('100000')
-  values+=('100000')
+  budget_values+=('100000')
   guide_menu 'pick a number> ' "${items[@]+"${items[@]}"}"
-  GUIDE_DAST_REQUEST_BUDGET=${values[GUIDE_MENU_REPLY - 1]}
+  GUIDE_DAST_REQUEST_BUDGET=${budget_values[GUIDE_MENU_REPLY - 1]}
   return 0
 }
 
@@ -954,7 +954,8 @@ source "${BASH_SOURCE[0]%/*}/guide_scope.sh"
 
 GUIDE_G4_TARGET_ID=''
 guide_g4_authorize_target() {
-  local scope_path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local scope_path=${1:-$SCOURSH_CONF_DIR/scope.conf}
   GUIDE_G4_TARGET_ID=''
 
   {

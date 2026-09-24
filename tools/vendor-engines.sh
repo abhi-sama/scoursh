@@ -354,15 +354,15 @@ veng_vendor_all() {
 #    already warns about for a different capability.
 # ---------------------------------------------------------------------------
 
-VENG_ADVISORIES_DB=${SCOURSH_SCA_ADVISORIES_DB:-$VENG_DIR/data/advisories.db}
-VENG_VERSIONS_DB=${SCOURSH_VERSIONS_DB:-${SCOURSH_DAST_VERSIONS_DB:-${SCOURSH_SCA_VERSIONS_DB:-$VENG_DIR/data/versions.db}}}
+VENG_ADVISORIES_DB=${SCOURSH_SCA_ADVISORIES_DB:-$SCOURSH_DATA_DIR/advisories.db}
+VENG_VERSIONS_DB=${SCOURSH_VERSIONS_DB:-${SCOURSH_DAST_VERSIONS_DB:-${SCOURSH_SCA_VERSIONS_DB:-$SCOURSH_DATA_DIR/versions.db}}}
 # The two summary side tables docs/FOUNDATION.md tension 25's
 # summary-normalisation amendment adds, mirroring the pair above exactly
 # (modules/sca/engine.sh's sca_advisory_summaries_db_path and
 # modules/dast/passive/banner_engine.sh's banner_summaries_db_path read
 # these same two env-var overrides).
-VENG_SUMMARIES_DB=${SCOURSH_SCA_SUMMARIES_DB:-$VENG_DIR/data/advisory-summaries.db}
-VENG_VERSION_SUMMARIES_DB=${SCOURSH_DAST_VERSION_SUMMARIES_DB:-$VENG_DIR/data/version-summaries.db}
+VENG_SUMMARIES_DB=${SCOURSH_SCA_SUMMARIES_DB:-$SCOURSH_DATA_DIR/advisory-summaries.db}
+VENG_VERSION_SUMMARIES_DB=${SCOURSH_DAST_VERSION_SUMMARIES_DB:-$SCOURSH_DATA_DIR/version-summaries.db}
 
 # The six docs/DESIGN.md §6.5 ecosystems, keyed by the SAME literal
 # ecosystem string modules/sca/*.sh's own `sca_lookup_exact`/

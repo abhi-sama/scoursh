@@ -192,7 +192,8 @@ guide_scope_id_base() {
 # that same call, exactly as any other consumer of it does - a guided write
 # must never build a preview against a scope.conf it cannot actually trust.
 guide_scope_unique_id() {
-  local base=$1 scope_path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local base=$1 scope_path=${2:-$SCOURSH_CONF_DIR/scope.conf}
   records_clear scope
   config_scope_load "$scope_path" || true
   local candidate=$base n=1
@@ -277,7 +278,8 @@ guide_scope_record_text() {
 # refused by `records_load`'s own E019 check before this function ever
 # reaches `mv`.
 guide_scope_append() {
-  local record=$1 scope_path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  scoursh_layout_resolve
+  local record=$1 scope_path=${2:-$SCOURSH_CONF_DIR/scope.conf}
   local dir
   dir=$(dirname -- "$scope_path")
   [[ -d $dir ]] || die "$SCOURSH_EXIT_INPUT" "cannot write '$scope_path': directory '$dir' does not exist"

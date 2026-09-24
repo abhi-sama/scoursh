@@ -1,0 +1,232 @@
+# release: build, gate, attest and publish one immutable GitHub Release.
+#
+# DORMANT until a maintainer pushes a `vX.Y.Z` (or `vX.Y.Z-PRERELEASE`) tag.
+# Nothing in this file runs on a branch push or a pull request.  A manual
+# `workflow_dispatch` run is a DRY RUN: it builds the tarball and runs the
+# release gate against whatever ref it was started on, uploads the result as
+# a workflow artifact, and never attests, tags, or publishes anything.
+#
+# The flow (docs/USAGE.md, "Installing from a release", is the user-facing
+# half of this):
+#
+#   build   (read-only token, no OIDC)
+#     1. the tag names a commit on main, and equals the VERSION file;
+#     2. main's own `tests` workflow (ci.yml) finished GREEN for that exact
+#        commit - a release never ships a commit CI did not pass, and this
+#        job checks that fact rather than re-running the ~90 min suite;
+#     3. tools/build-release.sh builds scoursh-VERSION.tar.gz + SHA256SUMS
+#        (reproducible: anyone can rebuild at the tag and compare sha256);
+#     4. tools/smoke-installed.sh - the release gate - extracts it read-only,
+#        links it onto PATH, and proves --version, paths, and a real sast scan
+#        all work from that installed layout.
+#   publish (write token + OIDC; runs NO repository code at all)
+#     5. re-checks the downloaded bytes against build's own sha256 output;
+#     6. attests both files with GitHub artifact attestations (Sigstore,
+#        SLSA build provenance);
+#     7. creates the release as a DRAFT with both assets, then publishes it -
+#        with the repository's "immutable releases" setting on, publishing
+#        locks the tag and the assets;
+#     8. fails loudly if the published release is not immutable.
+#
+# The split is least privilege: the job that executes repository code (the
+# build and a full scan) holds no write token and no id-token, and the job
+# holding them executes nothing from the repository.
+#
+# Every `uses:` is pinned to a full commit SHA (the trailing comment names
+# the release it was resolved from); a tag can be moved, a commit cannot.
+#
+# Maintainer prerequisites (repository settings, not code): enable immutable
+# releases; restrict who may create `v*` tags (a tag ruleset); optionally add
+# a required reviewer to the `release` environment for a one-click approval
+# before anything is published.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.id.outputs.version }}
+      sha256: ${{ steps.pkg.outputs.sha256 }}
+      prerelease: ${{ steps.id.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Identify the release (tag == VERSION, commit on main)
+        id: id
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          file_version=$(cat VERSION)
+          if [[ $EVENT == push ]]; then
+            version=${GITHUB_REF_NAME#v}
+            if [[ $file_version != "$version" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($file_version)"
+              exit 1
+            fi
+            tagged=$(git rev-parse "$GITHUB_REF^{commit}")
+            if [[ $tagged != "$GITHUB_SHA" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME resolves to $tagged, not the triggering $GITHUB_SHA"
+              exit 1
+            fi
+            git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+              echo "::error::$GITHUB_SHA is not on main; releases are cut from main only"
+              exit 1
+            fi
+          else
+            version=$file_version
+            echo "::notice::workflow_dispatch dry run of $GITHUB_REF at $GITHUB_SHA (VERSION $version): nothing will be attested or published"
+          fi
+          # Strict SemVer, checked HERE because every later step interpolates
+          # it; a tag name may legally carry shell metacharacters.
+          if [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not MAJOR.MINOR.PATCH[-PRERELEASE]"
+            exit 1
+          fi
+          prerelease=false
+          [[ $version == *-* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: main's CI passed for this exact commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The newest completed push-to-main run of ci.yml for this SHA must
+          # have concluded `success`; no run at all is a refusal too (a commit
+          # that was never a main tip was never tested as one).
+          conclusion=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&branch=main&event=push&status=completed&per_page=50" \
+            --jq '[.workflow_runs[]] | sort_by(.created_at) | last | .conclusion // "none"')
+          if [[ $conclusion != success ]]; then
+            echo "::error::main's tests workflow for $GITHUB_SHA concluded '$conclusion', not 'success' - refusing to release"
+            exit 1
+          fi
+          echo "main's tests workflow passed for $GITHUB_SHA"
+
+      - name: Build the tarball and SHA256SUMS
+        id: pkg
+        env:
+          VERSION: ${{ steps.id.outputs.version }}
+        run: tools/build-release.sh "$VERSION" dist
+
+      - name: Release gate - run it as a read-only installed copy
+        env:
+          VERSION: ${{ steps.id.outputs.version }}
+        run: tools/smoke-installed.sh "dist/scoursh-$VERSION.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: |
+            dist/scoursh-${{ steps.id.outputs.version }}.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - name: The bytes are the ones the build job hashed
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd dist
+          printf '%s  %s\n' "$SHA256" "scoursh-$VERSION.tar.gz" | sha256sum -c -
+          sha256sum -c SHA256SUMS
+
+      - name: Attest (Sigstore, SLSA build provenance)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/scoursh-${{ needs.build.outputs.version }}.tar.gz
+            dist/SHA256SUMS
+
+      - name: Publish the release (draft, then published so it locks)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tag=$GITHUB_REF_NAME
+          cat >notes.md <<EOF
+          scoursh $VERSION
+
+          | asset | sha256 |
+          |---|---|
+          | \`scoursh-$VERSION.tar.gz\` | \`$SHA256\` |
+
+          Verify before installing (see docs/USAGE.md, "Installing from a release"):
+
+          \`\`\`sh
+          sha256sum -c SHA256SUMS        # or: shasum -a 256 -c SHA256SUMS
+          gh attestation verify scoursh-$VERSION.tar.gz --repo $GITHUB_REPOSITORY \\
+            --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml
+          gh release verify $tag --repo $GITHUB_REPOSITORY
+          \`\`\`
+
+          The advisory database is not bundled; build it once after installing
+          (\`scoursh-vendor advisories bulk --all --accept-unverified\`).
+          EOF
+          flags=(--draft --verify-tag --title "scoursh $VERSION" --notes-file notes.md)
+          if [[ $PRERELEASE == true ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
+            "dist/scoursh-$VERSION.tar.gz" dist/SHA256SUMS
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: The published release is immutable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          immutable=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isImmutable --jq .isImmutable)
+          if [[ $immutable != true ]]; then
+            echo "::error::release $GITHUB_REF_NAME is published but NOT immutable - enable 'immutable releases' in the repository settings before tagging"
+            exit 1
+          fi
+          gh release verify "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"

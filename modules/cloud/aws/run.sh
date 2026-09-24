@@ -223,7 +223,8 @@ _cloud_record_coverage() {
 # coverage_reduction rather than left silent, the same honesty this file owes
 # its reader everywhere else.
 _cloud_posture_conf_path() {
-  printf '%s' "${SCOURSH_CLOUD_POSTURE_CONF:-${SCOURSH_INSTALL_ROOT:-}/config/posture.conf}"
+  scoursh_layout_resolve
+  printf '%s' "${SCOURSH_CLOUD_POSTURE_CONF:-$SCOURSH_CONF_DIR/posture.conf}"
 }
 
 _cloud_run_posture_phase() {

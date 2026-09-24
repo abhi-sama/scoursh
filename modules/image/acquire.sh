@@ -695,7 +695,8 @@ image_extract_member() {
 IMAGE_SOURCES_LOADED=0
 
 image_sources_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/config/images.conf}
+  scoursh_layout_resolve
+  local path=${1:-$SCOURSH_CONF_DIR/images.conf}
   IMAGE_SOURCES_LOADED=0
   config_load_if_present "$path" image-source images || return 1
   # shellcheck disable=SC2034
@@ -742,7 +743,8 @@ image_sources_load() {
 _IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN='' \
   _IMAGE_SRC_DOCKERFILE=''
 image_source_resolve() {
-  local id=$1 override=${2:-} path=${3:-$SCOURSH_INSTALL_ROOT/config/images.conf}
+  scoursh_layout_resolve
+  local id=$1 override=${2:-} path=${3:-$SCOURSH_CONF_DIR/images.conf}
   local idx have_record=0
   _IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN='' \
     _IMAGE_SRC_DOCKERFILE=''
