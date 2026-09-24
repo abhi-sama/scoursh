@@ -2,8 +2,8 @@
 
 **This is the B6 IaC leg's Kubernetes half.** Its sibling is
 `bench/results/b6-iac-terragoat-aws/`; the secrets half is
-`bench/results/b6-secrets-leaky-repo/`. None of it is published anywhere in
-`docs/` — that is ticket B9.
+`bench/results/b6-secrets-leaky-repo/`. None of it was published in `docs/` when this leg landed (ticket B9 was deliberately separate); B9
+has since published it in `docs/COMPARISON.md`.
 
 Read this one **beside** the TerraGoat half rather than instead of it. The same
 four tools, the same scoring method and the same label rules produce opposite

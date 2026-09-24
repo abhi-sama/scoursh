@@ -2,9 +2,10 @@
 
 **This is the B4 leg deliverable, not a smoke test.** It supersedes nothing in
 `bench/results/smoke-owasp-sast-192/` (that result stays as the harness's own
-proof-of-rig), and it is not published anywhere in `docs/` - that is ticket
-B9, deliberately separate, per `bench/README.md`'s "what must not be
-published" rules.
+proof-of-rig). It was not published in `docs/` when it landed - ticket B9 was
+deliberately separate - and B9 has since published it in `docs/COMPARISON.md`;
+`bench/README.md`'s "what must not be published" rules still govern any
+quotation of it.
 
 ## What was run
 

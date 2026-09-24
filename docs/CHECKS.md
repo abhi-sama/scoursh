@@ -5,6 +5,8 @@
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
 needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks).
+Those counts are calculated from the checked-in `id:` records under `modules/**` (not copied from a
+roadmap or release note); the per-surface split below is the same calculation.
 
 > **Almost everything runs with no external data.** Point scoursh at source code (`--path`), a live
 > app (`--target`), or an authorized listener set (`--target`, network) and every SAST, IaC, DAST, and

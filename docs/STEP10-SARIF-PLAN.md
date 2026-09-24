@@ -2,8 +2,9 @@
 
 > **Current-status note (2026-09-21).** This historical plan is complete: SARIF and compliance reporting
 > are implemented in `lib/report.sh`. Current output behavior is documented in [`docs/USAGE.md`](USAGE.md).
-> Network SARIF locations remain a known code gap; do not infer a complete physical/logical location for
-> every network finding from the historical design sections below.
+> (Updated 2026-09-24.) The network SARIF location gap this note used to flag was closed by #332: a `net`
+> finding now gets a generated `locations/net.txt` artifact location like `dast`/`cloud`/`image`, without
+> changing its JSON shape or fingerprint.
 
 This is a planning document only.
 It contains no shell code and changes no behavior.
