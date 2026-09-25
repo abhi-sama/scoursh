@@ -189,6 +189,9 @@ Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" ab
 - **Smaller optional items:** network Tier 4 (NET-13..15) and DAST's opt-in live user-enumeration
   probe.
 
+For each of these, [`docs/CONTRIBUTING-ROADMAP.md`](docs/CONTRIBUTING-ROADMAP.md) says where the code
+would live, how to verify a fix, and which decisions are already made.
+
 **Step 10 (SARIF output + compliance report) is complete and no longer listed here.**
 The SARIF half writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01
 through SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped

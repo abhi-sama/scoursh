@@ -504,6 +504,8 @@ for the dated decision record.
   (Ubuntu-only on pull requests, Ubuntu + macOS on pushes to `main`/`dev`; informational, not merge-gating)
   and the scheduled local runner.
 - [`ROADMAP.md`](ROADMAP.md) - what's landed and what's left, in priority order.
+- [`docs/CONTRIBUTING-ROADMAP.md`](docs/CONTRIBUTING-ROADMAP.md) - open work a contributor can pick up,
+  with where each piece would live, how to verify it, and good first issues.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) - how to propose a change and what a PR needs.
 - [`AGENTS.md`](AGENTS.md) - the contributor/agent guide: architecture, sharp edges, and build order
   (`CLAUDE.md` is a symlink to the same file, for tooling that looks for that name specifically).
