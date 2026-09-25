@@ -119,7 +119,8 @@ bash "$BENCH/score.sh" --truth "$TRUTH" --results "$OUT" --format json --out "$S
 _md=$(cat "$SCORE_MD")
 
 t_case 'all three tool rows are present, each with its own version and corpus commit'
-assert_contains "$_md" '| scoursh | `0.1.0-dev' 'scoursh row, version-stamped (never a bare version nobody can re-run against)'
+IFS= read -r _scoursh_version <"$ROOT/VERSION"
+assert_contains "$_md" "| scoursh | \`$_scoursh_version" 'scoursh row, version-stamped (never a bare version nobody can re-run against)'
 assert_contains "$_md" '| semgrep-default | `1.176' 'the documented-default Semgrep row'
 assert_contains "$_md" '| semgrep | `1.176' 'the maximum-ruleset Semgrep row'
 assert_contains "$_md" '20cbf3d11123347e47ed89541e6942836def53f7' 'every row is pinned to the corpus commit this sample was built from'
