@@ -5,6 +5,9 @@ is or how it works - read [`README.md`](README.md) and [`docs/USAGE.md`](docs/US
 first, and [`AGENTS.md`](AGENTS.md) for the project's working conventions, module status, and its
 sharp-edges register (most of it applies to agents and humans alike).
 
+Looking for something to work on? [`docs/CONTRIBUTING-ROADMAP.md`](docs/CONTRIBUTING-ROADMAP.md)
+lists the open work, ranks good first issues, and states the project's non-negotiables.
+
 ## Before you start
 
 - **Prerequisites and setup**: see [README.md § Install](README.md#install) - bash >= 4.2 plus a

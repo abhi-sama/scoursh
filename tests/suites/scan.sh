@@ -1950,8 +1950,14 @@ assert_status 0 './scan.sh --help exits 0' _bin_run --help
 assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text is printed'
 
 t_case '--version and paths expose the installed-entry-point diagnostics without creating a run'
+# The expected string is read from the committed VERSION file rather than typed
+# here, so a release bump never has to touch this suite - the assertion is that
+# --version reports whatever VERSION says, which a hardcoded or 'unknown'
+# version (VERSION unread) fails.
+IFS= read -r _EXPECT_VERSION <"$ROOT/VERSION"
+assert_ne '' "$_EXPECT_VERSION" 'the committed VERSION file is non-empty'
 assert_status 0 './scan.sh --version exits 0' _bin_run --version
-assert_contains "$(cat "$W/bin.out")" 'scoursh 0.1.0-dev' '--version reads VERSION through core.sh'
+assert_contains "$(cat "$W/bin.out")" "scoursh $_EXPECT_VERSION" '--version reads VERSION through core.sh'
 assert_status 0 './scan.sh paths exits 0' _bin_run paths
 assert_contains "$(cat "$W/bin.out")" "install: $ROOT" 'paths prints the physical install root'
 assert_contains "$(cat "$W/bin.out")" "config: $ROOT/config" 'paths prints the config directory'
@@ -1970,7 +1976,7 @@ LINK_OUT=$W/symlink-version.out
 LINK_RC=0
 bash "$LINKROOT/bin1/scoursh" --version >"$LINK_OUT" 2>&1 || LINK_RC=$?
 assert_eq 0 "$LINK_RC" 'a two-level relative symlink chain reaches the real scan.sh and exits 0'
-assert_contains "$(cat "$LINK_OUT")" 'scoursh 0.1.0-dev' 'the symlinked entry point loaded lib/core.sh from the physical install root'
+assert_contains "$(cat "$LINK_OUT")" "scoursh $_EXPECT_VERSION" 'the symlinked entry point loaded lib/core.sh from the physical install root'
 
 t_case 'output and state write failures are preflight input failures, never a findings gate'
 OUT_AS_FILE=$W/output-is-file
