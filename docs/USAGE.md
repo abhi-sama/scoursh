@@ -285,7 +285,7 @@ that - an operator who typed `always` gets `always`, not a value NO_COLOR silent
 
 ## Installing from a release
 
-Every release is one architecture-independent tarball, `scoursh-X.Y.Z.tar.gz`, plus a `SHA256SUMS`
+Every release has one architecture-independent tarball, `scoursh-X.Y.Z.tar.gz`, plus a `SHA256SUMS`
 file, published as an immutable GitHub Release by `.github/workflows/release.yml`. The tarball holds
 the scanner and its read-only data (`scan.sh`, `lib/`, `modules/`, `rules/`, `data/`, `docs/`, the
 `config/*.example` files, and the three user-facing `tools/` scripts), plus two things a checkout
@@ -294,6 +294,13 @@ does not have: a `bin/` directory of entry-point links (`scoursh`, `scoursh-vend
 installed copy rather than a checkout. It holds no tests, no benchmark harness, no advisory database
 (build it yourself, below), and no third-party engine binaries (engines are pinned to their upstream
 downloads, never re-hosted).
+
+For macOS, the same release also publishes `scoursh-X.Y.Z-macos-bash.tar.gz` and
+`macos-bash-SHA256SUMS`. It is a separate GPLv3+ Bash 5.3 companion archive: extracting it over the
+normal tarball adds only `libexec/bash`, Bash's `COPYING`, and `README-bash.txt`. The release also
+attaches the unmodified `bash-5.3.tar.gz` and `build-macos-bash.sh` as the corresponding source and
+build instructions, at no charge. The scanner remains Apache-2.0; the two components are aggregated,
+not relicensed.
 
 ### Verify a download
 
@@ -304,6 +311,17 @@ sha256sum -c SHA256SUMS                  # macOS: shasum -a 256 -c SHA256SUMS
 gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh \
   --signer-workflow abhi-sama/scoursh/.github/workflows/release.yml
 gh release verify "v$V" --repo abhi-sama/scoursh
+```
+
+For the macOS companion, download its archive and manifest from the same release, then verify and
+attest that archive independently:
+
+```sh
+gh release download "v$V" --repo abhi-sama/scoursh \
+  --pattern "scoursh-$V-macos-bash.tar.gz" --pattern macos-bash-SHA256SUMS
+shasum -a 256 -c macos-bash-SHA256SUMS
+gh attestation verify "scoursh-$V-macos-bash.tar.gz" --repo abhi-sama/scoursh \
+  --signer-workflow abhi-sama/scoursh/.github/workflows/release.yml
 ```
 
 | Check | What it proves |
@@ -338,9 +356,29 @@ without a name or timestamp, so the same tag yields the same sha256 on any host.
 
 ### Install the tarball
 
-scoursh needs bash >= 4.2 on `PATH` (macOS ships 3.2: `brew install bash`). On Windows, use WSL;
-Git Bash is not supported. Extract anywhere you like - the extracted tree is never written to - and
-link the entry points onto `PATH`:
+#### macOS with the bundled Bash
+
+macOS ships Bash 3.2, below scoursh's `>= 4.2` minimum. Download both assets from one release and
+extract the companion second, into the same location. `scan.sh` discovers its adjacent
+`libexec/bash` before it consults `PATH`; it still version-checks that binary before re-execing.
+
+```sh
+V=X.Y.Z
+curl -fsSLO "https://github.com/abhi-sama/scoursh/releases/download/v$V/scoursh-$V.tar.gz" && tar -xzf "scoursh-$V.tar.gz"
+curl -fsSLO "https://github.com/abhi-sama/scoursh/releases/download/v$V/scoursh-$V-macos-bash.tar.gz" && tar -xzf "scoursh-$V-macos-bash.tar.gz"
+./scoursh-$V/scan.sh --version
+./scoursh-$V/scan.sh sast --path .
+```
+
+Use Terminal's `curl` and `tar -xzf` commands rather than Finder extraction: they do not add the
+macOS quarantine attribute to this unsigned command-line binary. The bundled Bash is not notarized.
+Its `COPYING`, `README-bash.txt`, upstream source tarball, and build script are all in the release;
+Bash is GPLv3+ and remains separate from Apache-2.0 scoursh.
+
+#### Unix systems with Bash >= 4.2
+
+On Windows, use WSL; Git Bash is not supported. Extract anywhere you like - the extracted tree is
+never written to - and link the entry points onto `PATH`:
 
 ```sh
 mkdir -p ~/.local/share/scoursh ~/.local/bin
@@ -378,10 +416,11 @@ configuration, advisory-data, state, and reports directories that Homebrew upgra
 2. Wait for `main`'s own `tests` workflow to pass for that exact commit - `release.yml` refuses a
    commit whose push-to-main CI run did not conclude `success`, or that was never a `main` tip.
 3. Tag that commit `vX.Y.Z` (it must equal `VERSION`) and push the tag. `release.yml` then builds the
-   tarball, runs the release gate (`tools/smoke-installed.sh`: extract read-only, link onto a scratch
-   `PATH`, and prove `--version`, `paths`, and a real `sast` scan all work from the installed layout),
-   attests both files, and publishes the release. A `-PRERELEASE` suffix (`v1.0.0-rc.1`) publishes a
-   pre-release.
+   neutral tarball and the macOS Bash companion, verifies the upstream Bash source checksum, proves
+   two independent universal builds are byte-identical, runs both read-only installed-copy gates, and
+   refuses publication unless the companion has its source, build script, and exact `COPYING`. It
+   attests every release asset and publishes the release. A `-PRERELEASE` suffix (`v1.0.0-rc.1`)
+   publishes a pre-release.
 
 Before the first tag: turn on **immutable releases** in the repository settings (the publish job
 fails loudly on a release that did not lock), restrict who may create `v*` tags with a tag ruleset,

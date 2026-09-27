@@ -38,6 +38,9 @@ source "$ROOT/tests/lib/assert.sh"
 
 BUILD=$ROOT/tools/build-release.sh
 GATE=$ROOT/tools/smoke-installed.sh
+MACOS_BASH_BUILD=$ROOT/tools/build-macos-bash.sh
+MACOS_BASH_PACKAGE=$ROOT/tools/package-macos-bash.sh
+MACOS_BASH_GATE=$ROOT/tools/smoke-macos-bash.sh
 W=$SCOURSH_SCRATCH/build-release-suite
 mkdir -p "$W"
 W=$(cd -- "$W" && pwd -P)
@@ -79,6 +82,40 @@ assert_contains "$(cat "$W/a.out")" 'bump VERSION' 'the refusal says to bump VER
 assert_file_absent "$W/a/scoursh-99.0.0.tar.gz" 'and no tarball is written'
 assert_status 4 'an unknown --ref is refused (exit 4)' bash "$BUILD" --ref no-such-ref-xyz "$V" "$W/a"
 
+# The actual universal build is deliberately macOS-only, but the source
+# checksum must be checked BEFORE a host-platform refusal: that makes the
+# release's upstream-input gate testable here without compiling or fetching.
+printf 'not the GNU Bash source\n' >"$W/not-bash-5.3.tar.gz"
+_run "$W/macos-bash-source.out" /bin/bash "$MACOS_BASH_BUILD" "$W/not-bash-5.3.tar.gz" "$W/macos-bash"
+assert_eq 4 "$RC" 'the macOS Bash builder rejects a source checksum mismatch before any macOS tool is needed'
+assert_contains "$(cat "$W/macos-bash-source.out")" 'SHA-256 mismatch' 'the macOS Bash source refusal names the integrity failure'
+assert_file_absent "$W/macos-bash" 'a checksum refusal does not leave a binary behind'
+assert_status 4 'the macOS Bash companion packager refuses missing release inputs' /bin/bash "$MACOS_BASH_PACKAGE"
+assert_status 0 'the macOS Bash smoke gate documents its paired-asset contract' bash "$MACOS_BASH_GATE" --help
+
+# The release smoke gate repeats this with the real universal Mach-O. This
+# small direct probe keeps the precedence property testable on any macOS host:
+# begin under stock /bin/bash 3.2, put a hard-failing fake bash first on PATH,
+# and make libexec/bash a logging shim to the test runner's modern Bash. The
+# shim must be tested and selected twice (qualification plus exec); a working
+# Homebrew Bash must never mask a regression in the bundled candidate's order.
+MACOS_RUNTIME=$W/macos-runtime
+mkdir -p "$MACOS_RUNTIME"/{libexec,trap,home}
+cp "$ROOT/scan.sh" "$ROOT/VERSION" "$MACOS_RUNTIME/"
+for runtime_part in lib modules rules data config; do cp -R "$ROOT/$runtime_part" "$MACOS_RUNTIME/$runtime_part"; done
+MODERN_BASH=$(command -v bash)
+printf '#!/bin/sh\nprintf bundled >>"%s/bundled.log"\nexec "%s" "$@"\n' \
+  "$MACOS_RUNTIME" "$MODERN_BASH" >"$MACOS_RUNTIME/libexec/bash"
+printf '#!/bin/sh\nprintf path >>"%s/path.log"\nexit 99\n' "$MACOS_RUNTIME" >"$MACOS_RUNTIME/trap/bash"
+chmod 755 "$MACOS_RUNTIME/libexec/bash" "$MACOS_RUNTIME/trap/bash"
+_run "$W/macos-runtime.out" env -i HOME="$MACOS_RUNTIME/home" \
+  PATH="$MACOS_RUNTIME/trap:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$MACOS_RUNTIME/scan.sh" --version
+assert_eq 0 "$RC" 'stock /bin/bash re-execs an adjacent libexec/bash without SCOURSH_BASH'
+assert_eq 'scoursh 1.0.0' "$(cat "$W/macos-runtime.out")" 'the bundled-candidate re-exec reaches scan.sh normally'
+assert_eq bundledbundled "$(cat "$MACOS_RUNTIME/bundled.log")" \
+  'the bundled candidate wins before Homebrew and is both qualified and selected'
+assert_file_absent "$MACOS_RUNTIME/path.log" 'the fake PATH/bash is never reached when libexec/bash qualifies'
+
 # ---------------------------------------------------------------------------
 printf '== B. contents ==\n'
 t_case 'contents'
@@ -112,7 +149,7 @@ for pair in scoursh:../scan.sh scoursh-vendor:../tools/vendor-engines.sh \
 done
 for bad in tests bench .github AGENTS.md CLAUDE.md CONTRIBUTING.md ROADMAP.md package.json \
   tools/daily-suite.sh tools/gen-status.sh tools/build-release.sh tools/smoke-installed.sh \
-  tools/dast-test-target.sh config/scope.conf state reports; do
+  tools/dast-test-target.sh config/scope.conf state reports libexec/bash COPYING README-bash.txt; do
   if [[ $'\n'"$names" == *$'\n'"$P/$bad"$'\n'* || $'\n'"$names" == *$'\n'"$P/$bad/"* ]]; then
     _t_no "does not ship $bad" "found $P/$bad in the tarball"
   else
