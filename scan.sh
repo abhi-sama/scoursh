@@ -80,9 +80,10 @@ set -Eeuo pipefail
 # lib/core.sh performs the SAME version check and simply refuses (exit 4) if
 # it fails, because "a library can only refuse to run".  scan.sh is the
 # entry point, so it gets one extra chance: search a short, documented list
-# of places a newer bash is likely to be (an operator-set override, the two
-# common Homebrew prefixes, then whatever PATH resolves) and re-exec itself
-# under the first one that qualifies.  Only attempted when this file is
+# of places a newer bash is likely to be (an operator-set override, an
+# installed companion's libexec/bash, the two common Homebrew prefixes, then
+# whatever PATH resolves) and re-exec itself under the first one that
+# qualifies. Only attempted when this file is
 # actually the running script - a sourced-for-testing bash is never re-exec'd
 # out from under the caller.
 _scan_bash_qualifies() {
@@ -97,12 +98,27 @@ _scan_bash_qualifies() {
     2>/dev/null
 }
 
+# Resolve this before the version gate: a macOS companion asset places its
+# verified Bash beside the installed scan.sh, and the stock /bin/bash needs to
+# be able to discover that binary before any of lib/core.sh is sourceable.
+_scan_self=${BASH_SOURCE[0]}
+while [[ -L $_scan_self ]]; do
+  _scan_link=$(readlink -- "$_scan_self")
+  case $_scan_link in
+    /*) _scan_self=$_scan_link ;;
+    *) _scan_self=$(dirname -- "$_scan_self")/$_scan_link ;;
+  esac
+done
+SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "$_scan_self")" && pwd -P)
+_scan_bundled_bash=$SCOURSH_SCAN_SH_DIR/libexec/bash
+
 if (( SCOURSH_SCAN_SH_MAIN )) \
   && { [[ -z ${BASH_VERSINFO[0]:-} ]] \
     || (( BASH_VERSINFO[0] < 4 )) \
     || { (( BASH_VERSINFO[0] == 4 )) && (( BASH_VERSINFO[1] < 2 )); }; }; then
   _scan_found=''
-  for _scan_candidate in "${SCOURSH_BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash \
+  for _scan_candidate in "${SCOURSH_BASH:-}" "$_scan_bundled_bash" \
+    /opt/homebrew/bin/bash /usr/local/bin/bash \
     "$(command -v bash 2>/dev/null || true)"; do
     [[ -n $_scan_candidate ]] || continue
     if _scan_bash_qualifies "$_scan_candidate"; then
@@ -114,11 +130,11 @@ if (( SCOURSH_SCAN_SH_MAIN )) \
     exec "$_scan_found" "$0" "$@"
   fi
   printf '%s\n' "scoursh: bash >= 4.2 required, found ${BASH_VERSION:-unknown}." >&2
-  printf '%s\n' "scoursh: install a newer bash (brew install bash) or set SCOURSH_BASH." >&2
+  printf '%s\n' "scoursh: install a newer bash (brew install bash), extract the macOS Bash companion, or set SCOURSH_BASH." >&2
   exit 4
 fi
 unset -f _scan_bash_qualifies
-unset -v _scan_found _scan_candidate 2>/dev/null || true
+unset -v _scan_found _scan_candidate _scan_self _scan_link _scan_bundled_bash 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
 # 1. Libraries.  lib/report.sh -> lib/findings.sh -> lib/records.sh ->
@@ -128,16 +144,8 @@ unset -v _scan_found _scan_candidate 2>/dev/null || true
 #    artifact from the very first invocation (docs/DESIGN.md §4: "every run
 #    writes run.json").
 # -----------------------------------------------------------------------------
-_scan_self=${BASH_SOURCE[0]}
-while [[ -L $_scan_self ]]; do
-  _scan_link=$(readlink -- "$_scan_self")
-  case $_scan_link in
-    /*) _scan_self=$_scan_link ;;
-    *) _scan_self=$(dirname -- "$_scan_self")/$_scan_link ;;
-  esac
-done
-SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "$_scan_self")" && pwd -P)
-unset -v _scan_self _scan_link
+# SCOURSH_SCAN_SH_DIR was resolved above the interpreter gate so a stock
+# macOS Bash can locate a bundled libexec/bash before libraries are loaded.
 # shellcheck source=lib/report.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # -x back-edge cut: lib/config.sh

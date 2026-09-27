@@ -77,7 +77,31 @@ surface, is [`docs/COMPARISON.md`](docs/COMPARISON.md) (also
 
 ## Install
 
-No build step, no runtime dependency beyond a standard Unix toolchain:
+No build step, no runtime dependency beyond a standard Unix toolchain.
+
+### macOS: use the bundled Bash companion
+
+On a stock Mac, use the separate macOS Bash companion from the same release.
+It overlays `libexec/bash` into the normal, platform-neutral release, so no
+admin access, Homebrew, or configuration is needed. Bash is a separate GPLv3+
+component; its license, unmodified source, and the build script are attached
+to that same release.
+
+```sh
+V=X.Y.Z
+curl -fsSLO "https://github.com/abhi-sama/scoursh/releases/download/v$V/scoursh-$V.tar.gz" && tar -xzf "scoursh-$V.tar.gz"
+curl -fsSLO "https://github.com/abhi-sama/scoursh/releases/download/v$V/scoursh-$V-macos-bash.tar.gz" && tar -xzf "scoursh-$V-macos-bash.tar.gz"
+./scoursh-$V/scan.sh sast .
+```
+
+Use Terminal's `curl` and `tar -xzf` form: unlike Finder extraction, it does
+not add macOS's quarantine attribute to this unsigned command-line binary. It
+is not notarized.
+
+### Other Unix systems (or a Mac with modern Bash)
+
+On other Unix systems, or when Bash >= 4.2 is already installed, use the
+ordinary checkout or platform-neutral release route below.
 
 ### Where installed scoursh keeps your files
 
@@ -89,8 +113,8 @@ in `~/.local/share/scoursh`, and diff state plus reports in
 to use `/scoursh/{config,data,state,reports}` as one mountable root. Run
 `scoursh paths` to see the exact locations.
 
-- **bash >= 4.2** (macOS ships 3.2 by default - install a newer one and put it ahead of `/bin/bash`
-  on `PATH`; `scan.sh` checks this itself and refuses with a clear message otherwise), plus
+- **bash >= 4.2** (the macOS companion above supplies it automatically; `scan.sh` checks every
+  candidate before re-execing), plus
   `grep`/`rg`, `awk`, and coreutils.
 - `git` on `PATH` is needed only for `sast --history`. `sast`, `sca`, and `iac` need nothing else;
   `dast` (and the network HTTP phase) need `curl`, while TLS/JWT checks in `dast` and `network` need
