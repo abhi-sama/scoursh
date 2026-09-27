@@ -86,7 +86,8 @@ bmb_build_universal() {
 
 # bmb_build_slice SOURCE BUILDDIR ARCH HOST-OR-EMPTY DEPLOYMENT JOBS
 bmb_build_slice() {
-  local source=$1 builddir=$2 arch=$3 host=$4 deployment=$5 jobs=$6
+  local source=$1 builddir=$2 arch=$3 host=$4 deployment=$5 jobs=$6 started elapsed
+  started=$(date +%s)
   mkdir -p -- "$builddir"
   (
     cd -- "$builddir"
@@ -105,20 +106,35 @@ bmb_build_slice() {
     fi
     make -j "$jobs" bash
   )
+  elapsed=$(( $(date +%s) - started ))
+  printf 'build-macos-bash: %s slice (deployment target %s) built in %ss\n' \
+    "$arch" "$deployment" "$elapsed"
 }
 
 bmb_check_linkage() {
-  local output=$1 dep deps
-  deps=$(otool -L "$output" | sed '1d; s/^[[:space:]]*\([^[:space:]]*\).*/\1/')
-  [[ -n $deps ]] || bmb_die 'otool reported no dynamic dependencies'
-  while IFS= read -r dep; do
-    case $dep in
-      /usr/lib/libSystem.B.dylib | /usr/lib/libiconv.2.dylib) ;;
-      *) bmb_die "unexpected dynamic dependency: $dep" ;;
-    esac
-  done <<<"$deps"
-  codesign --verify --strict "$output" >/dev/null 2>&1 \
-    || bmb_die 'the linker-produced ad-hoc signature did not verify'
+  local output=$1 arch dep deps
+  # A universal otool listing has one filename heading for each slice. Query
+  # them separately so neither heading can be mistaken for a dependency.
+  for arch in arm64 x86_64; do
+    deps=$(otool -L -arch "$arch" "$output" | sed '1d; s/^[[:space:]]*\([^[:space:]]*\).*/\1/')
+    [[ -n $deps ]] || bmb_die "otool reported no dynamic dependencies for $arch"
+    while IFS= read -r dep; do
+      case $dep in
+        /usr/lib/libSystem.B.dylib | /usr/lib/libiconv.2.dylib) ;;
+        *) bmb_die "unexpected $arch dynamic dependency: $dep" ;;
+      esac
+    done <<<"$deps"
+  done
+  # `lipo` retains the linker-generated per-slice ad-hoc code directories,
+  # but macOS's `codesign --verify` does not treat that fat binary as a
+  # separately signed code object. We deliberately do not re-sign it: the
+  # companion is unsigned and must not imply Developer ID signing. Verify the
+  # embedded linker metadata instead, as measured for this recipe.
+  local signing
+  signing=$(codesign -dv --verbose=2 "$output" 2>&1) \
+    || bmb_die 'could not inspect linker-generated code-signing metadata'
+  [[ $signing == *'Signature=adhoc'* && $signing == *'linker-signed'* ]] \
+    || bmb_die 'universal output lacks the expected linker-generated ad-hoc metadata'
 }
 
 bmb_main() {
