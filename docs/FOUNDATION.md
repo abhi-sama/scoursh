@@ -3939,8 +3939,10 @@ output is a security verdict is the worst category.
 **Interpreter.**
 `bash >= 4.2` is required.
 `scan.sh` starts with `#!/usr/bin/env bash`, and if `BASH_VERSINFO` is below 4.2 it searches
-`$SCOURSH_BASH`, then `/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, and `PATH` for a newer bash and
-**re-execs itself** under it.
+`$SCOURSH_BASH`, then an installed copy's adjacent `libexec/bash`, `/opt/homebrew/bin/bash`,
+`/usr/local/bin/bash`, and `PATH` for a newer bash and **re-execs itself** under it. The macOS companion
+release asset supplies that `libexec/bash` as a universal Bash 5.3 binary; it is still checked by the
+same version gate, never trusted merely because it is bundled.
 Finding none, it exits `4` with a message naming the requirement and the remedy.
 4.2 buys associative arrays, `mapfile`, and `printf -v`; 4.4's empty-array-under-`set -u` fix is not
 assumed, so every array expansion is written `"${arr[@]+"${arr[@]}"}"`, and the lint enforces it.
@@ -5183,7 +5185,8 @@ landed.
 > `dialect: pcre` run-or-skip, the uncorrelatable-composite `coverage_gap`), and the packaging surface
 > (`scan.sh --version`/`paths`, the `.scoursh-packaged` installed layout of tension 26's 2026-09-23
 > amendment and `docs/adr/0002-installed-layout.md`, `tools/build-release.sh`,
-> `tools/smoke-installed.sh`, a dormant `.github/workflows/release.yml`, and a Homebrew formula
+> `tools/smoke-installed.sh`, the separate macOS Bash build/package/smoke tools and its GPL-complete
+> companion release asset, a dormant `.github/workflows/release.yml`, and a Homebrew formula
 > template). Still outstanding: the cloud `posture/` phase (POSTURE-02..04), rpm package-database
 > decoding, distribution beyond the release tarball (no published release, container image, or
 > `install.sh`), engine setup/pinning, and open finding F21. `ROADMAP.md` is the terse current list.
