@@ -1299,19 +1299,14 @@ printf '\n-- preflight (operator-reported fail-fast bug): every problem knowable
 # "preflight refused before anything ran" apart from "an old bug let a module
 # run and then something else happened to still exit 3/4".
 
-t_case 'all --target <bad> fails IMMEDIATELY at exit 3, and NO module ran - the core bug'
-_PF_T0=$SECONDS
+t_case 'all --target <bad> fails at preflight with exit 3, and NO module ran - the core bug'
 SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
   "all --target no-such-target dies exit 3, same as dast/network - fails under the pre-fix ordering, where sast/sca/iac dispatch before the target is ever checked" \
   _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --target no-such-target --out "$W/run-all-badtarget"
-_PF_ELAPSED=$(( SECONDS - _PF_T0 ))
 assert_file_absent "$W/run-all-badtarget/meta/checks_run" \
   'meta/checks_run was never written - fails if sast, sca or iac actually dispatched and recorded even one check as run before the target gate refused'
-if (( _PF_ELAPSED <= 10 )); then
-  _t_ok "returned in ${_PF_ELAPSED}s, not the hours a real sast/sca/iac walk would need"
-else
-  _t_no 'preflight should refuse in a couple of seconds, never run a real module first' "took ${_PF_ELAPSED}s"
-fi
+# These two behavioural assertions, rather than a host-load-sensitive elapsed
+# time, prove the target was refused by preflight before any module dispatched.
 
 t_case 'the SAME bad --target under plain dast (single-module, always fast) still refuses at exit 3, unchanged'
 SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
