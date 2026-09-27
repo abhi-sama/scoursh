@@ -136,7 +136,7 @@ _run "$W/macos-runtime.out" env -i HOME="$MACOS_RUNTIME/home" \
   PATH="$MACOS_RUNTIME/trap:/usr/bin:/bin:/usr/sbin:/sbin" SCOURSH_TEST_FORCE_BASH_REEXEC=1 \
   /bin/bash "$MACOS_RUNTIME/scan.sh" --version
 assert_eq 0 "$RC" 'the forced legacy-Bash path re-execs an adjacent libexec/bash without SCOURSH_BASH'
-assert_eq 'scoursh 1.0.0' "$(cat "$W/macos-runtime.out")" 'the forced legacy-Bash path reaches scan.sh normally'
+assert_eq "scoursh $(cat "$ROOT/VERSION")" "$(cat "$W/macos-runtime.out")" 'the forced legacy-Bash path reaches scan.sh normally'
 assert_eq bundledbundled "$(cat "$MACOS_RUNTIME/bundled.log")" \
   'the bundled candidate wins before Homebrew and is both qualified and selected'
 assert_file_absent "$MACOS_RUNTIME/path.log" 'the fake PATH/bash is never reached when libexec/bash qualifies'
