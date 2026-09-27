@@ -104,14 +104,39 @@ mkdir -p "$MACOS_RUNTIME"/{libexec,trap,home}
 cp "$ROOT/scan.sh" "$ROOT/VERSION" "$MACOS_RUNTIME/"
 for runtime_part in lib modules rules data config; do cp -R "$ROOT/$runtime_part" "$MACOS_RUNTIME/$runtime_part"; done
 MODERN_BASH=$(command -v bash)
-printf '#!/bin/sh\nprintf bundled >>"%s/bundled.log"\nexec "%s" "$@"\n' \
+printf '#!/bin/sh\nprintf bundled >>"%s/bundled.log"\nunset SCOURSH_TEST_FORCE_BASH_REEXEC\nexec "%s" "$@"\n' \
   "$MACOS_RUNTIME" "$MODERN_BASH" >"$MACOS_RUNTIME/libexec/bash"
 printf '#!/bin/sh\nprintf path >>"%s/path.log"\nexit 99\n' "$MACOS_RUNTIME" >"$MACOS_RUNTIME/trap/bash"
 chmod 755 "$MACOS_RUNTIME/libexec/bash" "$MACOS_RUNTIME/trap/bash"
+# Ubuntu's system Bash already qualifies, so it normally does not enter the
+# re-exec block. Amend only this copied installed scan.sh to force that block
+# once, then have the shim clear the test flag before it starts modern Bash.
+# This exercises the real candidate loop and proves its order on Linux too;
+# the macOS release smoke runs the unmodified file under stock Bash 3.2.
+python3 - "$MACOS_RUNTIME/scan.sh" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = '''if (( SCOURSH_SCAN_SH_MAIN )) \\
+  && { [[ -z ${BASH_VERSINFO[0]:-} ]] \\
+    || (( BASH_VERSINFO[0] < 4 )) \\
+    || { (( BASH_VERSINFO[0] == 4 )) && (( BASH_VERSINFO[1] < 2 )); }; }; then'''
+new = '''if (( SCOURSH_SCAN_SH_MAIN )) \\
+  && { [[ ${SCOURSH_TEST_FORCE_BASH_REEXEC:-} == 1 ]] \\
+    || [[ -z ${BASH_VERSINFO[0]:-} ]] \\
+    || (( BASH_VERSINFO[0] < 4 )) \\
+    || { (( BASH_VERSINFO[0] == 4 )) && (( BASH_VERSINFO[1] < 2 )); }; }; then'''
+if text.count(old) != 1:
+    raise SystemExit('test setup: cannot locate scan.sh re-exec condition')
+path.write_text(text.replace(old, new))
+PY
 _run "$W/macos-runtime.out" env -i HOME="$MACOS_RUNTIME/home" \
-  PATH="$MACOS_RUNTIME/trap:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$MACOS_RUNTIME/scan.sh" --version
-assert_eq 0 "$RC" 'stock /bin/bash re-execs an adjacent libexec/bash without SCOURSH_BASH'
-assert_eq 'scoursh 1.0.0' "$(cat "$W/macos-runtime.out")" 'the bundled-candidate re-exec reaches scan.sh normally'
+  PATH="$MACOS_RUNTIME/trap:/usr/bin:/bin:/usr/sbin:/sbin" SCOURSH_TEST_FORCE_BASH_REEXEC=1 \
+  /bin/bash "$MACOS_RUNTIME/scan.sh" --version
+assert_eq 0 "$RC" 'the forced legacy-Bash path re-execs an adjacent libexec/bash without SCOURSH_BASH'
+assert_eq 'scoursh 1.0.0' "$(cat "$W/macos-runtime.out")" 'the forced legacy-Bash path reaches scan.sh normally'
 assert_eq bundledbundled "$(cat "$MACOS_RUNTIME/bundled.log")" \
   'the bundled candidate wins before Homebrew and is both qualified and selected'
 assert_file_absent "$MACOS_RUNTIME/path.log" 'the fake PATH/bash is never reached when libexec/bash qualifies'

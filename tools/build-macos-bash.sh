@@ -46,14 +46,13 @@ bmb_die() {
 
 bmb_sha256() {
   local file=$1 got
-  if command -v shasum >/dev/null 2>&1; then
-    got=$(shasum -a 256 -- "$file") || return 1
-  elif command -v sha256sum >/dev/null 2>&1; then
-    got=$(sha256sum -- "$file") || return 1
-  else
-    bmb_die 'needs shasum or sha256sum to verify the upstream source'
-  fi
-  got=${got%%[[:space:]]*}
+  # This runs before the host check and must be usable under stock /bin/bash
+  # 3.2, before lib/core.sh can be sourced. OpenSSL is present on supported
+  # macOS releases and avoids a direct shasum/sha256sum portability split.
+  command -v openssl >/dev/null 2>&1 \
+    || bmb_die 'needs openssl to verify the upstream source'
+  got=$(openssl dgst -sha256 < "$file") || return 1
+  got=${got##*[[:space:]]}
   [[ $got =~ ^[0-9a-fA-F]{64}$ ]] || return 1
   printf '%s' "$got"
 }
