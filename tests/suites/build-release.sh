@@ -41,6 +41,7 @@ GATE=$ROOT/tools/smoke-installed.sh
 MACOS_BASH_BUILD=$ROOT/tools/build-macos-bash.sh
 MACOS_BASH_PACKAGE=$ROOT/tools/package-macos-bash.sh
 MACOS_BASH_GATE=$ROOT/tools/smoke-macos-bash.sh
+RELEASE_WORKFLOW=$ROOT/.github/workflows/release.yml
 W=$SCOURSH_SCRATCH/build-release-suite
 mkdir -p "$W"
 W=$(cd -- "$W" && pwd -P)
@@ -94,10 +95,10 @@ assert_status 4 'the macOS Bash companion packager refuses missing release input
 assert_status 0 'the macOS Bash smoke gate documents its paired-asset contract' bash "$MACOS_BASH_GATE" --help
 
 # The universal build itself needs macOS, so this focused Linux-safe probe
-# sources its verifier and makes a strict lipo stub reject every argv shape
-# except the documented file-first grammar. Before this probe existed, the
-# suite stopped at the source checksum before reaching any lipo call, leaving
-# this release-critical command contract covered only in release CI.
+# sources its verifier and makes a strict lipo stub accept the portable,
+# file-first one-architecture form. Before this probe existed, the suite
+# stopped at the source checksum before reaching any lipo call, leaving this
+# release-critical command contract covered only in release CI.
 MACOS_LIPO=$W/macos-lipo/bin
 mkdir -p "$MACOS_LIPO"
 MACOS_LIPO_LOG=$W/macos-lipo.log
@@ -106,9 +107,9 @@ MACOS_UNIVERSAL=$W/macos-universal-bash
 cat >"$MACOS_LIPO/lipo" <<'STUB'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-printf '<%s>\n' "$@" >"$SCOURSH_TEST_LIPO_LOG"
-[[ $# == 4 && $1 == "$SCOURSH_TEST_LIPO_OUTPUT" && $2 == -verify_arch \
-  && $3 == x86_64 && $4 == arm64 ]]
+printf '<%s>\n' "$@" >>"$SCOURSH_TEST_LIPO_LOG"
+[[ $# == 3 && $1 == "$SCOURSH_TEST_LIPO_OUTPUT" && $2 == -verify_arch \
+  && ( $3 == x86_64 || $3 == arm64 ) ]]
 STUB
 chmod 755 "$MACOS_LIPO/lipo"
 # shellcheck disable=SC2016 # $1/$2 intentionally expand in the child bash.
@@ -116,8 +117,20 @@ _run "$W/macos-lipo.out" env PATH="$MACOS_LIPO:$PATH" \
   SCOURSH_TEST_LIPO_LOG="$MACOS_LIPO_LOG" SCOURSH_TEST_LIPO_OUTPUT="$MACOS_UNIVERSAL" \
   bash -c 'source "$1"; bmb_verify_universal "$2"' bash "$MACOS_BASH_BUILD" "$MACOS_UNIVERSAL"
 assert_eq 0 "$RC" 'the macOS Bash verifier calls lipo with the file before -verify_arch'
-assert_eq $'<'"$MACOS_UNIVERSAL"$'>\n<-verify_arch>\n<x86_64>\n<arm64>' "$(cat "$MACOS_LIPO_LOG")" \
-  'the verifier passes both required architectures after the lipo flag'
+assert_eq $'<'"$MACOS_UNIVERSAL"$'>\n<-verify_arch>\n<x86_64>\n<'"$MACOS_UNIVERSAL"$'>\n<-verify_arch>\n<arm64>' "$(cat "$MACOS_LIPO_LOG")" \
+  'the verifier checks each required architecture with portable one-arch lipo calls'
+
+# The real macOS release job first builds the neutral tarball, then invokes
+# the smoke script. Both scripts source lib/core.sh, so the already-built
+# companion must be their interpreter; a direct shebang invocation on stock
+# macOS would fail before scan.sh can exercise its adjacent-Bash discovery.
+workflow=$(cat "$RELEASE_WORKFLOW")
+# shellcheck disable=SC2016 # Match the workflow's literal $VERSION syntax.
+assert_contains "$workflow" '"dist/macos-bash/scoursh-$VERSION/libexec/bash" tools/build-release.sh "$VERSION" dist' \
+  'the macOS release gate runs build-release.sh under the built companion'
+# shellcheck disable=SC2016 # Match the workflow's literal $VERSION syntax.
+assert_contains "$workflow" '"dist/macos-bash/scoursh-$VERSION/libexec/bash" tools/smoke-macos-bash.sh' \
+  'the macOS release gate runs the smoke script under the built companion'
 
 # The release smoke gate repeats this with the real universal Mach-O. This
 # small direct probe keeps the precedence property testable on any macOS host:
