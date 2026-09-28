@@ -56,7 +56,7 @@ reduction.
 After building a release-shaped archive, run:
 
 ```sh
-packaging/homebrew/self-check.sh /absolute/path/scoursh-1.0.0.tar.gz
+packaging/homebrew/self-check.sh /absolute/path/scoursh-$(cat VERSION).tar.gz
 ```
 
 The check exits successfully with a clear skip message when Homebrew is absent.
