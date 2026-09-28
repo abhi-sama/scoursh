@@ -141,12 +141,41 @@ assert_contains "$workflow" 'does not re-download and re-hash the release asset'
   'the Homebrew bump documents that it uses the build job checksum'
 HOMEBREW_RENDERED=$W/scoursh.rb
 HOMEBREW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-sed -e "s/@VERSION@/$V/g" -e "s/@SHA256@/$HOMEBREW_SHA/g" \
-  "$ROOT/packaging/homebrew/scoursh.rb" >"$HOMEBREW_RENDERED"
+assert_eq 2 "$(rg -o -F '@VERSION@' "$ROOT/packaging/homebrew/scoursh.rb" | wc -l | tr -d ' ')" \
+  'the Homebrew template has exactly its two URL version markers'
+assert_eq 1 "$(rg -o -F '@SHA256@' "$ROOT/packaging/homebrew/scoursh.rb" | wc -l | tr -d ' ')" \
+  'the Homebrew template has exactly its one checksum marker'
+python3 - "$ROOT/packaging/homebrew/scoursh.rb" "$HOMEBREW_RENDERED" "$V" "$HOMEBREW_SHA" <<'PY'
+from pathlib import Path
+import sys
+
+source, destination, version, digest = sys.argv[1:]
+template = Path(source).read_text(encoding="utf-8")
+if template.count("@VERSION@") != 2 or template.count("@SHA256@") != 1:
+    raise SystemExit("template marker contract changed")
+lines = [line for line in template.splitlines()
+         if not line.lstrip().startswith("# RELEASE_JOB:")]
+if not lines or lines[0] != "class Scoursh < Formula":
+    raise SystemExit("template must start with its formula class")
+lines[1:1] = [
+    "  # Rendered from packaging/homebrew/scoursh.rb in abhi-sama/scoursh at each release.",
+    "  # Edit it there, not here.",
+]
+Path(destination).write_text(
+    "\n".join(lines).replace("@VERSION@", version).replace("@SHA256@", digest) + "\n",
+    encoding="utf-8")
+PY
 assert_not_contains "$(cat "$HOMEBREW_RENDERED")" '@VERSION@' \
   'the Homebrew template renders both version markers'
 assert_not_contains "$(cat "$HOMEBREW_RENDERED")" '@SHA256@' \
   'the Homebrew template renders its checksum marker'
+assert_not_contains "$(cat "$HOMEBREW_RENDERED")" 'RELEASE_JOB:' \
+  'the rendered formula omits template-only release-job instructions'
+assert_contains "$(cat "$HOMEBREW_RENDERED")" \
+  '# Rendered from packaging/homebrew/scoursh.rb in abhi-sama/scoursh at each release.' \
+  'the rendered formula identifies its source template'
+assert_contains "$(cat "$HOMEBREW_RENDERED")" '# Edit it there, not here.' \
+  'the rendered formula points future edits at the source template'
 assert_contains "$(cat "$HOMEBREW_RENDERED")" \
   "releases/download/v$V/scoursh-$V.tar.gz" \
   'the rendered formula names the exact release tarball'

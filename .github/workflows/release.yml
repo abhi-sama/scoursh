@@ -419,9 +419,21 @@ jobs:
           template = Path(source).read_text(encoding="utf-8")
           if template.count("@VERSION@") != 2 or template.count("@SHA256@") != 1:
               raise SystemExit("::error::Homebrew template marker contract changed")
-          rendered = template.replace("@VERSION@", version).replace("@SHA256@", digest)
+          # RELEASE_JOB comments guide template authors. The rendered tap
+          # formula instead carries concise provenance for formula readers.
+          lines = [line for line in template.splitlines()
+                   if not line.lstrip().startswith("# RELEASE_JOB:")]
+          if not lines or lines[0] != "class Scoursh < Formula":
+              raise SystemExit("::error::Homebrew template must start with its formula class")
+          lines[1:1] = [
+              "  # Rendered from packaging/homebrew/scoursh.rb in abhi-sama/scoursh at each release.",
+              "  # Edit it there, not here.",
+          ]
+          rendered = "\n".join(lines).replace("@VERSION@", version).replace("@SHA256@", digest) + "\n"
           if "@VERSION@" in rendered or "@SHA256@" in rendered:
               raise SystemExit("::error::Homebrew template rendering left a marker behind")
+          if "RELEASE_JOB:" in rendered:
+              raise SystemExit("::error::Homebrew formula leaked template-only instructions")
           expected = f"scoursh-{version}.tar.gz"
           if expected not in rendered or not re.search(rf'^  sha256 "{digest}"$', rendered, re.M):
               raise SystemExit("::error::Homebrew formula rendering failed its release contract")
