@@ -141,9 +141,9 @@ assert_contains "$workflow" 'does not re-download and re-hash the release asset'
   'the Homebrew bump documents that it uses the build job checksum'
 HOMEBREW_RENDERED=$W/scoursh.rb
 HOMEBREW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-assert_eq 2 "$(rg -o -F '@VERSION@' "$ROOT/packaging/homebrew/scoursh.rb" | wc -l | tr -d ' ')" \
+assert_eq 2 "$(awk '{ count += gsub(/@VERSION@/, "&") } END { print count }' "$ROOT/packaging/homebrew/scoursh.rb")" \
   'the Homebrew template has exactly its two URL version markers'
-assert_eq 1 "$(rg -o -F '@SHA256@' "$ROOT/packaging/homebrew/scoursh.rb" | wc -l | tr -d ' ')" \
+assert_eq 1 "$(awk '{ count += gsub(/@SHA256@/, "&") } END { print count }' "$ROOT/packaging/homebrew/scoursh.rb")" \
   'the Homebrew template has exactly its one checksum marker'
 python3 - "$ROOT/packaging/homebrew/scoursh.rb" "$HOMEBREW_RENDERED" "$V" "$HOMEBREW_SHA" <<'PY'
 from pathlib import Path
