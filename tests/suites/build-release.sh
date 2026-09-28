@@ -93,6 +93,32 @@ assert_file_absent "$W/macos-bash" 'a checksum refusal does not leave a binary b
 assert_status 4 'the macOS Bash companion packager refuses missing release inputs' /bin/bash "$MACOS_BASH_PACKAGE"
 assert_status 0 'the macOS Bash smoke gate documents its paired-asset contract' bash "$MACOS_BASH_GATE" --help
 
+# The universal build itself needs macOS, so this focused Linux-safe probe
+# sources its verifier and makes a strict lipo stub reject every argv shape
+# except the documented file-first grammar. Before this probe existed, the
+# suite stopped at the source checksum before reaching any lipo call, leaving
+# this release-critical command contract covered only in release CI.
+MACOS_LIPO=$W/macos-lipo/bin
+mkdir -p "$MACOS_LIPO"
+MACOS_LIPO_LOG=$W/macos-lipo.log
+MACOS_UNIVERSAL=$W/macos-universal-bash
+: >"$MACOS_UNIVERSAL"
+cat >"$MACOS_LIPO/lipo" <<'STUB'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '<%s>\n' "$@" >"$SCOURSH_TEST_LIPO_LOG"
+[[ $# == 4 && $1 == "$SCOURSH_TEST_LIPO_OUTPUT" && $2 == -verify_arch \
+  && $3 == x86_64 && $4 == arm64 ]]
+STUB
+chmod 755 "$MACOS_LIPO/lipo"
+# shellcheck disable=SC2016 # $1/$2 intentionally expand in the child bash.
+_run "$W/macos-lipo.out" env PATH="$MACOS_LIPO:$PATH" \
+  SCOURSH_TEST_LIPO_LOG="$MACOS_LIPO_LOG" SCOURSH_TEST_LIPO_OUTPUT="$MACOS_UNIVERSAL" \
+  bash -c 'source "$1"; bmb_verify_universal "$2"' bash "$MACOS_BASH_BUILD" "$MACOS_UNIVERSAL"
+assert_eq 0 "$RC" 'the macOS Bash verifier calls lipo with the file before -verify_arch'
+assert_eq $'<'"$MACOS_UNIVERSAL"$'>\n<-verify_arch>\n<x86_64>\n<arm64>' "$(cat "$MACOS_LIPO_LOG")" \
+  'the verifier passes both required architectures after the lipo flag'
+
 # The release smoke gate repeats this with the real universal Mach-O. This
 # small direct probe keeps the precedence property testable on any macOS host:
 # begin under stock /bin/bash 3.2, put a hard-failing fake bash first on PATH,
