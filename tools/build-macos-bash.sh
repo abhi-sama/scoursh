@@ -58,12 +58,17 @@ bmb_sha256() {
 }
 
 # bmb_verify_universal OUTPUT - use lipo's file-first verification grammar.
+# Apple lipo's advertised multi-architecture spelling is inconsistent across
+# toolchain releases: macOS 26's implementation accepts exactly one arch per
+# -verify_arch invocation. Verify each required slice independently instead.
 # Keep this separate from the build so its command contract is testable on
 # non-macOS hosts with a strict lipo stub.
 bmb_verify_universal() {
-  local output=$1
-  lipo "$output" -verify_arch x86_64 arm64 \
-    || bmb_die 'universal output is missing one or both required architecture slices'
+  local output=$1 arch
+  for arch in x86_64 arm64; do
+    lipo "$output" -verify_arch "$arch" \
+      || bmb_die "universal output is missing the required $arch architecture slice"
+  done
 }
 
 # bmb_build_universal PREFIX OUTPUT - build fresh source and build trees below
