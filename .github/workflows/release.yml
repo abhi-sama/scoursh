@@ -212,7 +212,10 @@ jobs:
           VERSION: ${{ steps.id.outputs.version }}
         run: |
           set -euo pipefail
-          tools/build-release.sh "$VERSION" dist
+          # build-release.sh sources lib/core.sh, so it needs the just-built
+          # Bash too. Starting it directly would use stock macOS /bin/bash
+          # and abort before the smoke gate gets a chance to exercise scan.sh.
+          "dist/macos-bash/scoursh-$VERSION/libexec/bash" tools/build-release.sh "$VERSION" dist
           "dist/macos-bash/scoursh-$VERSION/libexec/bash" tools/smoke-macos-bash.sh \
             "dist/scoursh-$VERSION.tar.gz" "dist/scoursh-$VERSION-macos-bash.tar.gz" "$VERSION"
 
