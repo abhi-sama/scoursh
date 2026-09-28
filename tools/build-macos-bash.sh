@@ -57,6 +57,15 @@ bmb_sha256() {
   printf '%s' "$got"
 }
 
+# bmb_verify_universal OUTPUT - use lipo's file-first verification grammar.
+# Keep this separate from the build so its command contract is testable on
+# non-macOS hosts with a strict lipo stub.
+bmb_verify_universal() {
+  local output=$1
+  lipo "$output" -verify_arch x86_64 arm64 \
+    || bmb_die 'universal output is missing one or both required architecture slices'
+}
+
 # bmb_build_universal PREFIX OUTPUT - build fresh source and build trees below
 # PREFIX, then join their slices at OUTPUT. PREFIX differs between the two
 # reproducibility passes so no object, generated header, or configured Makefile
@@ -79,8 +88,7 @@ bmb_build_universal() {
 
   lipo -create "$arm" "$x86" -output "$output"
   chmod 755 "$output"
-  lipo -verify_arch arm64 "$output" || bmb_die 'universal output is missing its arm64 slice'
-  lipo -verify_arch x86_64 "$output" || bmb_die 'universal output is missing its x86_64 slice'
+  bmb_verify_universal "$output"
 }
 
 # bmb_build_slice SOURCE BUILDDIR ARCH HOST-OR-EMPTY DEPLOYMENT JOBS
@@ -182,4 +190,6 @@ bmb_main() {
   otool -L "$output"
 }
 
-bmb_main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  bmb_main "$@"
+fi
