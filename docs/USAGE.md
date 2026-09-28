@@ -305,7 +305,7 @@ not relicensed.
 ### Verify a download
 
 ```sh
-V=1.1.1
+V=1.1.2
 gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
 sha256sum -c SHA256SUMS                  # macOS: shasum -a 256 -c SHA256SUMS
 gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh \
@@ -412,7 +412,7 @@ configuration, advisory-data, state, and reports directories that Homebrew upgra
 
 ### Cutting a release (maintainers)
 
-1. Bump `VERSION` (for example to `1.1.1`) on `dev`, and promote `dev` to `main` as usual.
+1. Bump `VERSION` (for example to `1.1.2`) on `dev`, and promote `dev` to `main` as usual.
 2. Wait for `main`'s own `tests` workflow to pass for that exact commit - `release.yml` refuses a
    commit whose push-to-main CI run did not conclude `success`, or that was never a `main` tip.
 3. Tag that commit `vX.Y.Z` (it must equal `VERSION`) and push the tag. `release.yml` then builds the

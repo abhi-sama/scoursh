@@ -141,7 +141,7 @@ cd scoursh
 `SHA256SUMS`. Verify it, extract it, and link `bin/scoursh` onto `PATH`:
 
 ```sh
-V=1.1.1
+V=1.1.2
 gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
 sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
 gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh
