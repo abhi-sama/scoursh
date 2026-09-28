@@ -32,10 +32,21 @@
 #        with the repository's "immutable releases" setting on, publishing
 #        locks the tag and the assets;
 #     9. fails loudly if the published release is not immutable.
+#   homebrew (tap-only token; reads template bytes but runs no repository code)
+#    10. renders the Homebrew formula using the build job's already-attested
+#        checksum, writes it on a tap branch, and opens (or reuses) a tap PR.
 #
 # The split is least privilege: the job that executes repository code (the
 # build and a full scan) holds no write token and no id-token, and the job
 # holding them executes nothing from the repository.
+#
+# The Homebrew job is deliberately after publication: it uses the SHA-256 that
+# the build job emitted, rather than downloading public release bytes to hash
+# them again.  It needs the `HOMEBREW_TAP_TOKEN` Actions secret: a fine-grained
+# token limited to abhi-sama/homebrew-scoursh with Contents read/write and
+# Pull requests read/write.  The repository GITHUB_TOKEN cannot write a
+# sibling repository.  The job refuses clearly when that prerequisite is
+# absent; it never falls back to a broader credential.
 #
 # Every `uses:` is pinned to a full commit SHA (the trailing comment names
 # the release it was resolved from); a tag can be moved, a commit cannot.
@@ -358,3 +369,102 @@ jobs:
             exit 1
           fi
           gh release verify "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+
+  homebrew:
+    # This runs only after publication: it is an advisory tap PR, never part
+    # of the immutable release itself.  Do not check out the release commit or
+    # run its code with a credential that can write the sibling tap.
+    needs: [build, publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Render and propose the Homebrew formula bump
+        env:
+          SOURCE_GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          tap=abhi-sama/homebrew-scoursh
+          tap_owner=${tap%%/*}
+          branch=release-scoursh-$VERSION
+
+          if [[ -z ${HOMEBREW_TAP_TOKEN:-} ]]; then
+            echo '::error::HOMEBREW_TAP_TOKEN is required to open the Homebrew tap PR; grant it only Contents and Pull requests read/write on abhi-sama/homebrew-scoursh'
+            exit 1
+          fi
+          [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "::error::unsafe release version: $VERSION"; exit 1;
+          }
+          [[ $SHA256 =~ ^[0-9a-f]{64}$ ]] || {
+            echo '::error::build job did not provide a lowercase SHA-256'; exit 1;
+          }
+
+          # Fetch the template as data at the tagged commit. The tap-write
+          # credential never checks out or executes files from this repository.
+          GH_TOKEN="$SOURCE_GH_TOKEN" gh api \
+            "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/scoursh.rb?ref=$GITHUB_SHA" \
+            --jq .content | tr -d '\n' | base64 --decode > formula.template.rb
+          python3 - formula.template.rb Formula.scoursh.rb "$VERSION" "$SHA256" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          source, destination, version, digest = sys.argv[1:]
+          template = Path(source).read_text(encoding="utf-8")
+          if template.count("@VERSION@") != 2 or template.count("@SHA256@") != 1:
+              raise SystemExit("::error::Homebrew template marker contract changed")
+          rendered = template.replace("@VERSION@", version).replace("@SHA256@", digest)
+          if "@VERSION@" in rendered or "@SHA256@" in rendered:
+              raise SystemExit("::error::Homebrew template rendering left a marker behind")
+          expected = f"scoursh-{version}.tar.gz"
+          if expected not in rendered or not re.search(rf'^  sha256 "{digest}"$', rendered, re.M):
+              raise SystemExit("::error::Homebrew formula rendering failed its release contract")
+          Path(destination).write_text(rendered, encoding="utf-8")
+          PY
+
+          # A rerun reuses its deterministic branch and PR rather than opening
+          # a duplicate. The branch is based on the tap's then-current main.
+          branch_sha=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api \
+            "repos/$tap/git/ref/heads/$branch" --jq .object.sha 2>/dev/null || true)
+          if [[ -z $branch_sha ]]; then
+            main_sha=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api \
+              "repos/$tap/git/ref/heads/main" --jq .object.sha)
+            GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api POST "repos/$tap/git/refs" \
+              --field "ref=refs/heads/$branch" --field "sha=$main_sha" >/dev/null
+          fi
+
+          formula_sha=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api \
+            "repos/$tap/contents/Formula/scoursh.rb?ref=$branch" --jq .sha)
+          rendered_b64=$(base64 < Formula.scoursh.rb | tr -d '\n')
+          current_b64=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api \
+            "repos/$tap/contents/Formula/scoursh.rb?ref=$branch" --jq .content | tr -d '\n')
+          if [[ $current_b64 != "$rendered_b64" ]]; then
+            # The commit message is derived from VERSION only after strict
+            # SemVer validation above; it is not user-controlled input.
+            python3 - request.json "$branch" "$formula_sha" "$rendered_b64" "$VERSION" <<'PY'
+          import json
+          import sys
+          out, branch, sha, content, version = sys.argv[1:]
+          with open(out, "w", encoding="utf-8") as stream:
+              json.dump({"message": f"scoursh {version}", "branch": branch,
+                         "sha": sha, "content": content}, stream)
+          PY
+            GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api PUT \
+              "repos/$tap/contents/Formula/scoursh.rb" --input request.json >/dev/null
+          fi
+
+          pr_url=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api \
+            "repos/$tap/pulls?head=$tap_owner:$branch&state=open" \
+            --jq '.[0].html_url // empty')
+          if [[ -z $pr_url ]]; then
+            pr_url=$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh pr create --repo "$tap" \
+              --base main --head "$branch" --title "scoursh $VERSION" \
+              --body "Automated formula bump for published scoursh v$VERSION.\n\nThe SHA-256 comes from the source release build job; this job does not re-download and re-hash the release asset.")
+          fi
+          echo "Homebrew formula PR: $pr_url"

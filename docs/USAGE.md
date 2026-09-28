@@ -397,11 +397,10 @@ that ever reaches the network; build the advisory database with it once after in
 the old one and re-pointing the two links; your configuration, state and reports live outside the
 extracted tree, so they carry over.
 
-### Homebrew (not published yet)
+### Homebrew
 
-The planned tap, `abhi-sama/homebrew-scoursh`, is **not published yet**, so no Homebrew install is
-available today. After the tap is published and its formula PR has been merged, its supported install
-command will be:
+The public tap is `abhi-sama/homebrew-scoursh`. After its formula PR for a release has been merged,
+its supported install command is:
 
 ```sh
 brew install abhi-sama/scoursh/scoursh

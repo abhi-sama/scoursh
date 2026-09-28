@@ -131,6 +131,27 @@ assert_contains "$workflow" '"dist/macos-bash/scoursh-$VERSION/libexec/bash" too
 # shellcheck disable=SC2016 # Match the workflow's literal $VERSION syntax.
 assert_contains "$workflow" '"dist/macos-bash/scoursh-$VERSION/libexec/bash" tools/smoke-macos-bash.sh' \
   'the macOS release gate runs the smoke script under the built companion'
+assert_contains "$workflow" 'homebrew:' \
+  'the release workflow has a Homebrew formula-bump job'
+assert_contains "$workflow" 'needs: [build, publish]' \
+  'the Homebrew bump runs only after the release has published'
+assert_contains "$workflow" 'HOMEBREW_TAP_TOKEN' \
+  'the Homebrew bump names its least-privilege cross-repository credential'
+assert_contains "$workflow" 'does not re-download and re-hash the release asset' \
+  'the Homebrew bump documents that it uses the build job checksum'
+HOMEBREW_RENDERED=$W/scoursh.rb
+HOMEBREW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+sed -e "s/@VERSION@/$V/g" -e "s/@SHA256@/$HOMEBREW_SHA/g" \
+  "$ROOT/packaging/homebrew/scoursh.rb" >"$HOMEBREW_RENDERED"
+assert_not_contains "$(cat "$HOMEBREW_RENDERED")" '@VERSION@' \
+  'the Homebrew template renders both version markers'
+assert_not_contains "$(cat "$HOMEBREW_RENDERED")" '@SHA256@' \
+  'the Homebrew template renders its checksum marker'
+assert_contains "$(cat "$HOMEBREW_RENDERED")" \
+  "releases/download/v$V/scoursh-$V.tar.gz" \
+  'the rendered formula names the exact release tarball'
+assert_contains "$(cat "$HOMEBREW_RENDERED")" "sha256 \"$HOMEBREW_SHA\"" \
+  'the rendered formula receives the build-job SHA-256 verbatim'
 
 # The release smoke gate repeats this with the real universal Mach-O. This
 # small direct probe keeps the precedence property testable on any macOS host:

@@ -155,8 +155,8 @@ An installed copy is `scoursh` rather than `./scan.sh`, and keeps its own files 
 `scoursh paths` says. Offline verification, rebuilding a release to compare checksums, and cutting a
 release: [`docs/USAGE.md`](docs/USAGE.md#installing-from-a-release).
 
-**Homebrew.** The tap repository is not published yet, so this is not an install option today. Once
-`abhi-sama/homebrew-scoursh` is published, install the release formula with:
+**Homebrew.** The public tap is `abhi-sama/homebrew-scoursh`. Once its formula-bump PR for a release
+has merged, install that release with:
 
 ```sh
 brew install abhi-sama/scoursh/scoursh
