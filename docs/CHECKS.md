@@ -56,7 +56,7 @@ Static analysis of source code. Runs on `./scan.sh sast --path DIR` with nothing
 | `SAST-SEC-GENERIC_API_KEY-01` | Hardcoded API key literal | CWE-798 |
 | `SAST-SEC-GENERIC_PASSWORD-01` | Hardcoded password literal | CWE-798 |
 | `SAST-SEC-GENERIC_SECRET-01` | Hardcoded secret, token or credential literal | CWE-798 |
-| `SAST-SEC-ENV_ASSIGNMENT-01` | Hardcoded credential in an unquoted assignment | CWE-798 |
+| `SAST-SEC-ENV_ASSIGNMENT-01` | Hardcoded credential in an unquoted configuration/shell assignment; excludes JavaScript/TypeScript source | CWE-798 |
 | `SAST-SEC-JWT-01` | Hardcoded JSON Web Token | CWE-798 |
 
 ### Crypto — weak cryptography
