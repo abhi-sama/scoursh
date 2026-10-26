@@ -1,0 +1,4 @@
+services:
+ app:
+  command:
+   - "8080:8080"
