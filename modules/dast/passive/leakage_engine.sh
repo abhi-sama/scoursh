@@ -756,6 +756,43 @@ leak_value_is_placeholder() {
   return 1
 }
 
+# `_leak_key_is_ui_action TAIL HIT` - true when the key's prefix before the
+# credential word names a UI action or form field (`forgotPassword`,
+# `confirmPassword`, `formFieldLabel__password` ends in `label`), never a
+# stored credential.  A served SPA bundle carries these by the hundred:
+# measured, 24 of 25 key-name hits in three real published bundles (Clerk's
+# en-US and de-DE localizations, Supabase's auth-ui-shared) were UI text.
+_leak_key_is_ui_action() {
+  local tail=$1 hit=$2 pre
+  [[ $tail == "$hit" ]] && return 1
+  pre=${tail%"$hit"}
+  pre=${pre%_}
+  case $pre in
+    forgot | confirm | confirmation | reset | change | new | old | current | show | hide | toggle | \
+      wrong | weak | invalid | missing | update | set | repeat | verify | enter | retype | strong | \
+      min | max | label | placeholder | hint | error | create | remember | expired | lost) return 0 ;;
+  esac
+  return 1
+}
+
+# `_leak_value_is_ui_text VALUE HIT` - true for a value that cannot be a
+# credential literal: prose (it contains whitespace), a route or path, a
+# slash-coded error id (`auth/wrong-password`), a dotted/kebab/snake
+# identifier made only of lowercase words, or a value that merely restates the
+# credential word (`password:"Password"`).  A letters-only capitalised value
+# other than the word itself (`"Passwort"`) is deliberately still reported:
+# a chosen password can be letters only.
+_leak_value_is_ui_text() {
+  local v=$1 hit=$2 low=${1,,}
+  [[ $v == *[[:space:]]* ]] && return 0
+  case $v in
+    /* | ./* | \#* ) return 0 ;;
+  esac
+  [[ $v =~ ^[a-z]+([._:/-][a-z]+)+$ ]] && return 0
+  [[ $low == "$hit" || $low == "${hit}s" ]] && return 0
+  return 1
+}
+
 # `leak_js_config_in LINE` - appends every candidate client-config disclosure on
 # LINE to `_LEAK_JSCFG` as `KEY<US>WHY<US>SHAPE<US>LEN`.  Reset by
 # `leak_js_reset`.
@@ -864,6 +901,11 @@ _leak_js_decide() {
     done
     if [[ -n $hit ]]; then
       leak_value_is_placeholder "$val" && return 0
+      # A key-NAME hit (no vendor value shape) is only a credential when its
+      # value could be one.  Vendor-shaped values (`sk_live_`, ...) never reach
+      # this branch, so these two guards cannot hide one.
+      _leak_key_is_ui_action "$tail" "$hit" && return 0
+      _leak_value_is_ui_text "$val" "$hit" && return 0
       why='the key name is never client-safe -'
       shape="a non-placeholder literal behind a '$hit' key"
     else

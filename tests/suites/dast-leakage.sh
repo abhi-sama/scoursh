@@ -582,6 +582,34 @@ leak_js_reset
 leak_js_config_in '  base: "https://api.leak.fixture.example/v1",' /x
 assert_eq 0 "${#_LEAK_JSCFG[@]}" 'a PUBLIC service URL is ordinary and is not reported'
 
+t_case 'family-4-js-ui-text-is-not-a-credential'
+# Measured on three real published bundles (Clerk's en-US and de-DE
+# localizations, Supabase's auth-ui-shared): 24 of 25 key-name hits were UI
+# labels, routes and error codes under password/secret-named keys.  Each shape
+# below fired before the fix (a key ending in the credential word plus any
+# non-placeholder value was enough), and each is paired with a real literal
+# under the same kind of key that must still fire.
+for _ui in \
+  '  formFieldAction__forgotPassword: "Forgot password?",' \
+  '  formFieldLabel__password: "Password",' \
+  '  blockButton__password: "Sign in with your password",' \
+  'const routes={resetPassword:"/reset-password",password_reset_url:"/accounts/password/reset/"};' \
+  'var errs={wrongPassword:"auth/wrong-password",weakPassword:"auth/weak-password"};' \
+  ; do
+  leak_js_reset
+  leak_js_config_in "$_ui" /bundle.js
+  assert_eq 0 "${#_LEAK_JSCFG[@]}" "UI text, a route or an error code is not a credential: $_ui"
+done
+unset _ui
+leak_js_reset
+leak_js_config_in 'const cfg={dbPassword:"Tr0ub4dor3xK"};' /bundle.js
+assert_eq 1 "${#_LEAK_JSCFG[@]}" \
+  'a real literal behind a password key is still reported - FAILS under a fix that drops every key-name hit'
+leak_js_reset
+leak_js_config_in '  formFieldLabel__password: "Passwort",' /bundle.js
+assert_eq 1 "${#_LEAK_JSCFG[@]}" \
+  'a letters-only capitalised value that is not the key word itself stays reportable (a chosen password can be letters only); the accepted residual is the German label'
+
 t_case 'family-5-same-site'
 assert_true "$(leak_same_site cdn.leak.fixture.example leak.fixture.example && printf 0 || printf 1)" \
   "a site's own cdn subdomain shares its registrable domain"
