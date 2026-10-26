@@ -33,6 +33,7 @@ SCOURSH_IAC_PARSE_SOURCED=1
 
 # shellcheck source=modules/sast/engine.sh
 source "${BASH_SOURCE[0]%/*}/../sast/engine.sh"
+SCOURSH_IAC_PRECISION_AWK=${BASH_SOURCE[0]%/*}/precision.awk
 
 # ---------------------------------------------------------------------------
 # `max-matches-per-file` capture, module-local so a sequential sast-then-iac
@@ -81,20 +82,24 @@ iac_scan_file() {
     return 0
   fi
 
-  local total='' ln off text count=0 overflow=0
+  local precise=$hits.precise
+  awk -v check="$id" -v path="$relpath" -v limit="$SCOURSH_IAC_MAX_MATCHES_PER_FILE" -f "$SCOURSH_IAC_PRECISION_AWK" "$abspath" "$hits" >"$precise" || die 5 'IaC owning-object analysis failed'
+  mv "$precise" "$hits"
+  local total='' precision ln off text count=0 overflow=0
   # off is read to consume the byte-offset field so `text` lands in the right
   # position, the same shape sast_scan_file uses.
   # shellcheck disable=SC2034
-  while IFS=: read -r ln off text; do
+  while IFS=: read -r precision ln off text; do
     [[ -n $ln ]] || continue
     count=$(( count + 1 ))
     if (( count > SCOURSH_IAC_MAX_MATCHES_PER_FILE )); then
       overflow=1
       break
     fi
+    [[ $precision != drop ]] || continue
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$abspath")
     if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total"; then
-      _iac_emit_finding "$set" "$idx" "$relpath" "$ln" "$text"
+      _iac_emit_finding "$set" "$idx" "$relpath" "$ln" "$text" "$precision"
     fi
   done <"$hits"
   rm -f "$hits"
@@ -127,6 +132,11 @@ _iac_emit_finding() {
   id=$(records_id "$set" "$idx")
   finding_new
   finding_from_record "$set" "$idx"
+  if [[ ${6:-keep} == review ]]; then
+    finding_mark_review 'Configuration value requires workload or runtime-context review'
+    finding_set remediation 'This source declares a policy-relevant value, but its effective template/deployment value is not established. Inspect the owning object or rendered configuration before treating it as a vulnerability.'
+    run_record coverage_reduction "module=iac checks=[$id] reason=configuration_value_requires_review file=$relpath"
+  fi
   finding_set module iac
   finding_set loc_path "$relpath"
   finding_set loc_line "$ln"
