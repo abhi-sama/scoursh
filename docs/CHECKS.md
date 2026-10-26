@@ -58,6 +58,15 @@ Static analysis of source code. Runs on `./scan.sh sast --path DIR` with nothing
 | `SAST-SEC-GENERIC_SECRET-01` | Hardcoded secret, token or credential literal | CWE-798 |
 | `SAST-SEC-ENV_ASSIGNMENT-01` | Hardcoded credential in an unquoted configuration/shell assignment; excludes JavaScript/TypeScript source | CWE-798 |
 | `SAST-SEC-JWT-01` | Hardcoded JSON Web Token | CWE-798 |
+| `SAST-SEC-DEFAULT_PASSWORD-01` | Well-known default password literal (`postgres`, `changeit`, ...), at medium | CWE-1392 |
+| `SAST-SEC-NONPROD_CREDENTIAL-01` | Credential-shaped literal in a test, documentation, example or CI file, at low | CWE-798 |
+
+The keyword checks (API key, password, secret, unquoted assignment, default password) skip test,
+documentation, example and CI paths (`tests/**`, `*.test.*`, `docs/**`, `*.md`, `examples/**`,
+`*.example`, `.github/workflows/**`, ...) and localisation catalogues; `SAST-SEC-NONPROD_CREDENTIAL-01`
+reports the same shapes on those paths instead, so a fixture password is visible without being
+presented as a critical vulnerability. A keyword match is capped at high; only a provider-shaped
+key (AWS key id, private key with a real key body) is critical.
 
 ### Crypto — weak cryptography
 
