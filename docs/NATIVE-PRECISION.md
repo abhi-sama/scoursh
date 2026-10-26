@@ -48,7 +48,8 @@ unit but still expects one structural token per line.
 
 Run `tests/run-tests.sh static-precision` and `tests/run-tests.sh sca-precision`.
 The source/IaC suite derives its roster from the shipped rule registry and checks
-every audit safe/unsafe pair plus their combination in one file. Existing `sast`,
+every audit safe/unsafe pair plus their combination in one file. It always runs
+the grep fallback and repeats with ripgrep when available. Existing `sast`,
 `iac`, `sca`, `sast-secrets-forms` and `secret-redaction` suites remain necessary.
 Precision is measured on these controls and audited public inputs; it is not a
 claim that arbitrary programs can be classified without false positives.

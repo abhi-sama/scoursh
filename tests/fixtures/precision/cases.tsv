@@ -100,3 +100,5 @@ SAST-LDAP-UNESCAPED_FILTER_INPUT-01	regression/mutable-filter.py
 SAST-NOSQL-OPERATOR_INJECTION-01	regression/mutable-query.py
 SAST-JS-DANGEROUSLY_SET_INNER_HTML-01	regression/sanitizer-binding.jsx
 SAST-INJ-SSTI-01	regression/template-triple.py
+IAC-HELM-HARDCODED_SECRET-01	regression/templates/secret-characters.yaml
+IAC-CFN-HARDCODED_SECRET-01	regression/secret-characters.yaml

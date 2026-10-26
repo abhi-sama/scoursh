@@ -48,7 +48,8 @@ severity: critical
 confidence: medium
 cwe: CWE-798
 owasp: A07:2025
-pattern: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'\s{][^"'\n]{7,}
+# Matching is line-oriented; use POSIX bracket classes without backslash escapes.
+pattern: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b[[:space:]]*:[[:space:]]*["']?[^"'[:space:]{][^"']{7,}
 dialect: ere
 files: values.yaml
 files: templates/*.yaml
