@@ -194,7 +194,7 @@ terminator.
   A schema that needs "unset" uses the literal token `none`, never an empty value.
 
 Because there is no trimming, a value can legally end in a space, and a space is invisible.
-For the `pattern` key and the `context-require` / `context-deny` keys, a trailing space is therefore a
+For the `pattern` key and the `context-require` / `context-deny` / `match-deny` keys, a trailing space is therefore a
 **linter error** (`E030`), and the author is directed to write `[ ]` or `\s` instead.
 The parser still accepts it; only the linter rejects it, so a hand-edited pack that trips `E030` fails
 CI rather than silently misbehaving in production.
@@ -241,7 +241,7 @@ Rules:
    A **whitespace-only** line does not continue a value either: it is `E011` per §3.2 test 2, so a
    continuation block cannot contain an empty line by any spelling.
 4. Continuations are permitted **only** on keys marked *multi-line* in §9.
-   In particular `pattern`, `context-require`, and `context-deny` are **single-line only** (`E016`).
+   In particular `pattern`, `context-require`, `context-deny`, and `match-deny` are **single-line only** (`E016`).
    Regexes never span lines.
    This makes the format free of any block-scalar sentinel, so there is no ambiguity between a value of
    `|` and a "here follows a block" marker - a problem the obvious YAML-shaped design would have had,
@@ -308,7 +308,7 @@ See `docs/FOUNDATION.md` tension 2 for the full reasoning; the normative rules a
 
 ### 8.1 Dialect
 
-A `pattern`, `context-require`, or `context-deny` value is a regular expression in one of exactly two
+A `pattern`, `context-require`, `context-deny`, or `match-deny` value is a regular expression in one of exactly two
 declared dialects:
 
 | `dialect` value | Meaning | Engine |
@@ -354,7 +354,7 @@ When that happens the engine MUST:
 walks) makes this decision once per run, before the walk: an unavailable engine removes the record,
 records `check=<id> reason=pcre-unavailable` under `skipped_checks`, and keeps the id out of
 `checks_run` and `state/` coverage. When a PCRE2 engine is available the record's `pattern`,
-`context-require` and `context-deny` are all matched under PCRE (`scan_match_offsets_pcre`,
+`context-require`, `context-deny` and `match-deny` are all matched under PCRE (`scan_match_offsets_pcre`,
 `scan_match_stdin_pcre` in `lib/core.sh`).
 
 Because a skipped check is a silent coverage hole, `pcre` is a last resort.
@@ -472,6 +472,7 @@ more than one record.
 | `exclude-files` | optional | repeatable | no | Glob removing paths. Applied after `files`. |
 | `context-require` | optional | repeatable | **no** | §10. All entries must be satisfied (AND). |
 | `context-deny` | optional | repeatable | **no** | §10. Any entry satisfied suppresses the match (OR). |
+| `match-deny` | optional | repeatable | **no** | §10.1a. Evaluated against the MATCHED TEXT only, never the window. Any entry satisfied suppresses the match (OR). Does not count toward `E031`. |
 | `context-window` | optional | single | no | Non-negative decimal integer, §10. Default `2`. Illegal unless at least one `context-require` or `context-deny` is present (`E031`). |
 | `remediation` | required | single | **yes** | Fix guidance; becomes the finding's `remediation`. |
 | `references` | optional | repeatable | no | Free-text reference token; becomes an entry in the finding's `references`. |
@@ -1207,6 +1208,24 @@ must appear on the same line, such as `verify=False` on the call itself.
 `context-require` and `context-deny` use the record's `dialect` and the same line-oriented,
 case-sensitive matching as `pattern` (§8.2).
 
+### 10.1a Match-scoped deny
+
+A `match-deny` value is matched against the **matched text alone** - the bytes the `pattern` matched,
+exactly as they feed `match_digest` - and never against any line of the window.
+Any `match-deny` satisfied suppresses the match (OR), and it is evaluated before the window predicate
+above, so a record may carry `match-deny` with no `context-*` key at all.
+It is not a `context-*` key: it neither needs nor is affected by `context-window`, and it does not
+count toward `E031`.
+
+It exists because a guard about the VALUE cannot be expressed as a `context-deny`, even at
+`context-window: 0`: window 0 is the whole matched line, so a deny meant to say "the assigned value
+is a path" also fires on an unrelated URL, arrow function or boolean later on the same line, and
+silently drops a real match there.
+Use `match-deny` for a guard about the matched text, and `context-deny` for a guard about its
+surroundings (a reference syntax such as `${...}`, or a lookup call on the same line).
+A `match-deny` value is usually anchored to the matched text's own shape (for example
+`["'`]$` for "the matched text ends in a quote"), since `$` and `^` here mean the ends of the match.
+
 ### 10.2 Why require-and-deny rather than one polarity
 
 Require alone cannot express "flag `yaml.load(` unless `SafeLoader` is nearby", and deny alone cannot
@@ -1580,7 +1599,7 @@ format version 1: warnings never fail the linter and are shown only when
 
 | Code | Severity | Check |
 |---|---|---|
-| E030 | error | `pattern`, `context-require`, or `context-deny` value ends in a space |
+| E030 | error | `pattern`, `context-require`, `context-deny`, or `match-deny` value ends in a space |
 | E040 | error | `dialect: ere` value uses a construct outside the §8.2 subset |
 | E041 | error | Nested unbounded quantification (catastrophic-backtracking shape) |
 | E046 | error | Value does not compile under its declared dialect (verified by invoking the engine on `/dev/null`) |
@@ -1659,6 +1678,15 @@ that participates in a fingerprint or a SARIF `ruleId`. Item 2 is what this tick
 `lib/records.sh`'s schema table gains the four arms plus `E082`, and `lib/findings.sh`'s
 `finding_from_record` (the shared consumer for `sast`, `iac` and `cloud`) reads them onto the
 finding. Items 1, 3 and 4 do not apply, for the same reasons `contact` does not trip them.
+
+`match-deny` (§9.1, §10.1a) is the identical shape again, as an optional REPEATABLE key: an absent
+repeatable key is the empty list, so every record that omits it validates and evaluates exactly as
+before (item 1 does not apply). Item 2 is discharged in the same change: `lib/records.sh`'s
+pattern-rule schema gains the arm, its `E030` trailing-space check and regex validation (`E040`, `E041`)
+cover the new key, and `sast_context_ok` (`modules/sast/engine.sh`, shared by the SAST, IaC and
+`SAST-HIST-*` walks) evaluates it. Items 3 and 4 do not apply: the key is read nowhere that feeds a
+fingerprint or a SARIF `ruleId`. A record that ADOPTS the key changes which lines it reports, which is
+an ordinary rule change (its `rule_digest` moves), not a format cost.
 
 **Which of the four an ADDITIVE PATH-TABLE ROW trips, checked the same way.**
 The `checks-<name>.rules` row in §9 is the worked example. It **widens** the set of legal paths: a path

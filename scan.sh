@@ -2214,6 +2214,35 @@ _scan_preflight_output_state() {
   fi
 }
 
+# `_scan_reset_prior_run DIR` - a scanning command pointed at an `--out`
+# directory that already holds an earlier run starts from an empty run.
+# Without this, `findings_merge` globbed the earlier run's `shards/*.fields`
+# back in and `meta/` kept its facts: measured, a secret deleted between two
+# scans into one `--out` was still reported (status `recurring`), and run.json
+# kept the first run's `started_at`.  Only a directory that is already a
+# scoursh run (it has `meta/started_at`) is touched, and only the run-scoped
+# entries scoursh itself writes are removed: `inventory/` is kept on purpose,
+# because an operator may seed `inventory/endpoints.json` before a run
+# (docs/INVENTORY-FORMAT.md), and `report` / `diff` never reach this, since
+# `report --from DIR --out DIR` regenerates a run in place.
+_scan_reset_prior_run() {
+  local dir=$1
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | network | image | all) ;;
+    *) return 0 ;;
+  esac
+  [[ -f $dir/meta/started_at ]] || return 0
+  local f
+  for f in "$dir"/shards/* "$dir"/meta/* "$dir"/units/* "$dir"/locations/*; do
+    if [[ -f $f ]]; then rm -f -- "$f"; fi
+  done
+  rm -f -- "$dir"/findings.fields "$dir"/findings.jsonl "$dir"/findings.json \
+    "$dir"/run.json "$dir"/report.md "$dir"/report.html "$dir"/report.sarif \
+    "$dir"/report-audit.html "$dir"/agent-fix.json
+  log_info "--out $dir held an earlier run; its findings and run facts were cleared before this scan"
+  return 0
+}
+
 # `_scan_pf_warn_declared_skips` - the non-fatal, informational half:
 # surfaces (via log_warn, at second zero) the two declared-skip conditions
 # named in this section's own header above. Deliberately never adds to the
@@ -3099,6 +3128,7 @@ scan_main() {
   SCOURSH_RUN_DIR=''
   SCOURSH_RUN_ID=''
   _scan_preflight_output_state
+  _scan_reset_prior_run "$_SCAN_OUT_DIR"
   run_init "$_SCAN_OUT_DIR"
   run_record notes "command=$SCAN_COMMAND"
   # Reset for THIS invocation - scan_main may run more than once in one

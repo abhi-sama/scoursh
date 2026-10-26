@@ -1,0 +1,7 @@
+# Chart values that name Secrets, keys and timestamps rather than holding a credential.
+argocdServerAdminPasswordMtime: "2006-01-02T15:04:05Z"  # [[N33]]
+existingSecretPasswordKey: 'redis-password'  # [[N34]]
+userPasswordKey: password  # [[N35]]
+## -----BEGIN RSA PRIVATE KEY----- [[N36]]
+## ... the key body goes here ...
+HttpTokens: optional  # [[N37]]

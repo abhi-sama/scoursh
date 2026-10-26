@@ -86,8 +86,19 @@ fi
 # This is a WALKER-level default, separate from and in addition to the
 # per-rule `files` / `exclude-files` glob (§9.1.2), never a replacement for
 # it - exactly the split tension 2 records as this ticket's obligation.
+#
+# The front-end framework build and cache directories (`.next`, `.nuxt`,
+# `.svelte-kit`, `.output`, `.vercel`, `.turbo`, `.angular`, `storybook-static`)
+# are excluded for the reason `dist` and `build` already are: they hold
+# generated copies of the source tree, so a finding there is a duplicate of
+# the source finding, or a match inside minified vendor code.  Measured: one
+# minified line was reported under `.next/static/chunks/` and skipped under
+# `dist/`.  `coverage` is deliberately NOT listed: it is also a common source
+# package name (coverage.py's own source lives in `coverage/`), and skipping
+# real source silently is worse than one duplicate report.
 SAST_DEFAULT_EXCLUDE_DIRS=(.git node_modules vendor .venv venv __pycache__
-  .mypy_cache .pytest_cache .tox dist build reports state .terraform)
+  .mypy_cache .pytest_cache .tox dist build reports state .terraform
+  .next .nuxt .svelte-kit .output .vercel .turbo .angular storybook-static)
 
 _sast_dir_excluded() {
   local base=$1
@@ -235,11 +246,28 @@ _sast_context_matches() {
   (( rc == 0 ))
 }
 
-# sast_context_ok SET IDX FILE LINE TOTAL_LINES - §10.1's predicate: every
-# context-require satisfied (AND) and no context-deny satisfied (OR, deny
-# wins).  True (finding fires) when neither key is present at all.
+# sast_context_ok SET IDX FILE LINE TOTAL_LINES [MATCH_TEXT] - §10.1's
+# predicate: no match-deny satisfied by MATCH_TEXT, every context-require
+# satisfied (AND) and no context-deny satisfied (OR, deny wins).  True
+# (finding fires) when none of the three keys is present at all.
+#
+# `match-deny` (§10.1a) is evaluated against the MATCHED TEXT only, never the
+# window.  A value-shape guard written as a context-deny is evaluated against
+# the whole line at window 0, so an unrelated `://`, `=>` or `: true` later on
+# the same line suppressed a real credential: measured, five of six realistic
+# leaked credentials in one probe file were dropped that way.  Every caller
+# (sast_scan_file, iac_scan_file, the SAST-HIST-* replay) passes the matched
+# text; a caller that omits it simply skips the match-scoped guards.
 sast_context_ok() {
-  local set=$1 idx=$2 file=$3 line=$4 total=$5
+  local set=$1 idx=$2 file=$3 line=$4 total=$5 mtext=${6-}
+  if [[ -n $mtext ]] && records_has "$set" "$idx" match-deny; then
+    local mdialect mp
+    mdialect=$(records_field_or "$set" "$idx" dialect ere)
+    while IFS= read -r mp; do
+      [[ -n $mp ]] || continue
+      _sast_context_matches "$mdialect" "$mp" "$mtext" && return 1
+    done <<<"$(records_list "$set" "$idx" match-deny)"
+  fi
   records_has "$set" "$idx" context-require || records_has "$set" "$idx" context-deny || return 0
 
   local win=2
@@ -508,7 +536,7 @@ sast_scan_file() {
       break
     fi
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$abspath")
-    if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total"; then
+    if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total" "$text"; then
       _sast_emit_finding "$set" "$idx" "$relpath" "$ln" "$text"
     fi
   done <"$hits"

@@ -48,7 +48,7 @@ _schema_def() {
         'pattern:req:single:sl' 'dialect:opt:single:sl' \
         'files:opt:repeatable:sl' 'exclude-files:opt:repeatable:sl' \
         'context-require:opt:repeatable:sl' 'context-deny:opt:repeatable:sl' \
-        'context-window:opt:single:sl' 'remediation:req:single:ml' \
+        'match-deny:opt:repeatable:sl' 'context-window:opt:single:sl' 'remediation:req:single:ml' \
         'references:opt:repeatable:sl' 'cis:opt:repeatable:sl' \
         'tags:opt:repeatable:sl' 'severity-floor:opt:single:sl' \
         'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl' \
@@ -1257,7 +1257,7 @@ _records_trailing_space_one() {
   local path=$1 line=$2 id=$3 key=$4 v=$5
   [[ $v == *' ' || $v == *$'\t' ]] || return 0
   case $key in
-    pattern | context-require | context-deny)
+    pattern | context-require | context-deny | match-deny)
       records_diag "$path" "$line" 1 E030 "$id" \
         "$key value ends in whitespace; write [ ] or \\s instead"
       ;;
@@ -1319,7 +1319,7 @@ _records_check_regexes() {
   local dialect key v
   dialect=$(records_field_or "$set" "$i" dialect ere)
   local schema=${_REC_SCHEMA[$set]:-}
-  for key in pattern context-require context-deny; do
+  for key in pattern context-require context-deny match-deny; do
     records_has "$set" "$i" "$key" || continue
     if records_key_is_repeatable "$schema" "$key"; then
       while IFS= read -r v; do
