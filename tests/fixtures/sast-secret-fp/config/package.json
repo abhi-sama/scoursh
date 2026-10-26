@@ -1,0 +1,5 @@
+{
+  "_case": "[[N28]]", "@aws-sdk/credential-providers": "^3.583.0",
+  "_case": "[[N29]]", "passport-oauth2-client-password": "^0.1.2",
+  "_case": "[[N30]]", "new_password": "{password_factory}"
+}

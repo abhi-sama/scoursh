@@ -303,7 +303,7 @@ _sast_history_scan_check() {
       break
     fi
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$blobfile")
-    if sast_context_ok "$set" "$idx" "$blobfile" "$ln" "$total"; then
+    if sast_context_ok "$set" "$idx" "$blobfile" "$ln" "$total" "$text"; then
       _sast_history_ensure_commit_info "$scan_root" "$blob_sha" "$relpath" "$since_epoch" "$max_commits"
       _sast_history_emit_finding "$set" "$idx" "$blob_sha" "$relpath" "$ln" "$text"
     fi

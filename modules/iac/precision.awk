@@ -178,6 +178,9 @@ function container(id,s,    p) {
 }
 function nonroot(p) { return childval(child[p SUBSEP "securityContext"],"runAsNonRoot")=="true" }
 function secret_path(k,v) { return k ~ /(_PATH|_FILE|Path|File|path|file)$/ && v ~ /^\// }
+# A secret-named setting says what it holds in its own suffix: TOKEN_ISSUER is
+# a URL, JWT_SECRET_TTL a duration.  _FILE/_PATH stay with secret_path above.
+function secret_setting(k) { return k ~ /(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)S?[A-Za-z0-9_]*_(DIR|NAME|URL|URI|ARN|ID|TTL|EXPIRY|EXPIRES|ENABLED|TYPE|ISSUER|AUDIENCE|ENDPOINT|LENGTH|MINUTES|SECONDS|DAYS|HOURS|REF)$/ }
 function decide(n,col,    id,r,p,s,c,k,v,j,t,b,e,stage,a,u,rest,props,typ,script,uncertain,q,account,namespace,found) {
     if(check !~ /^IAC-(DOCKER|TF|COMPOSE|CFN|HELM|K8S)-/) return "keep"
     if(check ~ /^IAC-DOCKER-/) {
@@ -326,7 +329,7 @@ function decide(n,col,    id,r,p,s,c,k,v,j,t,b,e,stage,a,u,rest,props,typ,script
         if(check ~ /SECRET_ENV/) {
             if(!ancestor(id,"env")) return "drop"
             p=parent[id];k=childval(p,"name")
-            if(k !~ /(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)/ || secret_path(k,value[id])) return "drop"
+            if(k !~ /(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)/ || secret_path(k,value[id]) || secret_setting(k)) return "drop"
         }
         return "keep"
     }

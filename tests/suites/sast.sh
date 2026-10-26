@@ -257,6 +257,13 @@ _ids_found() {
   done <"$rundir/findings.fields"
 }
 
+# The secrets pack is scanned from a COPY outside tests/: under a tests/ path
+# its keyword records hand every match to SAST-SEC-NONPROD_CREDENTIAL-01
+# (asserted just below), and this loop pins the production check ids.
+_SECRETS_FIX=$W/app-secrets
+rm -rf "$_SECRETS_FIX"
+cp -R "$FIXTURES" "$_SECRETS_FIX"
+_SECRETS_FIX=$(cd -- "$_SECRETS_FIX" && pwd -P)
 for _pair in \
   'secrets:SAST-SEC-AWS_AKID-01 SAST-SEC-PRIVATE_KEY-01 SAST-SEC-GENERIC_API_KEY-01 SAST-SEC-GENERIC_PASSWORD-01 SAST-SEC-JWT-01' \
   'crypto:SAST-CRY-WEAK_HASH-01 SAST-CRY-DES_ECB-01 SAST-CRY-HARDCODED_IV-01 SAST-CRY-TLS_VERIFY_DISABLED-01 SAST-CRY-WEAK_RANDOM_TOKEN-01' \
@@ -265,7 +272,9 @@ for _pair in \
   ; do
   _pack=${_pair%%:*}
   _want=${_pair#*:}
-  _scan_one_pack "$_pack" "$FIXTURES" "$W/run-$_pack"
+  _fix=$FIXTURES
+  [[ $_pack == secrets ]] && _fix=$_SECRETS_FIX
+  _scan_one_pack "$_pack" "$_fix" "$W/run-$_pack"
   _found=$(_ids_found "$W/run-$_pack")
   for _want_id in $_want; do
     t_case "$_pack: $_want_id true-positive detection"
@@ -273,7 +282,18 @@ for _pair in \
       "$_want_id fires on its fixture - fails if the pattern, files glob, or context directive silently drops the match"
   done
 done
-unset _pair _pack _want _fixture _found _want_id
+unset _pair _pack _want _fixture _found _want_id _fix
+
+t_case 'secrets: the same fixture under tests/ reports through the non-production record'
+_scan_one_pack secrets "$FIXTURES" "$W/run-secrets-np"
+_np_found=$(_ids_found "$W/run-secrets-np")
+assert_contains "$_np_found" 'SAST-SEC-NONPROD_CREDENTIAL-01' \
+  'the keyword matches under tests/fixtures/ are reported, at low, by SAST-SEC-NONPROD_CREDENTIAL-01 - fails if the path policy dropped them'
+assert_not_contains "$_np_found" 'SAST-SEC-GENERIC_PASSWORD-01' \
+  'and not by the production keyword record as well - fails if the two path lists overlap'
+assert_contains "$_np_found" 'SAST-SEC-AWS_AKID-01' \
+  'a provider-shaped key under tests/ is still reported by its own record'
+unset _np_found
 
 # =============================================================================
 printf -- '\n-- go.rules (docs/DESIGN.md §13 step 3c): one fixture per rule id --\n'

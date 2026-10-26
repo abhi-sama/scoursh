@@ -10,7 +10,13 @@
                 "Variables": {
                     "STAGE": "prod",
                     "DB_PASSWORD": "hunter2",
-                    "AWS_KEY": "AKIAABCDEFGHIJKLMNOP"
+                    "AWS_KEY": "AKIAABCDEFGHIJKLMNOP",
+                    "DB_PASSWORD_SECRET_ARN": "arn:aws:secretsmanager:eu-west-2:123456789012:secret:prod/db-AbCdEf",
+                    "SECRET_NAME": "prod/db",
+                    "API_KEY_PARAMETER_NAME": "/app/stripe/api-key",
+                    "PARAMETERS_SECRETS_EXTENSION_HTTP_PORT": "2773",
+                    "AUTH_TOKEN_TTL_SECONDS": "900",
+                    "SENTRY_DSN": "https://4f8a2c@o123456.ingest.sentry.invalid/789"
                 }
             }
         },

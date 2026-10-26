@@ -336,7 +336,10 @@ assert_contains "$SOURCE_HIST_FOUND" 'SAST-HIST-GENERIC_API_KEY-01' \
 t_case 'a file-excluded history check is declared unevaluated'
 assert_not_contains "$(cat "$W/run-source-history/meta/checks_run")" "$ENV_HIST_ID" \
   'fails if the completed walk records excluded checks as run despite never evaluating their patterns'
-assert_contains "$(cat "$W/run-source-history/meta/coverage_reduction")" "checks=[$ENV_HIST_ID]" \
+# The list may also name other path-scoped checks no blob reached (the
+# non-production record, here), so look for this id inside it.
+_nmf=$(grep 'reason=no_matching_files' "$W/run-source-history/meta/coverage_reduction" | sed -n 's/.*checks=\[\([^]]*\)\].*/\1/p')
+assert_contains " $_nmf " " $ENV_HIST_ID " \
   'the excluded check has an explicit no_matching_files reason'
 
 # Run again in the same process after adding an applicable dotenv blob: this
@@ -354,6 +357,30 @@ git -C "$SOURCEHISTREPO" checkout -q HEAD^
 _run_history "$SOURCEHISTREPO" "$W/run-source-history-again"
 assert_not_contains "$(cat "$W/run-source-history-again/meta/checks_run")" "$ENV_HIST_ID" \
   'applicability from the dotenv replay cannot leak into a later source-only replay'
+
+t_case 'the history replay evaluates match-deny against the matched text, like the working-tree engine'
+# A credential on a line that also carries a URL was dropped by the old
+# line-wide guards, in history exactly as in the working tree; a storage-key
+# NAME was reported as a credential in every historical blob that held it.
+MDREPO=$W/match-deny-repo
+_new_repo "$MDREPO"
+printf 'print("hello")\n' >"$MDREPO/client.py"
+git -C "$MDREPO" add client.py
+git -C "$MDREPO" commit -q -m 'initial commit'
+printf 'client = Client(api_key="s3cr3tT0kenV4lue0000", base_url="https://api.vendor.invalid/v1")\nTOKEN_KEY = "auth_token"\n' >"$MDREPO/client.py"
+git -C "$MDREPO" add client.py
+git -C "$MDREPO" commit -q -m 'add a client'
+printf 'print("hello")\n' >"$MDREPO/client.py"
+git -C "$MDREPO" add client.py
+git -C "$MDREPO" commit -q -m 'remove it'
+declare -A SCAN_FLAGS=([history]=true)
+_run_history "$MDREPO" "$W/run-match-deny"
+_md_found=$(_ids_found "$W/run-match-deny")
+assert_contains "$_md_found" 'SAST-HIST-GENERIC_API_KEY-01' \
+  'the key on the line with a URL is found in history - fails if history.sh stopped passing the matched text to sast_context_ok'
+assert_not_contains "$_md_found" 'SAST-HIST-GENERIC_SECRET-01' \
+  'the storage-key name in the same blob is not reported - fails if the digit guard were skipped in the replay'
+unset _md_found
 
 t_summary 'sast-history' || FAILED=1
 exit "${FAILED:-0}"

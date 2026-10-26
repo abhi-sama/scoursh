@@ -221,12 +221,22 @@ _lambda_examine_env() {
       while IFS= read -r key; do
         [[ -n $key ]] || continue
         norm=$(lambda_normalise_env_key "$key")
-        if lambda_secret_keyword_matches "$norm"; then
+        val=''
+        lambda_env_value_get val "$i" "$key" || true
+        # A name hit alone used to be the finding, so `SECRET_NAME=prod/db`,
+        # `DB_PASSWORD_SECRET_ARN=arn:aws:...` and the Secrets Extension's own
+        # `PARAMETERS_SECRETS_EXTENSION_HTTP_PORT=2773` all read as leaked
+        # credentials (12 of 16 realistic names, measured).  The name must
+        # not be metadata, the value must not be a reference, and a `DSN` is
+        # a credential only when it carries `user:password@` (a Sentry DSN's
+        # bare public key is public by design).
+        if lambda_secret_keyword_matches "$norm" \
+          && ! lambda_secret_name_is_metadata "$key" \
+          && ! lambda_secret_value_is_reference "$val" \
+          && { [[ $norm != *DSN* ]] || [[ $val =~ ://[^:/@]+:[^@/]+@ ]]; }; then
           _lambda_emit "$secret_id" "$arn" "$region" "$key" \
             "Environment variable $key on function $arn ($region) has a name that reads as credential-shaped (matched against modules/cloud/aws/live/lambda-secret-env-keywords.txt). Lambda environment variables are visible in plaintext to anyone who can call lambda:GetFunctionConfiguration on this function, which is routinely a broader set of principals than the ones the credential itself is meant to be scoped to."
         else
-          val=''
-          lambda_env_value_get val "$i" "$key" || true
           shape=''
           if shape=$(lambda_secret_value_shape "$val"); then
             _lambda_emit "$secret_id" "$arn" "$region" "$key" \

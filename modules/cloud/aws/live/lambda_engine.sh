@@ -556,6 +556,39 @@ lambda_secret_keyword_matches() {
   return 1
 }
 
+# `lambda_secret_name_is_metadata KEY` - true for a credential-shaped NAME
+# that says it holds metadata ABOUT a secret (its ARN, SSM path, TTL, length,
+# port...), or that configures AWS's own Parameters and Secrets Lambda
+# Extension (`PARAMETERS_SECRETS_EXTENSION_HTTP_PORT`, `SECRETS_MANAGER_TTL`).
+# `DB_PASSWORD_SECRET_ARN` is the recommended pattern, not a leak.  A name hit
+# that is metadata still falls through to the value-shape check below, so an
+# access key pasted into a `*_ARN` variable is still reported.
+lambda_secret_name_is_metadata() {
+  local k=${1^^}
+  case $k in
+    PARAMETERS_SECRETS_EXTENSION_* | SECRETS_MANAGER_* | SSM_PARAMETER_STORE_* | SECRETS_EXTENSION_*) return 0 ;;
+  esac
+  [[ $k =~ _(ARN|ARNS|NAME|ID|PATH|PARAM|PARAMETER|PARAMETER_NAME|SSM_PATH|TTL|TTL_SECONDS|SECONDS|MINUTES|DAYS|LENGTH|MIN_LENGTH|PORT|ENABLED|REGION|ENDPOINT|URL|URI|TABLE|TABLE_NAME|BUCKET|PROVIDER|TYPE|VERSION|ROTATION_DAYS)$ ]] && return 0
+  return 1
+}
+
+# `lambda_secret_value_is_reference VALUE` - true for a value that REFERS to
+# a secret rather than being one: empty, an ARN, an SSM-style `/path`, a
+# number, a boolean, a CloudFormation `{{resolve:...}}` or a URL with no
+# userinfo.
+lambda_secret_value_is_reference() {
+  local v=$1
+  [[ -z $v ]] && return 0
+  case $v in
+    arn:aws:* | arn:aws-*:* | /*) return 0 ;;
+    true | false | TRUE | FALSE | True | False) return 0 ;;
+    '{{resolve:'*) return 0 ;;
+  esac
+  [[ $v =~ ^[0-9]+$ ]] && return 0
+  [[ $v =~ ^https?://[^@]*$ ]] && return 0
+  return 1
+}
+
 # `lambda_secret_value_shape VALUE` - the small, structural, NAME-INDEPENDENT
 # set of value shapes this check also matches directly rather than through
 # the keyword file (lambda-secret-env-keywords.txt's own header says why:

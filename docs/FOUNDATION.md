@@ -6375,7 +6375,7 @@ shipped here before.
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 9 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
