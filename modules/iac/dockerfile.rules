@@ -113,6 +113,17 @@ files: Dockerfile
 files: Dockerfile.*
 files: *.dockerfile
 context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+# Not hardcoded literals, each anchored to the line's first ENV/ARG
+# assignment (the only one the pattern matches): an empty default
+# (`ARG NPM_TOKEN=""`), a `$VAR` reference (`ENV NPM_TOKEN=$NPM_TOKEN` passes a
+# build value through rather than spelling one), a metadata name suffix, a URL
+# with no userinfo, a number or boolean, and an absolute path.
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(""|'')([[:space:]]|$)
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*["']?\$
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]*(PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Za-z0-9_]*_(FILE|PATH|DIR|NAME|URL|URI|ARN|ID|TTL|EXPIRY|EXPIRES|ENABLED|TYPE|ISSUER|AUDIENCE|ENDPOINT|LENGTH|MINUTES|SECONDS|DAYS|HOURS|REF)[[:space:]]*=
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*["']?https?://[^@[:space:]"']*["']?([[:space:]]|$)
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*["']?([0-9]+|true|false)["']?([[:space:]]|$)
+context-deny: ^(ENV|ARG)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*["']?/(run|var|etc|opt|vault|secrets|mnt|home|usr|tmp|data|srv|certs|keys|config)/
 context-window: 0
 tags: static
 remediation: Remove the literal from the Dockerfile and rotate it immediately - both ENV and ARG

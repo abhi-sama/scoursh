@@ -94,11 +94,24 @@ _iac_run_module() {
       # walk's exit status, and what a lost worker means for the run.
       iac_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
       if (( SCOURSH_WALK_FAILED == 0 )); then
+        # Under `scan.sh all`, drop IaC secret findings SAST-SEC-* already
+        # reports on the same line (modules/iac/parse.sh's own header says
+        # why), and withhold coverage for the checks that lost one.
+        iac_dedup_sast_secrets "$SCOURSH_RUN_DIR"
+        local -a covered_ids=()
+        local cid dd skip
+        for cid in "${ids[@]+"${ids[@]}"}"; do
+          skip=0
+          for dd in "${IAC_DEDUPED_IDS[@]+"${IAC_DEDUPED_IDS[@]}"}"; do
+            [[ $dd == "$cid" ]] && skip=1
+          done
+          (( skip )) || covered_ids+=("$cid")
+        done
         # docs/STEP7-STATE-PLAN.md STATE-02: sast_record_coverage
         # (modules/sast/engine.sh) is reused unchanged, exactly like
         # sast_index_checks/sast_evaluate_gate above - reached only when
         # iac_scan_tree returned without dying AND every worker finished.
-        sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+        sast_record_coverage "$SCOURSH_PATH_ROOT" "${covered_ids[@]+"${covered_ids[@]}"}"
       else
         # `_sast_record_walk_failure` lives in modules/sast/engine.sh, beside
         # `_sast_walk_parallel` itself, rather than in either run.sh: a

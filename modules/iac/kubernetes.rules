@@ -250,13 +250,22 @@ remediation: Set securityContext.runAsNonRoot to true (and pair it with a non-ze
   unprivileged one.
 references: CWE-269
 
+# Anchored on the secret-NAMED `name:` line, with the literal `value:` as the
+# requirement, never the other way round.  The window is symmetric, so a rule
+# anchored on `value:` and requiring a secret name within one line was
+# satisfied by the NEXT env entry's name: `value: "info"` under LOG_LEVEL was
+# reported because GITHUB_TOKEN (sourced from valueFrom) came next.  Anchored
+# on the name, a previous entry's `value:` can still satisfy the requirement,
+# but then this entry's own `valueFrom` on the next line denies it.  A
+# metadata-suffixed name (`*_PASSWORD_FILE`, `*_TOKEN_PATH`) is a path or a
+# setting, not a credential.
 id: IAC-K8S-SECRET_ENV-01
 title: Plaintext credential-shaped literal in a container environment variable
 severity: critical
 confidence: medium
 cwe: CWE-798
 owasp: A07:2025
-pattern: ^\s*"?value"?\s*:\s*["'][^"'[:space:]]{4,}["']\s*,?\s*$
+pattern: ^\s*-?\s*"?name"?\s*:\s*"?[A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)[A-Za-z0-9_]*"?\s*,?\s*(#.*)?$
 dialect: ere
 files: *.yaml
 files: *.yml
@@ -269,9 +278,11 @@ exclude-files: docker-compose.*.yml
 exclude-files: docker-compose.*.yaml
 exclude-files: compose.*.yml
 exclude-files: compose.*.yaml
-context-require: "?name"?\s*:\s*"?[A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)[A-Za-z0-9_]*"?
+context-require: ^\s*"?value"?\s*:\s*["'][^"'[:space:]]{4,}["']\s*,?\s*$
 context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy)
 context-deny: \{\{
+context-deny: valueFrom
+context-deny: (PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)S?[A-Za-z0-9_]*_(FILE|PATH|DIR|NAME|URL|URI|ARN|ID|TTL|EXPIRY|EXPIRES|ENABLED|TYPE|ISSUER|AUDIENCE|ENDPOINT|LENGTH|MINUTES|SECONDS|DAYS|HOURS|REF)"?\s*,?\s*(#.*)?$
 context-window: 1
 tags: static
 remediation: Remove the literal value and source it via valueFrom.secretKeyRef (backed by

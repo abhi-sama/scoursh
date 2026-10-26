@@ -1041,5 +1041,151 @@ assert_not_contains "$(cat "$W/par-j1/run.json")" 'single_worker_no_parallel_sca
 assert_contains "$(cat "$W/par-j1/run.json")" 'module=iac reason=single_worker jobs=1' \
   'and a single-worker run still declares itself one'
 
+# =============================================================================
+printf -- '\n-- secret rules: references, paths and placeholders are not plaintext secrets --\n'
+# =============================================================================
+# tests/fixtures/iac-secret-fp/ carries shapes the four IaC secret rules
+# reported as plaintext credentials on real public repositories - the
+# Docker-recommended `*_PASSWORD_FILE=/run/secrets/...`, a `$VAR` pass-through,
+# a Helm template variable, a commented doc placeholder, and a Kubernetes
+# entry blamed for the NEXT entry's secret name - each beside a real literal
+# the rule must keep.  Every tag is checked against the shipped packs AND the
+# packs as they stood before the fix, so "reported before, quiet now" is
+# measured rather than claimed.
+IACFP=$ROOT/tests/fixtures/iac-secret-fp
+IACFP_PREFIX_COMMIT=703bd14
+IACFP_PACKS='docker-compose dockerfile kubernetes helm'
+
+_scan_rules_file() {
+  local rules=$1 fixture=$2 rundir=$3
+  rm -rf "$rundir"
+  run_init "$rundir"
+  SCOURSH_RUN_ID=iac-suite
+  SCOURSH_PATH_ROOT=$(path_root_cell "$fixture")
+  SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$fixture")
+  export SCOURSH_RUN_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+  SCOURSH_IAC_MAX_MATCHES_PER_FILE=200
+  CHECKS_REGISTRY_SETS=(fpset)
+  records_load "$rules" pattern-rule fpset >/dev/null
+  sast_index_checks
+  local -a ids=()
+  local n i
+  n=$(records_count fpset)
+  for (( i = 0; i < n; i++ )); do ids+=("$(records_id fpset "$i")"); done
+  iac_scan_tree "$fixture" "${ids[@]+"${ids[@]}"}"
+  findings_merge "$rundir"
+}
+# "relpath:line<TAB>check_id" for every secret-rule finding of every pack.
+_iacfp_hits() {
+  local dir=$1 tag=$2 pack line
+  for pack in $IACFP_PACKS; do
+    _scan_rules_file "$dir/$pack.rules" "$IACFP" "$W/iacfp-$tag-$pack"
+    [[ -s $W/iacfp-$tag-$pack/findings.fields ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      case ${_DF[check_id]} in *SECRET*) ;; *) continue ;; esac
+      printf '%s:%s\t%s\n' "${_DF[loc_path]}" "${_DF[loc_line]}" "${_DF[check_id]}"
+    done <"$W/iacfp-$tag-$pack/findings.fields"
+  done
+}
+# "TAG<TAB>relpath:line"; a tag on a line that says "is the line above" names
+# the line before it (a Dockerfile has no trailing comments).
+_iacfp_tags() {
+  local f rel ln rest tag
+  while IFS= read -r f; do
+    rel=tests/fixtures/iac-secret-fp/${f#"$IACFP"/}
+    while IFS=: read -r ln rest; do
+      tag=$(printf '%s' "$rest" | grep -oE '\[\[[NP][0-9]+\]\]' | head -1 | tr -d '[]')
+      [[ -n $tag ]] || continue
+      [[ $rest == *'is the line above'* ]] && ln=$(( ln - 1 ))
+      printf '%s\t%s:%s\n' "$tag" "$rel" "$ln"
+    done < <({ grep -nE '\[\[[NP][0-9]+\]\]' "$f" 2>/dev/null || true; })
+  done < <(find "$IACFP" -type f ! -name README.md | LC_ALL=C sort)
+}
+# Called only through truth(), which shellcheck cannot follow.
+# shellcheck disable=SC2329
+_iacfp_hit() { cut -f1 "$1" | LC_ALL=C grep -qxF "$2"; }
+truth() { if "$@"; then printf 0; else printf 1; fi; }
+
+_iacfp_tags >"$W/iacfp-tags"
+_iacfp_hits "$ROOT/modules/iac" new >"$W/iacfp-hits-new"
+_iacfp_before=0
+if git -C "$ROOT" cat-file -e "$IACFP_PREFIX_COMMIT:modules/iac/kubernetes.rules" 2>/dev/null; then
+  mkdir -p "$W/iacfp-before-rules"
+  for _p in $IACFP_PACKS; do
+    git -C "$ROOT" show "$IACFP_PREFIX_COMMIT:modules/iac/$_p.rules" >"$W/iacfp-before-rules/$_p.rules"
+  done
+  _iacfp_hits "$W/iacfp-before-rules" old >"$W/iacfp-hits-old"
+  _iacfp_before=1
+else
+  printf '  SKIPPED  the pre-fix packs (%s) are not in this clone'"'"'s history;\n' "$IACFP_PREFIX_COMMIT"
+  printf '           the "before" half of this section could NOT be checked.\n'
+fi
+t_case 'the IaC false-positive control tree is wired in'
+assert_eq 21 "$(wc -l <"$W/iacfp-tags" | tr -d ' ')" \
+  'all 17 negative and 4 positive controls reached the tag map'
+while IFS=$'\t' read -r _tag _loc; do
+  case $_tag in
+    N*)
+      t_case "$_tag: $_loc is not reported as a plaintext secret"
+      assert_eq 1 "$(truth _iacfp_hit "$W/iacfp-hits-new" "$_loc")" "$_tag at $_loc stays quiet"
+      ;;
+    P*)
+      t_case "$_tag: $_loc is still reported"
+      assert_eq 0 "$(truth _iacfp_hit "$W/iacfp-hits-new" "$_loc")" "$_tag at $_loc is reported - a miss is a false negative"
+      ;;
+  esac
+  (( _iacfp_before )) || continue
+  # The Kubernetes rule used to report the `value:` line and now reports the
+  # secret-named `name:` line, so its "before" is checked per file below.
+  [[ $_loc == */k8s/* ]] && continue
+  assert_eq 0 "$(truth _iacfp_hit "$W/iacfp-hits-old" "$_loc")" "$_tag was reported by the packs before the fix"
+done <"$W/iacfp-tags"
+if (( _iacfp_before )); then
+  t_case 'kubernetes: the old anchoring blamed every entry next to a secret name'
+  assert_eq 4 "$(grep -c '/k8s/.*IAC-K8S-SECRET_ENV-01' "$W/iacfp-hits-old" || true)" \
+    'before the fix, four value lines were reported, three of them benign (LOG_LEVEL, a _FILE path, an issuer URL)'
+fi
+assert_eq 1 "$(grep -c '/k8s/.*IAC-K8S-SECRET_ENV-01' "$W/iacfp-hits-new" || true)" \
+  'now only the real DB_PASSWORD literal is reported, on its name line'
+
+t_case 'scan.sh all: an IaC secret on a line SAST-SEC-* already reports is reported once'
+# Under `all` the secrets pack reads every file, so a compose secret used to
+# be two findings for one credential.  The IaC copy is dropped, counted in
+# run.json, and its check claims no coverage that run (so a prior `scan.sh
+# iac` copy of the finding reads unknown, never fixed).
+_ALLOUT=$W/run-all-dedup
+rm -rf "$_ALLOUT"
+env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
+  bash "$ROOT/scan.sh" all --path "$IACFP/compose" --format json --out "$_ALLOUT" >/dev/null 2>&1 || true
+_all_ids=$(python3 -I -c '
+import json, sys
+for l in open(sys.argv[1]):
+    l = l.strip()
+    if l:
+        f = json.loads(l); loc = f.get("location") or {}
+        print("%s@%s" % (f["check_id"], loc.get("line")))
+' "$_ALLOUT/findings.jsonl" 2>/dev/null || true)
+assert_contains "$_all_ids" 'SAST-SEC-' 'the SAST secrets pack reports the compose literal'
+assert_not_contains "$_all_ids" 'IAC-COMPOSE-PLAINTEXT_SECRET-01@8' \
+  'and the IaC rule does not report the same line again - fails if the dedup pass is skipped'
+assert_contains "$(cat "$_ALLOUT/run.json")" 'reason=dedup_sast_secret count=1 checks=[IAC-COMPOSE-PLAINTEXT_SECRET-01]' \
+  'the drop is counted, never silent'
+_all_state=$GATE_ISOLATED_ROOT/state/$(basename -- "$_ALLOUT").json
+assert_not_contains "$(cat "$_all_state" 2>/dev/null)" 'IAC-COMPOSE-PLAINTEXT_SECRET-01' \
+  'the deduplicated check claims no coverage this run - fails if a prior iac-only copy of the finding could be read as fixed'
+assert_contains "$(cat "$_all_state" 2>/dev/null)" 'IAC-COMPOSE-PRIVILEGED-01' \
+  'while the other compose checks keep theirs - sanity that the state file was read at all'
+
+t_case 'scan.sh iac alone still reports the compose literal'
+_IACOUT=$W/run-iac-alone
+rm -rf "$_IACOUT"
+env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
+  bash "$ROOT/scan.sh" iac --path "$IACFP/compose" --format json --out "$_IACOUT" >/dev/null 2>&1 || true
+assert_contains "$(cat "$_IACOUT/findings.jsonl")" 'IAC-COMPOSE-PLAINTEXT_SECRET-01' \
+  'with no SAST findings in the run there is nothing to deduplicate against'
+unset _tag _loc _p _iacfp_before _ALLOUT _IACOUT _all_ids _all_state
+
 t_summary 'iac' || FAILED=1
 exit "${FAILED:-0}"

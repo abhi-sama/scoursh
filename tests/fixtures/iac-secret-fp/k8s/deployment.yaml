@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: registry.invalid/api:1.4.2
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+            - name: GITHUB_TOKEN  # [[N11]]
+              valueFrom:
+                secretKeyRef:
+                  name: gh
+                  key: token
+            - name: DB_PASSWORD_FILE  # [[N12]]
+              value: "/opt/app/secrets/db-password"
+            - name: TOKEN_ISSUER  # [[N13]]
+              value: "https://auth.vendor.invalid"
+            - name: DB_PASSWORD  # [[P03]]
+              value: "Tr0ub4dor3xK"

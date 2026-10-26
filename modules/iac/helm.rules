@@ -106,6 +106,15 @@ dialect: ere
 files: values.yaml
 files: templates/*.yaml
 context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+# Not literals: prose in a comment (`# password: Password for the admin
+# user`), a Go-template variable (`{{- $password := include ... }}` reads as
+# `password:` to the pattern), a `$`-reference, any `{{` template, and the
+# `my-password` docs placeholder.
+context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'\s{][^"'\s]*\s+[^#[:space:]]
+context-deny: \$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=
+context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?\$
+context-deny: \{\{
+context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[Mm][Yy][-_]?([Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Tt][Oo][Kk][Ee][Nn])
 context-window: 0
 tags: static
 remediation: Remove the literal credential from values.yaml/templates and rotate it immediately;
