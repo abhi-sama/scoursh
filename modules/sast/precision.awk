@@ -10,8 +10,8 @@ function lex(s, n,    i,c,p,t,out,mask,q,esc) {
     for (i = 1; i <= length(s); i++) {
         c = substr(s,i,1); p = substr(s,i,2); t = substr(s,i,3)
         if (triple != "") {
-            if (t == triple) { out = out "   "; mask = mask "   "; triple = ""; i += 2 }
-            else { out = out " "; mask = mask " " }; continue
+            if (t == triple) { out = out (triple_data ? t : "   "); mask = mask "   "; triple = ""; i += 2 }
+            else { out = out (triple_data ? c : " "); mask = mask " " }; continue
         }
         if (block) {
             if (p == "*/") { block = 0; out = out "  "; mask = mask "  "; i++ }
@@ -26,9 +26,10 @@ function lex(s, n,    i,c,p,t,out,mask,q,esc) {
         }
         if (python && (t == "\"\"\"" || t == "\047\047\047")) {
             # Triple strings used as an expression are data, not docstrings.
-            # Preserve them in calls/assignments; only standalone docstrings
-            # can be removed without changing the meaning of a sink.
-            if (trim(out) == "") { triple = t; out = out "   "; mask = mask "   "; i += 2; continue }
+            # An argument can start on its own continuation line. Preserve its
+            # literal bytes while masking its contents from code candidates.
+            triple = t; triple_data = (trim(out) != "" || python_depth > 0)
+            out = out (triple_data ? t : "   "); mask = mask "   "; i += 2; continue
         }
         if ((!python && p == "//") || (python && c == "#")) {
             out = out blank(substr(s,i)); mask = mask blank(substr(s,i)); break
@@ -36,7 +37,11 @@ function lex(s, n,    i,c,p,t,out,mask,q,esc) {
         if (!python && p == "/*") { block = 1; out = out "  "; mask = mask "  "; i++; continue }
         out = out c
         if (c == "\"" || c == "\047" || c == "`") { q = c; mask = mask " " }
-        else mask = mask c
+        else {
+            mask = mask c
+            if (python && c ~ /[([{]/) python_depth++
+            else if (python && c ~ /[)\]}]/ && python_depth > 0) python_depth--
+        }
     }
     clean[n] = out; bare[n] = mask
 }
