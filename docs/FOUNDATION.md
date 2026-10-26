@@ -279,8 +279,14 @@ windows.
 Per-file matches are capped by `max_matches_per_file` (default 200) and an overflow emits an `info`
 finding plus a `run.json` record, because §15 forbids silently overstating coverage and a silent
 truncation does exactly that.
-Every false-positive complaint against a rule is now fixable as a data change (add a `context-deny`),
-which is what §16 promises.
+**Precision amendment (2026-10-26).** A numeric window cannot prove argument or object
+ownership. The native non-secret checks now apply the local lexical/call and IaC ownership
+classifiers documented in `docs/NATIVE-PRECISION.md` after candidate matching. Context fields
+retain their frozen meaning; checks whose guards need ownership use the classifier instead
+of a widened deny window. This costs two offline awk readers, no new runtime dependency,
+record key, check id or fingerprint schema. Secrets bypass source lexical filtering.
+Unknown deployment/source semantics can remain informational review entries with no asserted
+CWE/OWASP impact and zero-impact CVSS; a safe proof alone removes a candidate.
 
 ## Tension 4 - `set -Eeuo pipefail` versus a rule engine
 
@@ -5747,8 +5753,11 @@ Normalisation follows tension 25's frozen Go row exactly - the full module path 
 major-version suffix RETAINED, and a trailing `+incompatible` version suffix STRIPPED before lookup -
 each direction pinned by its own test against the naive misreading, and the raw pinned version is kept
 visible in the finding's evidence rather than silently rewritten.
-`replace`/`exclude` directives are NOT resolved: a stated limitation, surfaced at runtime as a
-`reason=go_replace_exclude_directives_not_resolved` coverage_reduction rather than hidden.
+Explicit versioned registry replacements are resolved before lookup, including version-specific
+and wildcard directives. Local replacements and excluded pins have no proven registry coordinate
+and are omitted from advisory matching; the existing
+`reason=go_replace_exclude_directives_not_resolved` coverage reduction is retained because full
+Go module graph/MVS and filesystem replacement resolution remain unsupported.
 It mints `SCA-GO-VULNERABLE_DEP-01` and, like Python and Java, its own `SCA-COV-UNKNOWN_VERSION-01`
 roll-up rather than joining npm/Ruby/PHP's shared one - the same stated cross-ecosystem-merge gap
 recorded above, not a new one.
