@@ -639,18 +639,26 @@ assert_contains "$_k8s_vuln_modules" 'iac' \
   'at least one finding reports module=iac - sanity check that the assertion above is not vacuously true on an empty run'
 
 # ---------------------------------------------------------------------------
-# Scope guards: Helm chart TEMPLATES and CloudFormation must never contribute
-# an IAC-K8S-* finding, even though each fixture below shares the exact same
+# Scope guards: Helm templates must never assert a vulnerability from a
+# computed guard; CloudFormation is outside the Kubernetes domain. Both share
 # files glob (*.yaml/*.yml/*.json) that a real Kubernetes manifest uses - the
 # ticket's own acceptance criteria call this out as the case a files-glob-only
 # distinction cannot cover. Scanned as two SEPARATE directories (not one
 # combined tests/fixtures/iac/ tree) so a failure names which shape tripped.
 # ---------------------------------------------------------------------------
 _scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/helm" "$W/run-k8s-helm-guard"
-_k8s_helm_found=$(_ids_found "$W/run-k8s-helm-guard")
-t_case 'kubernetes.rules: zero IAC-K8S-* findings on the Helm-template-shaped fixture ({{ }} directives)'
+_k8s_helm_found=''
+while IFS= read -r _k8s_review_line; do
+  finding_decode "$_k8s_review_line"
+  if [[ ${_DF[base_severity]} != info ]]; then _k8s_helm_found+="${_DF[check_id]}"; fi
+  assert_eq none "${_DF[cwe]}" 'a computed Helm guard has no asserted CWE impact'
+  assert_eq 0.0 "${_DF[_cvss_score]}" 'a computed Helm guard has no asserted CVSS impact'
+done <"$W/run-k8s-helm-guard/findings.fields"
+t_case 'kubernetes.rules: no vulnerability claim on computed Helm guards'
 assert_not_contains "$_k8s_helm_found" 'IAC-K8S-' \
-  'no IAC-K8S-* id fired on the Helm-template fixture - fails if a literal true/false/latest/wildcard token were matched through a {{ ... }} template expression, or if an absence check fired because its guard token was templated rather than literal'
+  'an unknown rendered value is an informational review, never a vulnerability assertion'
+assert_contains "$(cat "$W/run-k8s-helm-guard/meta/coverage_reduction")" configuration_value_requires_review \
+  'the inability to resolve the rendered value is declared, never an implicit clean scan'
 
 _scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/cloudformation" "$W/run-k8s-cfn-guard"
 _k8s_cfn_found=$(_ids_found "$W/run-k8s-cfn-guard")
@@ -1090,7 +1098,9 @@ _iacfp_hits() {
   done
 }
 # "TAG<TAB>relpath:line"; a tag on a line that says "is the line above" names
-# the line before it (a Dockerfile has no trailing comments).
+# the line before it (a Dockerfile has no trailing comments), and one that
+# says "is the line below" the line after it (a Kubernetes `value:` the rule
+# reports cannot carry a trailing comment and still match).
 _iacfp_tags() {
   local f rel ln rest tag
   while IFS= read -r f; do
@@ -1099,6 +1109,7 @@ _iacfp_tags() {
       tag=$(printf '%s' "$rest" | grep -oE '\[\[[NP][0-9]+\]\]' | head -1 | tr -d '[]')
       [[ -n $tag ]] || continue
       [[ $rest == *'is the line above'* ]] && ln=$(( ln - 1 ))
+      [[ $rest == *'is the line below'* ]] && ln=$(( ln + 1 ))
       printf '%s\t%s:%s\n' "$tag" "$rel" "$ln"
     done < <({ grep -nE '\[\[[NP][0-9]+\]\]' "$f" 2>/dev/null || true; })
   done < <(find "$IACFP" -type f ! -name README.md | LC_ALL=C sort)
@@ -1137,9 +1148,6 @@ while IFS=$'\t' read -r _tag _loc; do
       ;;
   esac
   (( _iacfp_before )) || continue
-  # The Kubernetes rule used to report the `value:` line and now reports the
-  # secret-named `name:` line, so its "before" is checked per file below.
-  [[ $_loc == */k8s/* ]] && continue
   assert_eq 0 "$(truth _iacfp_hit "$W/iacfp-hits-old" "$_loc")" "$_tag was reported by the packs before the fix"
 done <"$W/iacfp-tags"
 if (( _iacfp_before )); then
@@ -1148,7 +1156,7 @@ if (( _iacfp_before )); then
     'before the fix, four value lines were reported, three of them benign (LOG_LEVEL, a _FILE path, an issuer URL)'
 fi
 assert_eq 1 "$(grep -c '/k8s/.*IAC-K8S-SECRET_ENV-01' "$W/iacfp-hits-new" || true)" \
-  'now only the real DB_PASSWORD literal is reported, on its name line'
+  'now only the real DB_PASSWORD literal is reported, on its value line'
 
 t_case 'scan.sh all: an IaC secret on a line SAST-SEC-* already reports is reported once'
 # Under `all` the secrets pack reads every file, so a compose secret used to

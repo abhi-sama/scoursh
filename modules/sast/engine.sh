@@ -25,6 +25,7 @@ if [[ -n ${SCOURSH_SAST_ENGINE_SOURCED:-} ]]; then
   return 0
 fi
 SCOURSH_SAST_ENGINE_SOURCED=1
+SCOURSH_SAST_PRECISION_AWK=${BASH_SOURCE[0]%/*}/precision.awk
 
 # `scan_dispatch` resolves modules relative to $SCOURSH_INSTALL_ROOT
 # (lib/checks.sh's own comment on checks_registry_load), which can be a
@@ -496,6 +497,18 @@ _sast_check_is_sensitive() {
 #    §10.3) - pass 1 collects every match with its byte offset in one
 #    scan_match_offsets call, pass 2 evaluates the context window per match.
 # ---------------------------------------------------------------------------
+sast_precision_filter() {
+  local id=$1 relpath=$2 abspath=$3 hits=$4 tmp=$4.precise
+  # Credentials in comments, documentation and tests remain credentials. Never
+  # run lexical/sink exclusions over the secrets lane, including custom rules.
+  if _sast_check_is_sensitive "$id"; then
+    awk -v limit="$SCOURSH_SAST_MAX_MATCHES_PER_FILE" 'NR>limit+1{exit} {print "keep:" $0}' "$hits" >"$tmp" || die 5 'Cannot annotate secret candidates'
+  else
+    awk -v check="$id" -v path="$relpath" -v limit="$SCOURSH_SAST_MAX_MATCHES_PER_FILE" -f "$SCOURSH_SAST_PRECISION_AWK" "$abspath" "$hits" >"$tmp" || die 5 'Native precision analysis failed'
+  fi
+  mv "$tmp" "$hits"
+}
+
 sast_scan_file() {
   local set=$1 idx=$2 relpath=$3 abspath=$4
   local pattern id dialect
@@ -523,21 +536,23 @@ sast_scan_file() {
     return 0
   fi
 
-  local total='' ln off text count=0 overflow=0
+  sast_precision_filter "$id" "$relpath" "$abspath" "$hits"
+  local total='' precision ln off text count=0 overflow=0
   # off is read to consume the byte-offset field so `text` lands in the right
   # position; the ordinal itself is computed inside finding_emit, exactly the
   # same shape as tests/e2e/fixture-scan.sh's own scan_tree.
   # shellcheck disable=SC2034
-  while IFS=: read -r ln off text; do
+  while IFS=: read -r precision ln off text; do
     [[ -n $ln ]] || continue
     count=$(( count + 1 ))
     if (( count > SCOURSH_SAST_MAX_MATCHES_PER_FILE )); then
       overflow=1
       break
     fi
+    [[ $precision != drop ]] || continue
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$abspath")
     if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total" "$text"; then
-      _sast_emit_finding "$set" "$idx" "$relpath" "$ln" "$text"
+      _sast_emit_finding "$set" "$idx" "$relpath" "$ln" "$text" "$precision"
     fi
   done <"$hits"
   rm -f "$hits"
@@ -576,6 +591,23 @@ _sast_emit_finding() {
   id=$(records_id "$set" "$idx")
   finding_new
   finding_from_record "$set" "$idx"
+  if [[ ${6:-keep} == review ]]; then
+    local review_title='Static code pattern has unverified security use or exposure'
+    case $id in
+      SAST-CRY-WEAK_HASH-01) review_title='MD5 or SHA1 referenced; confirm whether it protects security-sensitive data' ;;
+      SAST-CRY-HARDCODED_IV-01) review_title='Constant resembles an IV; confirm its cryptographic use' ;;
+      SAST-CRY-TLS_VERIFY_DISABLED-01 | SAST-GO-TLS_SKIP_VERIFY-01) review_title='Verification override observed; confirm TLS runtime use' ;;
+      SAST-PY-FLASK_DEBUG-01) review_title='Debug flag is true; confirm Flask runtime and deployment use' ;;
+      SAST-PY-JINJA_AUTOESCAPE_FALSE-01) review_title='Autoescape flag is false; confirm HTML response use' ;;
+      SAST-JS-TEMPLATE_LITERAL_SQL-01) review_title='SQL template tag; verify parameter binding in its implementation' ;;
+      SAST-INJ-CRLF_HEADER-01) review_title='Request ID sent in a response header; confirm its source and validation' ;;
+      SAST-INJ-HOST_HEADER_TRUST-01) review_title='Host header read; confirm any use in a security-sensitive URL' ;;
+      SAST-PY-EVAL_EXEC-01 | SAST-JS-EVAL-01) review_title='Compiled code executed; confirm the code source is trusted' ;;
+    esac
+    finding_mark_review "$review_title"
+    finding_set remediation 'This native pattern does not establish untrusted input, a security-sensitive use, or deployment exposure. Inspect the owning call and its input/deployment before treating it as a vulnerability. Use an offline semantic adapter for analysis beyond local lexical proofs.'
+    run_record coverage_reduction "module=sast checks=[$id] reason=native_pattern_requires_review file=$relpath"
+  fi
   finding_set module sast
   finding_set loc_path "$relpath"
   finding_set loc_line "$ln"
@@ -595,6 +627,9 @@ _sast_emit_finding() {
   else
     finding_set_match "$text"
     finding_set_evidence "$text"
+    if [[ $text =~ ^[A-Za-z_][A-Za-z0-9_]{19,}$ ]]; then
+      finding_set remediation "$(finding_get remediation) Evidence placeholders name the conservative redaction rule that matched; they do not establish a credential. Read the source location and check title to identify the code signature."
+    fi
   fi
   finding_emit
 }

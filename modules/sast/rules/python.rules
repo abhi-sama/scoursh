@@ -2,13 +2,8 @@
 # eval/exec, pickle, yaml.load, subprocess shell=True, os.system, Flask
 # debug=True, Jinja autoescape=False.
 #
-# SAST-PY-YAML_UNSAFE_LOAD-01 closes docs/FOUNDATION.md finding F4: this is
-# the SHIPPED equivalent of rules/RULE-FORMAT.md §12.2's worked example, and
-# carries `context-window: 0` per F4's frozen direction, not the `2` the old
-# (defective) worked example used - a coincidental SafeLoader mention up to
-# two lines away must never suppress a genuine, unrelated yaml.load() call.
-# See tests/suites/sast.sh "F4 regression" for the test that fails under the
-# window-2 reading.
+# YAML safe-loader guards use the current balanced call in precision.awk,
+# including multiline arguments. A neighboring safe call never guards another.
 
 id: SAST-PY-EVAL_EXEC-01
 title: Use of eval() or exec() on request-derived data
@@ -52,8 +47,6 @@ pattern: \byaml\.load\s*\(
 dialect: ere
 files: *.py
 files: *.pyi
-context-deny: (SafeLoader|CSafeLoader|BaseLoader|yaml\.safe_load)
-context-window: 0
 tags: static
 tags: quick
 severity-floor: medium

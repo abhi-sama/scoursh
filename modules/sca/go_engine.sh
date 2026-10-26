@@ -12,13 +12,10 @@
 # ecosystem." modules/sca/run.sh is the one shared file that changes for this
 # ticket; this one is new and entirely additive.
 #
-# SCOPE (this ticket): go.mod and go.sum only. `replace`/`exclude` directives
-# are not resolved - STATED LIMITATION, this repository's own convention for
-# a cost paid deliberately rather than hidden: a `replace` that redirects a
-# module to a fork or a local filesystem path is invisible to this parser,
-# which reports the pre-`replace` `require` line as pinned, exactly the same
-# class of limitation modules/sca/engine.sh's own npm hoisting heuristic
-# states for itself.
+# Scope: go.mod/go.sum, with explicit registry replacements applied by go-mod.awk.
+# Local replacements/excluded pins have no proven registry coordinate; retain the
+# declared replacement/exclusion coverage reduction instead of matching the old
+# require version. Full module graph selection is not implemented.
 #
 # shellcheck shell=bash
 
@@ -152,28 +149,8 @@ _sca_go_mod_require_line() {
 # direct|transitive" row per `require` entry, covering both the single-line
 # form (`require module version`) and the parenthesised block form.
 _sca_go_parse_mod() {
-  local file=$1 line t in_block=0
-  while IFS= read -r line || [[ -n $line ]]; do
-    t="${line#"${line%%[![:space:]]*}"}"
-    t="${t%"${t##*[![:space:]]}"}"
-    [[ -n $t ]] || continue
-    if (( in_block )); then
-      if [[ $t == ')'* ]]; then
-        in_block=0
-        continue
-      fi
-      _sca_go_mod_require_line "$t" || true
-      continue
-    fi
-    case $t in
-      'require ('*)
-        in_block=1
-        ;;
-      'require '*)
-        _sca_go_mod_require_line "${t#'require '}" || true
-        ;;
-    esac
-  done <"$file"
+  local file=$1
+  awk -f "${BASH_SOURCE[0]%/*}/go-mod.awk" "$file"
 }
 
 # ---------------------------------------------------------------------------

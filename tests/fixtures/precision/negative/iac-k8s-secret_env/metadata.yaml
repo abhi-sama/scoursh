@@ -1,0 +1,3 @@
+fields:
+ - name: TOKEN_PATH
+   value: "/run/secrets/access_token"

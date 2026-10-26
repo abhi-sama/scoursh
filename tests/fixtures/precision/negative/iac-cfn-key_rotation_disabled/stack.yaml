@@ -1,0 +1,19 @@
+Resources:
+ R:
+  Type: AWS::KMS::Key
+  Properties:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   EnableKeyRotation: true

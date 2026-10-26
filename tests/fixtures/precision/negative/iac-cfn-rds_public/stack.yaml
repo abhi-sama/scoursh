@@ -1,0 +1,6 @@
+Resources:
+ R:
+  Type: AWS::RDS::DBInstance
+  Metadata:
+   Documentation: |
+    PubliclyAccessible: true

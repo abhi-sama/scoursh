@@ -415,11 +415,15 @@ _sca_parse_npm_lock_v2v3() {
   local file=$1
   local -a stack=()
   local -A root_direct=()
-  local dep_map_key='' depth key kind value
+  local dep_map_key='' depth key kind value entry_name='' entry_ver='' path
   while IFS=$'\x1f' read -r depth key kind value; do
     case $kind in
       open)
         stack[depth]=$key
+        if (( depth == 1 )) && [[ ${stack[0]:-} == packages ]]; then
+          entry_name=''
+          entry_ver=''
+        fi
         if (( depth == 2 )) && [[ ${stack[0]:-} == packages && ${stack[1]:-} == '' ]]; then
           case $key in
             dependencies | devDependencies | optionalDependencies | peerDependencies)
@@ -430,6 +434,17 @@ _sca_parse_npm_lock_v2v3() {
         fi
         ;;
       close)
+        if (( depth == 1 )) && [[ ${stack[0]:-} == packages && -n $entry_ver ]]; then
+          path=${stack[1]:-}
+          if [[ -n $path ]]; then
+            _sca_npm_pkgpath_info "$path"
+            local installed=$_SCA_PKGNAME status=transitive
+            if (( _SCA_PKG_TOPLEVEL )) && [[ -n ${root_direct[$installed]:-} ]]; then status=direct; fi
+            # Alias slots describe installation/directness, not package identity.
+            # Buffer until close: npm permits name after version as well as before.
+            printf '%s\x1f%s\x1f%s\n' "${entry_name:-$installed}" "$entry_ver" "$status"
+          fi
+        fi
         # MEASURED (bash 5.3.9, this host): a bare `(( cond )) && stmt`
         # statement, in a `case` arm that shares its enclosing `while read`
         # loop with ANOTHER arm that calls a plain function (the `scalar`
@@ -447,18 +462,11 @@ _sca_parse_npm_lock_v2v3() {
       scalar)
         if (( depth == 3 )) && [[ -n $dep_map_key ]]; then
           root_direct[$key]=1
-        elif (( depth == 2 )) && [[ ${stack[0]:-} == packages && $key == version ]]; then
-          local path=${stack[1]:-}
-          if [[ -n $path ]]; then
-            local ver
-            ver=$(_sca_json_scalar_str "$value")
-            _sca_npm_pkgpath_info "$path"
-            if (( _SCA_PKG_TOPLEVEL )) && [[ -n ${root_direct[$_SCA_PKGNAME]:-} ]]; then
-              printf '%s\x1f%s\x1fdirect\n' "$_SCA_PKGNAME" "$ver"
-            else
-              printf '%s\x1f%s\x1ftransitive\n' "$_SCA_PKGNAME" "$ver"
-            fi
-          fi
+        elif (( depth == 2 )) && [[ ${stack[0]:-} == packages ]]; then
+          case $key in
+            version) entry_ver=$(_sca_json_scalar_str "$value") ;;
+            name) entry_name=$(_sca_json_scalar_str "$value") ;;
+          esac
         fi
         ;;
     esac
@@ -1840,15 +1848,20 @@ _sca_req_strip_extras() {
 # one recording which entries were declared by name.
 #
 # Skips `-r`/`-e`/`--flag` option lines and VCS/URL/local-path requirements
-# (no static exact version); drops a trailing environment marker
-# (`; python_version >= "3.8"`, discarded rather than evaluated - the
-# conservative "never silently narrow coverage" direction this file's other
-# stated limitations already take, since evaluating it could make a real
-# vulnerable pin disappear from the report on the wrong interpreter).  A
-# `--hash=...` continuation line is not modelled (out of scope: fixture-scale,
-# no fixture in this suite uses one).
+# (no static exact version). Environment markers are never evaluated on the
+# scanning host. Only the target-independent proof below removes a pin;
+# possible/unknown conditions remain candidates (conditional installation review).
+# Hash continuation syntax is not modelled by this text reader.
+_sca_marker_impossible() {
+  # A deliberately small, target-independent proof. Never evaluate markers on
+  # the scanning host. Unknown syntax, OR, or a possible version stays in scope.
+  local marker=$1
+  local impossible_re="^[[:space:]]*(python_version|python_full_version)[[:space:]]*<[[:space:]]*['\"]0([.]0)*['\"][[:space:]]*$"
+  [[ $marker =~ $impossible_re ]]
+}
+
 sca_parse_requirements_txt() {
-  local file=$1 line t name version rest
+  local file=$1 keep_markers=${2:-false} line t name version rest marker
   while IFS= read -r line || [[ -n $line ]]; do
     t=$line
     t="${t#"${t%%[![:space:]]*}"}"
@@ -1856,7 +1869,14 @@ sca_parse_requirements_txt() {
     [[ -n $t ]] || continue
     [[ $t == \#* ]] && continue
     [[ $t == -* ]] && continue
-    t=${t%%;*}
+    marker=''
+    if [[ $t == *';'* ]]; then
+      marker=${t#*;}
+      marker="${marker#"${marker%%[![:space:]]*}"}"
+      if _sca_marker_impossible "$marker"; then continue; fi
+      # Conditional pins remain candidates, independent of this host.
+      t=${t%%;*}
+    fi
     t="${t%"${t##*[![:space:]]}"}"
     [[ -n $t ]] || continue
     case $t in
@@ -1875,7 +1895,11 @@ sca_parse_requirements_txt() {
     fi
     name="${name%"${name##*[![:space:]]}"}"
     [[ -n $name ]] || continue
-    printf '%s\x1f%s\x1funknown\n' "$name" "$version"
+    if [[ $keep_markers == true ]]; then
+      printf '%s\x1f%s\x1funknown\x1f%s\n' "$name" "$version" "$marker"
+    else
+      printf '%s\x1f%s\x1funknown\n' "$name" "$version"
+    fi
   done <"$file"
 }
 
@@ -2092,7 +2116,7 @@ sca_parse_pipfile_lock() {
 # separate function rather than a parameterised call into npm's own
 # (this ticket's scope line: do not modify section 9).
 _sca_py_emit_finding() {
-  local direct=$1 lockfile_rel=$2 row=$3
+  local direct=$1 lockfile_rel=$2 row=$3 marker=${4:-}
   local eco pkg ver advisory sev fixed
   local marked=${row//$'\t'/$'\x1f'}
   IFS=$'\x1f' read -r eco pkg ver advisory sev fixed <<<"$marked"
@@ -2106,6 +2130,9 @@ _sca_py_emit_finding() {
   finding_set check_id SCA-PY-VULNERABLE_DEP-01
   finding_set module sca
   finding_set title "python: $pkg@$ver is vulnerable ($advisory)"
+  if [[ -n $marker ]]; then
+    finding_set title "python: $pkg@$ver has advisory $advisory; installation is conditional"
+  fi
   finding_set base_severity "$sev"
   finding_set confidence high
   finding_set cwe none
@@ -2133,6 +2160,9 @@ _sca_py_emit_finding() {
   evline+="fixed_versions: ${fixed:-none published}"$'\n'
   evline+="accept_risk_candidate: $accept_risk"$'\n'
   evline+="summary: $summary"
+  if [[ -n $marker ]]; then
+    evline+=$'\n'"environment_marker: $marker"$'\n''applicability: not evaluated on the scanning host; verify the target environment.'
+  fi
   finding_set_evidence "$evline"
   finding_emit
 }
@@ -2177,7 +2207,7 @@ sca_scan_python_tree() {
   db=$(sca_advisories_db_path)
   sca_advisories_db_readable "$db" || return 0
 
-  local manifest relpath fmt name ver direct hits
+  local manifest relpath fmt name ver direct hits marker
   hits=$SCOURSH_SCRATCH/sca-py-hits.$BASHPID
   while IFS= read -r manifest; do
     [[ -n $manifest ]] || continue
@@ -2191,20 +2221,20 @@ sca_scan_python_tree() {
     relpath=$(sca_relpath "$root" "$manifest")
     run_record checks_run SCA-PY-VULNERABLE_DEP-01
 
-    while IFS=$'\x1f' read -r name ver direct; do
+    while IFS=$'\x1f' read -r name ver direct marker; do
       [[ -n $name ]] || continue
       name=$(sca_pypi_normalize_name "$name")
       if [[ -n $ver ]] && sca_lookup_exact pypi "$name" "$ver" "$db" >"$hits"; then
         while IFS= read -r row; do
           [[ -n $row ]] || continue
-          _sca_py_emit_finding "$direct" "$relpath" "$row"
+          _sca_py_emit_finding "$direct" "$relpath" "$row" "$marker"
         done <"$hits"
       elif sca_package_known pypi "$name" "$db"; then
         sca_rollup_add pypi
       fi
     done < <(
       case $fmt in
-        requirements.txt) sca_parse_requirements_txt "$manifest" ;;
+        requirements.txt) sca_parse_requirements_txt "$manifest" true ;;
         poetry.lock) sca_parse_poetry_lock "$manifest" ;;
         Pipfile.lock) sca_parse_pipfile_lock "$manifest" ;;
       esac
@@ -2513,7 +2543,7 @@ _sca_parse_build_gradle() {
       printf '%s\x1f%s\x1fdirect\n' "$(sca_maven_normalize_name "$g" "$a")" "$v"
       continue
     fi
-  done <"$file"
+  done < <(awk -f "${BASH_SOURCE[0]%/*}/gradle-comments.awk" "$file")
 }
 
 # sca_scan_java_tree ROOT - the module's whole Java slice: walk ROOT for

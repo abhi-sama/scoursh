@@ -1,0 +1,1 @@
+class Streams { void f(Socket s) { ObjectInputStream safe = new ObjectInputStream(new ByteArrayInputStream(new byte[0])); ObjectInputStream unsafe = new ObjectInputStream(s.getInputStream()); safe.readObject(); unsafe.readObject(); } }
