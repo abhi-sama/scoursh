@@ -1127,7 +1127,16 @@ if git -C "$ROOT" cat-file -e "$IACFP_PREFIX_COMMIT:modules/iac/kubernetes.rules
   for _p in $IACFP_PACKS; do
     git -C "$ROOT" show "$IACFP_PREFIX_COMMIT:modules/iac/$_p.rules" >"$W/iacfp-before-rules/$_p.rules"
   done
+  # Those packs ran on an engine with no owning-object layer, and
+  # modules/iac/precision.awk (#360) now drops most of these shapes on its
+  # own, so the "before" scan swaps it for a pass-through, the same one the
+  # SAST secrets lane uses.  The "after" scan above keeps the real layer.
+  printf '%s\n' 'FILENAME != ARGV[1] && ++n <= limit + 1 { print "keep:" $0 }' \
+    >"$W/iacfp-precision-off.awk"
+  _iacfp_precision=$SCOURSH_IAC_PRECISION_AWK
+  SCOURSH_IAC_PRECISION_AWK=$W/iacfp-precision-off.awk
   _iacfp_hits "$W/iacfp-before-rules" old >"$W/iacfp-hits-old"
+  SCOURSH_IAC_PRECISION_AWK=$_iacfp_precision
   _iacfp_before=1
 else
   printf '  SKIPPED  the pre-fix packs (%s) are not in this clone'"'"'s history;\n' "$IACFP_PREFIX_COMMIT"
