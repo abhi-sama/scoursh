@@ -159,21 +159,10 @@ sca_composer_direct_deps() {
 # false for composer.lock, so that walker is not reused here; a bare `{`
 # array-element open is exactly the shape it deliberately does not model.
 #
-# ASSUMPTION (stated, not hidden, same convention engine.sh's own JSON
-# reader states for itself): Composer's own JSON writer emits the identical
-# one-token-per-line, fixed-indent shape npm's writer does - every
-# `composer.lock` on disk, unless hand-minified, keeps this shape.  Under
-# that shape: `"packages":`/`"packages-dev":` sit at indent 4 (inside the
-# document root object), each package object opens/closes at indent 8, and
-# that object's OWN top-level fields ("name", "version", ...) sit at exactly
-# indent 12.  A deeper indent belongs to a NESTED object/array within that
-# package entry (e.g. "source", "require", or "authors", whose own entries
-# are themselves objects with their own "name" field) - restricting to
-# indent 12 exactly is what tells the package's own "name" apart from, say,
-# an "authors" entry's "name" without a full recursive parser, the same
-# indent-discipline convention `_sca_pnpm_importers_direct_deps`
-# (engine.sh) already uses for pnpm-lock.yaml's own nested YAML nested
-# structure.
+# Formatting assumption: one structural token per line and consistent spacing.
+# Derive the indentation unit from the packages array (two/four/etc. spaces),
+# then distinguish entry fields from nested authors/source metadata by depth.
+# Minified JSON remains outside this reader's declared writer-layout support.
 
 # _sca_composer_indent LINE - number of leading space characters.  Mirrors
 # engine.sh's `_sca_pnpm_indent` structurally; kept as this file's own copy
@@ -241,12 +230,13 @@ sca_parse_composer_lock() {
     has_direct_set=1
   done < <(sca_composer_direct_deps "$dir")
 
-  local indent t section='' cur_name='' cur_version='' status cur_norm
+  local indent t section='' cur_name='' cur_version='' status cur_norm unit=0
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     indent=$(_sca_composer_indent "$line")
     t="${line#"${line%%[![:space:]]*}"}"
-    if (( indent == 4 )); then
+    if (( unit == 0 )) && [[ $t == '"packages": ['* || $t == '"packages-dev": ['* ]]; then unit=$indent; fi
+    if (( unit > 0 && indent == unit )); then
       case $t in
         '"packages": ['*) section=packages ;;
         '"packages-dev": ['*) section=packages-dev ;;
@@ -255,7 +245,7 @@ sca_parse_composer_lock() {
       continue
     fi
     [[ -n $section ]] || continue
-    if (( indent == 8 )); then
+    if (( unit > 0 && indent == unit * 2 )); then
       case $t in
         '{'*)
           cur_name=''
@@ -281,7 +271,7 @@ sca_parse_composer_lock() {
       esac
       continue
     fi
-    if (( indent == 12 )); then
+    if (( unit > 0 && indent == unit * 3 )); then
       _sca_composer_kv "$line"
       case $_SCA_COMPOSER_KEY in
         name) cur_name=$_SCA_COMPOSER_VALUE ;;
