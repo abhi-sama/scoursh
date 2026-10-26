@@ -1536,6 +1536,8 @@ run_init "$DREGDUMP"
 
 _test_regdump_garbled_in_trap() {
   SCOURSH_FORMATS=json
+  # Called by run_json_refresh_incomplete, which shellcheck cannot follow.
+  # shellcheck disable=SC2329
   report_registries_dump() { printf 'declare -A _RPTOW_CHECK_OWASP=([X]="A01' >"$1"; }
   trap 'die "$SCOURSH_EXIT_SCOPE" "paranoid: connection outside the allowlist (fixture)"' USR2
   kill -USR2 "$BASHPID"
@@ -1549,6 +1551,8 @@ assert_status "$SCOURSH_EXIT_SCOPE" \
 
 _test_regdump_garbled_plain() {
   SCOURSH_FORMATS=json
+  # Called by run_json_refresh_incomplete, which shellcheck cannot follow.
+  # shellcheck disable=SC2329
   report_registries_dump() { printf 'declare -A _RPTOW_CHECK_OWASP=([X]="A01' >"$1"; }
   die "$SCOURSH_EXIT_SCOPE" 'scope gate refused (fixture)'
 }
