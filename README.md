@@ -619,12 +619,12 @@ Landed 10 of 10.  Outstanding: none.
 
 | Manifests | Status | Parsers | Exercised by |
 | --- | --- | --- | --- |
-| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
-| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-four-ecosystems/requirements.txt` |
-| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
-| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
-| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
-| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/composer-no-manifest/composer.lock` |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca-precision/npm-alias/package-lock.json` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca-precision/python-false-marker/requirements.txt` |
+| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca-precision/go-positive/go.mod` |
+| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca-precision/maven-comment-safe/pom.xml` |
+| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca-precision/ruby-patched-negative/Gemfile.lock` |
+| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca-precision/php-canonical-positive/composer.lock` |
 
 Landed 6 of 6.  Outstanding: none.
 

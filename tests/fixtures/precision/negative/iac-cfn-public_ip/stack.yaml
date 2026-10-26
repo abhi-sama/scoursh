@@ -1,0 +1,6 @@
+Resources:
+ R:
+  Type: AWS::EC2::Instance
+  Metadata:
+   Documentation: |
+    AssociatePublicIpAddress: true

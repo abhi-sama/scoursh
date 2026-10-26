@@ -1,0 +1,2 @@
+FROM alpine:3.20
+ARG API_TOKEN=${BUILD_TOKEN}

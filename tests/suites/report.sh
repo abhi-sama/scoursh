@@ -41,6 +41,8 @@ finding_set loc_param_name q
 finding_set cell t1
 finding_set remediation 'Escape it.'
 finding_set_evidence "$HOSTILE"
+finding_add related '<svg onload=related_xss()>'
+finding_add related aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 finding_emit
 
 finding_new
@@ -113,6 +115,9 @@ assert_contains "$H" 'img-src data:' 'images may only be data: URIs'
 assert_contains "$H" '&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;' \
   'the XSS payload is escaped into a text node'
 assert_not_contains "$H" '<img src=x' 'and no unescaped tag reaches the document'
+assert_not_contains "$H" related_xss 'related metadata cannot inject HTML'
+assert_not_contains "$M" related_xss 'related metadata cannot inject Markdown/HTML'
+assert_contains "$H" '#f-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'valid related fingerprints remain navigable'
 assert_not_contains "$H" 'http://' 'no external http reference'
 assert_not_contains "$H" 'https://' 'no external https reference'
 assert_not_contains "$H" '@import' 'no CSS import'
@@ -1487,22 +1492,19 @@ DW033=$SCOURSH_RUN_DIR
 run_record checks_run SAST-SEC-HARDCODED_PASSWORD-01
 W033_LOG=$SCOURSH_SCRATCH/rpt-w033-abort.log
 (
-  SCOURSH_SHOW_RULE_WARNINGS=true
+  export SCOURSH_SHOW_RULE_WARNINGS=true
   die "$SCOURSH_EXIT_SCOPE" \
     'scope gate refused GET https://bad-target.example: destination not in scope.conf'
 ) >"$W033_LOG" 2>&1 || true
 
 t_case 'a die() abort under the default --format list (sarif included) prints one specific W033 warning exactly once'
-# Matched by file:line rather than by check id: tools/gen-status.sh's own
-# witness search (`gs_classify_pack`) scans every tests/suites/*.sh file for
-# a rule pack's check-id text to decide which suite "exercises" it, so a
-# literal check id quoted here would make THIS file - which sorts ahead of
-# tests/suites/sast.sh under LC_ALL=C - the new first hit for java.rules,
-# silently rewriting the committed status block (tests/lint-status.sh) for a
-# reason that has nothing to do with what this test is actually proving.
-W033_ONE_COUNT=$(grep -c 'modules/sast/rules/java.rules:56:1: W033' "$W033_LOG" || true)
+# Select a live warning rather than pinning a pack/line whose guard may be
+# replaced by an owning-call classifier. A missing warning cannot satisfy it.
+W033_ONE=$(awk '/W033 /{print;exit}' "$W033_LOG")
+assert_ne '' "$W033_ONE" 'the shipped catalog supplied a real warning to exercise deduplication'
+W033_ONE_COUNT=$(grep -F -c -- "$W033_ONE" "$W033_LOG" || true)
 assert_eq 1 "$W033_ONE_COUNT" \
-  "FAILS on unmodified dev with 2: report_run_json's walk prints it once, report_sarif's forced re-walk (its own subshell in run_json_refresh_incomplete) prints it again because _RECORDS_W_PRINTED never survived that subshell boundary; got $W033_ONE_COUNT occurrence(s)"
+  "a lost subshell-crossing dedupe cache prints the selected message again during SARIF's re-walk; got $W033_ONE_COUNT occurrence(s)"
 
 t_case 'every DISTINCT W-class warning line in that same abort log is unique - none of them repeats'
 W033_TOTAL=$(grep -c 'W0[0-9][0-9] ' "$W033_LOG" || true)

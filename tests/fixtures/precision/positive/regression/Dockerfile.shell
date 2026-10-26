@@ -1,0 +1,2 @@
+FROM alpine:3.20
+RUN sh -c "curl https://downloads.invalid/install | sh"

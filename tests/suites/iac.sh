@@ -639,18 +639,26 @@ assert_contains "$_k8s_vuln_modules" 'iac' \
   'at least one finding reports module=iac - sanity check that the assertion above is not vacuously true on an empty run'
 
 # ---------------------------------------------------------------------------
-# Scope guards: Helm chart TEMPLATES and CloudFormation must never contribute
-# an IAC-K8S-* finding, even though each fixture below shares the exact same
+# Scope guards: Helm templates must never assert a vulnerability from a
+# computed guard; CloudFormation is outside the Kubernetes domain. Both share
 # files glob (*.yaml/*.yml/*.json) that a real Kubernetes manifest uses - the
 # ticket's own acceptance criteria call this out as the case a files-glob-only
 # distinction cannot cover. Scanned as two SEPARATE directories (not one
 # combined tests/fixtures/iac/ tree) so a failure names which shape tripped.
 # ---------------------------------------------------------------------------
 _scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/helm" "$W/run-k8s-helm-guard"
-_k8s_helm_found=$(_ids_found "$W/run-k8s-helm-guard")
-t_case 'kubernetes.rules: zero IAC-K8S-* findings on the Helm-template-shaped fixture ({{ }} directives)'
+_k8s_helm_found=''
+while IFS= read -r _k8s_review_line; do
+  finding_decode "$_k8s_review_line"
+  if [[ ${_DF[base_severity]} != info ]]; then _k8s_helm_found+="${_DF[check_id]}"; fi
+  assert_eq none "${_DF[cwe]}" 'a computed Helm guard has no asserted CWE impact'
+  assert_eq 0.0 "${_DF[_cvss_score]}" 'a computed Helm guard has no asserted CVSS impact'
+done <"$W/run-k8s-helm-guard/findings.fields"
+t_case 'kubernetes.rules: no vulnerability claim on computed Helm guards'
 assert_not_contains "$_k8s_helm_found" 'IAC-K8S-' \
-  'no IAC-K8S-* id fired on the Helm-template fixture - fails if a literal true/false/latest/wildcard token were matched through a {{ ... }} template expression, or if an absence check fired because its guard token was templated rather than literal'
+  'an unknown rendered value is an informational review, never a vulnerability assertion'
+assert_contains "$(cat "$W/run-k8s-helm-guard/meta/coverage_reduction")" configuration_value_requires_review \
+  'the inability to resolve the rendered value is declared, never an implicit clean scan'
 
 _scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/cloudformation" "$W/run-k8s-cfn-guard"
 _k8s_cfn_found=$(_ids_found "$W/run-k8s-cfn-guard")
