@@ -109,8 +109,10 @@ context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|d
 # Not literals: prose in a comment (`# password: Password for the admin
 # user`), a Go-template variable (`{{- $password := include ... }}` reads as
 # `password:` to the pattern), a `$`-reference, any `{{` template, and the
-# `my-password` docs placeholder.
-context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'\s{][^"'\s]*\s+[^#[:space:]]
+# `my-password` docs placeholder.  Whitespace inside `[...]` is spelled
+# `[:space:]`: `grep -E` reads a backslash there as a literal byte, so a
+# bracketed shorthand matches differently under the two engines.
+context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'[:space:]{][^"'[:space:]]*[[:space:]]+[^#[:space:]]
 context-deny: \$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=
 context-deny: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?\$
 context-deny: \{\{
