@@ -52,10 +52,15 @@ named:
   `client_secret`, `api_key`/`apiKey`, `token`, `access_key`, `credentials`.
   Covered.
 - **file types** - `.env`, shell, YAML, JSON, CI workflow YAML, and Dockerfile.
-  Covered. `secrets.rules` ships **no `files:` glob** by design, so it reads
-  every file in the tree it is pointed at; the file types above are therefore a
-  test of the *forms* those files conventionally use, not of per-extension
-  wiring.
+  Covered. The quoted-literal and provider-shaped rules read every file in
+  the tree. The unquoted `ENV_ASSIGNMENT` rule excludes JavaScript/TypeScript
+  source (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`): a
+  line-start object property or default argument can name a runtime reference,
+  so the anchor alone does not establish a literal there. Extensionless and
+  custom-named configuration files retain their existing coverage. Quoted
+  literals in source remain covered by the generic assignment rules.
+  `tests/suites/sast-secrets-source.sh` exercises these exclusions through
+  `scan.sh`, alongside every positive control below and a literal TS API key.
 
 **Deliberately not covered, and why:**
 

@@ -316,5 +316,44 @@ SCOURSH_CONFIG_HISTORY_WINDOW_DAYS=800 SCOURSH_CONFIG_HISTORY_MAX_COMMITS=1 \
 assert_eq '' "$(_ids_found "$W/run-window-maxcommits")" \
   'history-max-commits=1 only walks the single most recent commit, missing the older secret even with the time window wide open - fails if max-commits were ignored'
 
+# =============================================================================
+printf -- '\n-- unquoted config matching does not reinterpret JS/TS history --\n'
+# =============================================================================
+SOURCEHISTREPO=$W/source-history-repo
+_new_repo "$SOURCEHISTREPO"
+cp "$ROOT/tests/fixtures/sast-env-assignment-source/client.ts" "$SOURCEHISTREPO/client.ts"
+git -C "$SOURCEHISTREPO" add client.ts
+git -C "$SOURCEHISTREPO" commit -q -m 'synthetic source references and one literal credential'
+_run_history "$SOURCEHISTREPO" "$W/run-source-history"
+SOURCE_HIST_FOUND=$(_ids_found "$W/run-source-history")
+ENV_HIST_ID=SAST-HIST-ENV_ASSIGNMENT-01
+
+t_case 'source references are quiet in history while the literal still fires'
+assert_not_contains "$SOURCE_HIST_FOUND" "$ENV_HIST_ID" \
+  'fails under the unscoped ENV_ASSIGNMENT rule: source references were reported as historical secrets'
+assert_contains "$SOURCE_HIST_FOUND" 'SAST-HIST-GENERIC_API_KEY-01' \
+  'a literal API key in the same TS blob remains a historical secret'
+t_case 'a file-excluded history check is declared unevaluated'
+assert_not_contains "$(cat "$W/run-source-history/meta/checks_run")" "$ENV_HIST_ID" \
+  'fails if the completed walk records excluded checks as run despite never evaluating their patterns'
+assert_contains "$(cat "$W/run-source-history/meta/coverage_reduction")" "checks=[$ENV_HIST_ID]" \
+  'the excluded check has an explicit no_matching_files reason'
+
+# Run again in the same process after adding an applicable dotenv blob: this
+# catches both an inert ENV rule and applicability leaking between walks.
+printf 'DB_PASSWORD=ScourshSyntheticCredential42\n' >"$SOURCEHISTREPO/.env"
+git -C "$SOURCEHISTREPO" add .env
+git -C "$SOURCEHISTREPO" commit -q -m 'synthetic dotenv literal alongside source references'
+_run_history "$SOURCEHISTREPO" "$W/run-source-env-history"
+t_case 'dotenv history retains its finding and honest checks_run accounting'
+assert_contains "$(_ids_found "$W/run-source-env-history")" "$ENV_HIST_ID" \
+  'the applicable dotenv literal is detected by the unquoted history rule'
+assert_contains "$(cat "$W/run-source-env-history/meta/checks_run")" "$ENV_HIST_ID" \
+  'ENV_ASSIGNMENT is recorded when an applicable blob was inspected'
+git -C "$SOURCEHISTREPO" checkout -q HEAD^
+_run_history "$SOURCEHISTREPO" "$W/run-source-history-again"
+assert_not_contains "$(cat "$W/run-source-history-again/meta/checks_run")" "$ENV_HIST_ID" \
+  'applicability from the dotenv replay cannot leak into a later source-only replay'
+
 t_summary 'sast-history' || FAILED=1
 exit "${FAILED:-0}"

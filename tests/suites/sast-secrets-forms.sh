@@ -247,9 +247,9 @@ done <"$W/tags"
 # =============================================================================
 printf -- '\n-- D. no cross-fire, and no noise on this repository --\n'
 # =============================================================================
-# secrets.rules ships NO `files:` glob, so it reads every file in whatever tree
-# it is pointed at.  That makes tests/fixtures/clean/ - the shared tree every
-# pack asserts silence over (AGENTS.md, "cross-fire") - the case that matters
+# Most secrets rules apply to every file; ENV_ASSIGNMENT alone excludes JS/TS
+# source, whose unquoted expressions do not establish literal credentials.
+# That makes tests/fixtures/clean/ - the shared tree every pack asserts silence over (AGENTS.md, "cross-fire") - the case that matters
 # most for this pack, and it is asserted directly rather than assumed.
 _clean=$ROOT/tests/fixtures/clean
 if [[ -d $_clean ]]; then
