@@ -121,11 +121,11 @@ assert_status 1 \
   'context-window: 2 (the PRE-FIX reading this ticket closes) suppresses the SAME genuine finding - this is F4 itself: a test that FAILS under the old reading (i.e. this assertion is false under context-window:2, which is exactly the bug)' \
   sast_context_ok f4set 1 "$CTXFILE" 1 "$TOTAL"
 
-t_case 'the SHIPPED SAST-PY-YAML_UNSAFE_LOAD-01 pins context-window: 0, not the pre-fix 2'
+t_case 'the shipped YAML guard uses balanced current-call ownership'
 records_load "$ROOT/modules/sast/rules/python.rules" pattern-rule pyset
 idx=$(records_index_of_id pyset SAST-PY-YAML_UNSAFE_LOAD-01)
-assert_eq 0 "$(records_field pyset "$idx" context-window)" \
-  'shipped python.rules yaml.load rule carries context-window: 0 - fails if it were ever reverted to the pre-fix 2'
+assert_eq '' "$(records_field pyset "$idx" context-deny)" \
+  'no whole-line/window deny may borrow a neighboring loader; static-precision checks the actual call span'
 
 # =============================================================================
 printf -- '\n-- §8.3 PCRE degradation: skipped, never covered --\n'
@@ -700,7 +700,7 @@ printf 'id: scanner\n' >"$ROOT_REAL_REGISTRY/config/scanner.conf"
 # needed even though these two invocations never pass --history: run.sh now
 # unconditionally sources it (modules/sast/run.sh's own header), exactly like
 # engine.sh, so its absence would fail the `source` itself.
-cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" "$ROOT/modules/sast/precision.awk" \
   "$ROOT_REAL_REGISTRY/modules/sast/"
 cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT_REAL_REGISTRY/modules/sast/rules/secrets.rules"
 cp "$ROOT/modules/sast/rules/crypto.rules" "$ROOT_REAL_REGISTRY/modules/sast/rules/crypto.rules"
@@ -743,7 +743,7 @@ printf -- '\n-- checks_run semantics: recorded AFTER the walk, only for checks a
 ROOT_JS_REGISTRY=$W/root-js-registry
 mkdir -p "$ROOT_JS_REGISTRY/config" "$ROOT_JS_REGISTRY/modules/sast/rules"
 printf 'id: scanner\n' >"$ROOT_JS_REGISTRY/config/scanner.conf"
-cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" "$ROOT/modules/sast/precision.awk" \
   "$ROOT_JS_REGISTRY/modules/sast/"
 cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/secrets.rules"
 cp "$ROOT/modules/sast/rules/javascript.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/javascript.rules"
@@ -955,7 +955,7 @@ PAR_ROOT=$W/par-root
 rm -rf "$PAR_ROOT"
 mkdir -p "$PAR_ROOT/config" "$PAR_ROOT/modules/sast/rules"
 printf 'id: scanner\n' >"$PAR_ROOT/config/scanner.conf"
-cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" "$ROOT/modules/sast/precision.awk" \
   "$PAR_ROOT/modules/sast/"
 cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT/modules/sast/rules/crypto.rules" \
   "$PAR_ROOT/modules/sast/rules/"

@@ -23,17 +23,8 @@
 # static Ognl helper are two different libraries with two different call
 # shapes, not one pattern wearing two names.
 #
-# SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 is deliberately an ABSENCE check (a
-# factory instantiation with no hardening call nearby), unlike the existing
-# SAST-INJ-XXE-01's PRESENCE check (an explicit insecure flag already set to
-# an unsafe value). An absence check can only be expressed as a
-# `context-deny` with a non-zero window, since the hardening call is always
-# a separate statement and never on the same line as the factory
-# instantiation it protects - rules/RULE-FORMAT.md §10.2's context-window:0
-# MUST binds same-line-intent guards only, so it does not apply here. The
-# resulting W033 advisory is the deliberate, reviewed trade-off §10.2
-# describes; the window is kept as tight as the real idiom allows (3 lines)
-# to limit the false-negative exposure that trade-off accepts.
+# Factory hardening is bound to the instantiated receiver in precision.awk,
+# rather than to a numeric deny window that can borrow a sibling factory.
 
 id: SAST-JAVA-JDBC_SQL_CONCAT-01
 title: JDBC statement executed with a concatenated SQL string
@@ -61,8 +52,6 @@ cwe: CWE-611
 owasp: A02:2025
 pattern: (DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory)\.newInstance\s*\(\s*\)
 dialect: ere
-context-deny: (disallow-doctype-decl|FEATURE_SECURE_PROCESSING|setExpandEntityReferences\s*\(\s*false\s*\)|ACCESS_EXTERNAL_DTD)
-context-window: 3
 files: *.java
 tags: static
 remediation: Immediately after creating the factory, disable DOCTYPE declarations (the
