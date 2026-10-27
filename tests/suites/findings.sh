@@ -34,7 +34,7 @@ attribution_load "$ROOT/tests/fixtures/config/scope.conf"
 new_run() {
   rm -rf "${W:?}/run.$1"
   SCOURSH_RUN_DIR=''
-  SCOURSH_RUN_ID=''
+  export SCOURSH_RUN_ID=''
   # A real run is one process; this suite simulates many in one, so the ordinal
   # spaces are cleared explicitly or a counter leaks from the previous run into
   # the next one's identities.
@@ -1069,4 +1069,76 @@ assert_eq 0 "$empty_kinds" \
 assert_eq 0 "$fp_mismatches" \
   'every merged fingerprint still matches what finding_fingerprint independently computes from the (now logical-populated) record - the executable form of "the merged findings.jsonl is byte-identical before and after"'
 
+t_case 'review classification cannot inherit a vulnerability floor or impact'
+new_run review
+finding_new
+finding_set check_id SAST-TEST-REVIEW-01
+finding_set module sast
+finding_set title 'Public constant with unestablished security use'
+finding_set base_severity high
+finding_set cwe CWE-329
+finding_set owasp A04:2025
+finding_set loc_path app.py
+finding_set loc_line 1
+finding_set cell .
+finding_set_match 'iv = public_constant'
+_F[_severity_floor]=high
+finding_set fix_kind replace
+finding_set fix_find public_constant
+finding_set fix_replace replacement
+finding_mark_review
+finding_emit
+assert_eq info "$(finding_get severity)" 'review overrides the old vulnerability floor'
+assert_eq none "$(finding_get cwe)" 'no asserted CWE impact on an unestablished review'
+assert_eq none "$(finding_get owasp)" 'review does not claim OWASP impact'
+assert_eq 0.0 "$(finding_get _cvss_score)" 'zero-impact vector has zero CVSS score'
+assert_eq '' "$(finding_get fix_kind)" 'an unverified review cannot inherit an automated edit scaffold'
+
+t_case 'overlapping TLS checks are related without collapsing identities'
+new_run related
+# Resolve the real ids from the catalog rather than making this data-model
+# test a false rule-pack witness in tools/gen-status.sh's source inventory.
+_related_generic='' _related_go=''
+for _related_pack in crypto go; do
+  records_load "$ROOT/modules/sast/rules/$_related_pack.rules" pattern-rule "related_$_related_pack" >/dev/null
+  _related_n=$(records_count "related_$_related_pack")
+  for (( _related_i=0; _related_i<_related_n; _related_i++ )); do
+    _related_cid=$(records_id "related_$_related_pack" "$_related_i")
+    case $_related_cid in
+      *-TLS_VERIFY_DISABLED-*) _related_generic=$_related_cid ;;
+      *-TLS_SKIP_VERIFY-*) _related_go=$_related_cid ;;
+    esac
+  done
+done
+assert_ne '' "$_related_generic" 'generic TLS check exists in the current catalog'
+assert_ne '' "$_related_go" 'Go TLS check exists in the current catalog'
+for _related_spec in "$_related_generic app.go 7" "$_related_go app.go 7" "$_related_go other.go 7"; do
+  read -r _related_id _related_path _related_line <<<"$_related_spec"
+  finding_new
+  finding_set check_id "$_related_id"
+  finding_set module sast
+  finding_set title 'TLS certificate verification disabled'
+  finding_set base_severity high
+  finding_set cwe CWE-295
+  finding_set owasp A04:2025
+  finding_set loc_path "$_related_path"
+  finding_set loc_line "$_related_line"
+  finding_set cell .
+  finding_set_match 'InsecureSkipVerify: true'
+  finding_emit
+done
+findings_merge "$SCOURSH_RUN_DIR"
+_related_count=0
+while IFS= read -r line; do
+  finding_decode "$line"
+  if [[ ${_DF[loc_path]} == app.go ]]; then
+    assert_ne '' "${_DF[related]:-}" 'same-statement checks link their peer fingerprint'
+    _related_count=$(( _related_count + 1 ))
+  else
+    assert_eq '' "${_DF[related]:-}" 'same text in another file is not the same statement'
+  fi
+  finding_adopt_decoded
+  assert_eq "${_DF[fingerprint]}" "$(finding_fingerprint)" 'related metadata leaves the frozen identity intact'
+done <"$SCOURSH_RUN_DIR/findings.fields"
+assert_eq 2 "$_related_count" 'both original findings remain present and related'
 t_summary findings

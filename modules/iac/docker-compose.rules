@@ -143,6 +143,14 @@ files: docker-compose.*.yaml
 files: compose.*.yml
 files: compose.*.yaml
 context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO|\$\{|\$[A-Za-z_])
+# `*_PASSWORD_FILE=/run/secrets/x` is the Docker-recommended way to keep a
+# secret OUT of the environment, so it must not read as a plaintext secret.
+# Each deny below is anchored to the line's single assignment: a metadata
+# name suffix (which also covers the `__FILE` spelling), an absolute path
+# under a conventional root, and the `mysecretpassword` docs placeholder.
+context-deny: ^[[:space:]]*-?[[:space:]]*"?[A-Za-z0-9_]*(PASSWORD|SECRET|API_KEY|ACCESS_KEY|TOKEN|PRIVATE_KEY)[A-Za-z0-9_]*_(FILE|PATH|DIR|NAME|URL|URI|ARN|ID|TTL|EXPIRY|EXPIRES|ENABLED|TYPE|ISSUER|AUDIENCE|ENDPOINT|LENGTH|MINUTES|SECONDS|DAYS|HOURS|REF)"?[[:space:]]*[:=]
+context-deny: ^[[:space:]]*-?[[:space:]]*"?[A-Za-z0-9_]+"?[[:space:]]*[:=][[:space:]]*['"]?/(run|var|etc|opt|vault|secrets|mnt|home|usr|tmp|data|srv|certs|keys|config)/
+context-deny: ^[[:space:]]*-?[[:space:]]*"?[A-Za-z0-9_]+"?[[:space:]]*[:=][[:space:]]*['"]?[Mm][Yy][-_]?([Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Tt][Oo][Kk][Ee][Nn])
 context-window: 0
 tags: static
 remediation: Remove the literal credential from the environment entry and rotate it

@@ -1,0 +1,1 @@
+class Factories { void f() { var factory = DocumentBuilderFactory.newInstance(); factory.newDocumentBuilder().parse(xml); factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true); } }

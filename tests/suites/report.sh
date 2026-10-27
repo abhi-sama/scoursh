@@ -41,6 +41,8 @@ finding_set loc_param_name q
 finding_set cell t1
 finding_set remediation 'Escape it.'
 finding_set_evidence "$HOSTILE"
+finding_add related '<svg onload=related_xss()>'
+finding_add related aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 finding_emit
 
 finding_new
@@ -113,6 +115,9 @@ assert_contains "$H" 'img-src data:' 'images may only be data: URIs'
 assert_contains "$H" '&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;' \
   'the XSS payload is escaped into a text node'
 assert_not_contains "$H" '<img src=x' 'and no unescaped tag reaches the document'
+assert_not_contains "$H" related_xss 'related metadata cannot inject HTML'
+assert_not_contains "$M" related_xss 'related metadata cannot inject Markdown/HTML'
+assert_contains "$H" '#f-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'valid related fingerprints remain navigable'
 assert_not_contains "$H" 'http://' 'no external http reference'
 assert_not_contains "$H" 'https://' 'no external https reference'
 assert_not_contains "$H" '@import' 'no CSS import'
@@ -1487,22 +1492,19 @@ DW033=$SCOURSH_RUN_DIR
 run_record checks_run SAST-SEC-HARDCODED_PASSWORD-01
 W033_LOG=$SCOURSH_SCRATCH/rpt-w033-abort.log
 (
-  SCOURSH_SHOW_RULE_WARNINGS=true
+  export SCOURSH_SHOW_RULE_WARNINGS=true
   die "$SCOURSH_EXIT_SCOPE" \
     'scope gate refused GET https://bad-target.example: destination not in scope.conf'
 ) >"$W033_LOG" 2>&1 || true
 
 t_case 'a die() abort under the default --format list (sarif included) prints one specific W033 warning exactly once'
-# Matched by file:line rather than by check id: tools/gen-status.sh's own
-# witness search (`gs_classify_pack`) scans every tests/suites/*.sh file for
-# a rule pack's check-id text to decide which suite "exercises" it, so a
-# literal check id quoted here would make THIS file - which sorts ahead of
-# tests/suites/sast.sh under LC_ALL=C - the new first hit for java.rules,
-# silently rewriting the committed status block (tests/lint-status.sh) for a
-# reason that has nothing to do with what this test is actually proving.
-W033_ONE_COUNT=$(grep -c 'modules/sast/rules/java.rules:56:1: W033' "$W033_LOG" || true)
+# Select a live warning rather than pinning a pack/line whose guard may be
+# replaced by an owning-call classifier. A missing warning cannot satisfy it.
+W033_ONE=$(awk '/W033 /{print;exit}' "$W033_LOG")
+assert_ne '' "$W033_ONE" 'the shipped catalog supplied a real warning to exercise deduplication'
+W033_ONE_COUNT=$(grep -F -c -- "$W033_ONE" "$W033_LOG" || true)
 assert_eq 1 "$W033_ONE_COUNT" \
-  "FAILS on unmodified dev with 2: report_run_json's walk prints it once, report_sarif's forced re-walk (its own subshell in run_json_refresh_incomplete) prints it again because _RECORDS_W_PRINTED never survived that subshell boundary; got $W033_ONE_COUNT occurrence(s)"
+  "a lost subshell-crossing dedupe cache prints the selected message again during SARIF's re-walk; got $W033_ONE_COUNT occurrence(s)"
 
 t_case 'every DISTINCT W-class warning line in that same abort log is unique - none of them repeats'
 W033_TOTAL=$(grep -c 'W0[0-9][0-9] ' "$W033_LOG" || true)
@@ -1512,6 +1514,77 @@ assert_eq "$W033_UNIQUE" "$W033_TOTAL" \
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
 SCOURSH_INSTALL_ROOT=$ROOT
+
+printf '\n-- REGRESSION: a registry dump that does not parse never changes die()'"'"'s exit code --\n'
+# =============================================================================
+# run_json_refresh_incomplete sources the registry dump each writer subshell
+# leaves behind.  Its owner guard compares $$, which every subshell shares,
+# so a subshell dying at the same moment as the run runs the same loop, and
+# with one $$-named dump file this process could source the other's
+# half-written copy.  A sourced file that does not parse ends the shell: exit
+# 2 from a trap handler, exit 1 otherwise.  tests/suites/paranoid.sh's real
+# lsof abort, whose die() runs in paranoid_on_violation's USR2 trap, exited 2
+# instead of 3 that way on the GNU CI leg (run 40288747959; also main cacf7f5
+# on 2026-09-24).  A writer that leaves a truncated dump stands in for the
+# race here, so each case is deterministic.  SCOURSH_FORMATS=json keeps the
+# abort's writer loop to the cheap writers; the dump is sourced after the
+# first one.
+DREGDUMP=$SCOURSH_SCRATCH/rpt-regdump-garbled
+rm -rf "$DREGDUMP"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DREGDUMP"
+
+_test_regdump_garbled_in_trap() {
+  SCOURSH_FORMATS=json
+  # Called by run_json_refresh_incomplete, which shellcheck cannot follow.
+  # shellcheck disable=SC2329
+  report_registries_dump() { printf 'declare -A _RPTOW_CHECK_OWASP=([X]="A01' >"$1"; }
+  trap 'die "$SCOURSH_EXIT_SCOPE" "paranoid: connection outside the allowlist (fixture)"' USR2
+  kill -USR2 "$BASHPID"
+  # The trap runs before this line; reaching it means the trap never fired.
+  return 99
+}
+t_case 'die() run from a trap handler keeps its exit code when the registry dump does not parse'
+assert_status "$SCOURSH_EXIT_SCOPE" \
+  'exit 3 from a USR2-trap die() over a truncated dump - FAILS with 2 under an unvalidated `source` of the dump, the exact CI symptom' \
+  _test_regdump_garbled_in_trap
+
+_test_regdump_garbled_plain() {
+  SCOURSH_FORMATS=json
+  # Called by run_json_refresh_incomplete, which shellcheck cannot follow.
+  # shellcheck disable=SC2329
+  report_registries_dump() { printf 'declare -A _RPTOW_CHECK_OWASP=([X]="A01' >"$1"; }
+  die "$SCOURSH_EXIT_SCOPE" 'scope gate refused (fixture)'
+}
+t_case 'a plain die() keeps its exit code when the registry dump does not parse'
+assert_status "$SCOURSH_EXIT_SCOPE" \
+  'exit 3 from a die() over a truncated dump - FAILS with 1 under an unvalidated `source` of the dump' \
+  _test_regdump_garbled_plain
+
+# This suite's own shell plays the other process: same $$, different
+# $BASHPID from the subshell assert_status runs die() in.
+REGDUMP_SIBLING=$SCOURSH_SCRATCH/report-registries.$$
+printf 'declare -A _RPTOW_CHECK_OWASP=([X]="half-written by another process' >"$REGDUMP_SIBLING"
+cp -- "$REGDUMP_SIBLING" "$REGDUMP_SIBLING.expect"
+DREGDUMP2=$SCOURSH_SCRATCH/rpt-regdump-sibling
+rm -rf "$DREGDUMP2"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DREGDUMP2"
+_test_regdump_sibling_untouched() {
+  SCOURSH_FORMATS=json
+  die "$SCOURSH_EXIT_SCOPE" 'scope gate refused (fixture)'
+}
+t_case 'die() in a subshell neither reads nor removes the registry dump of another process sharing its $$'
+assert_status "$SCOURSH_EXIT_SCOPE" 'the subshell die() still exits 3' _test_regdump_sibling_untouched
+REGDUMP_SIBLING_SAME=no
+if [[ -e $REGDUMP_SIBLING ]] && cmp -s -- "$REGDUMP_SIBLING" "$REGDUMP_SIBLING.expect"; then
+  REGDUMP_SIBLING_SAME=yes
+fi
+assert_eq yes "$REGDUMP_SIBLING_SAME" \
+  'the other process'"'"'s dump is byte-identical afterwards - FAILS under a $$-named dump, which the subshell overwrites and then deletes'
+rm -f -- "$REGDUMP_SIBLING" "$REGDUMP_SIBLING.expect"
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
 
 # =============================================================================
 printf '\n-- report --from DIR (report_regenerate_from): byte-identical regeneration --\n'

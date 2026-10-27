@@ -86,8 +86,8 @@ A few things worth knowing going in, all covered in more depth in `AGENTS.md`'s 
   caught only by the second kind.
 - `tests/fixtures/{vuln,clean}/` are shared trees scanned by every pack, so a new pack's `files:` glob
   can cross-fire against a sibling pack's fixtures; check what else matches your glob.
-- The pattern engine has no comment awareness - a rule pack's own header prose must not spell out the
-  hazardous string it's warning about, or it will match itself.
+- Credential checks scan comments and documentation. Keep credential-shaped examples out of rule
+  headers; non-secret ownership/lexical classifiers are documented in `docs/NATIVE-PRECISION.md`.
 - After landing a new module or rule pack, run `tools/gen-status.sh --write` and commit the result -
   it regenerates the module-status inventory blocks in `AGENTS.md`, `README.md`, and
   `docs/FOUNDATION.md` from the repository tree. **Never hand-edit inside a

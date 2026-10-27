@@ -1,0 +1,5 @@
+auth:
+  # password: Password for the admin user. Leave empty to auto-generate one.  [[N14]]
+  ##   clientSecret: $oidc.azuread.clientSecret  [[N15]]
+  ##     password: "mypassword"  [[N16]]
+  password: Tr0ub4dor3xK  # [[P04]]

@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16.4
+    environment:
+      - POSTGRES_PASSWORD_FILE=/run/secrets/db_password  # [[N01]]
+      - DATABASE_PASSWORD=/run/secrets/db-password  # [[N02]]
+      - POSTGRES_PASSWORD=mysecretpassword  # [[N03]]
+      - POSTGRES_PASSWORD=Tr0ub4dor3xK  # [[P01]]
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password  # [[N04]]
+      VAULT_TOKEN_PATH: /vault/secrets/token  # [[N05]]

@@ -3,24 +3,26 @@
 This directory is the source repository's formula template and release check. It
 does not create or publish a tap.
 
-**Current status:** `abhi-sama/homebrew-scoursh` is not published yet. The
-`brew install` command below becomes available only after the captain creates
-that public tap and merges its rendered formula.
+**Current status:** the public tap is `abhi-sama/homebrew-scoursh`.  A release
+job renders this template and opens a formula-bump pull request after each
+published release; `brew install` resolves the new version after that tap PR
+has been merged.
 
 ## Captain publication steps
 
-1. Create the public repository `abhi-sama/homebrew-scoursh`; do not create it
-   from this source-repository task.
-2. Add `Formula/scoursh.rb` to that repository. Its contents come from
-   `packaging/homebrew/scoursh.rb` only after the release job replaces:
+1. Configure the source repository's `HOMEBREW_TAP_TOKEN` Actions secret as a
+   fine-grained token limited to `abhi-sama/homebrew-scoursh`, with only
+   Contents and Pull requests read/write permissions. The release job fails
+   loudly rather than silently skipping a bump when the secret is absent.
+2. The release job renders `Formula/scoursh.rb` from
+   `packaging/homebrew/scoursh.rb` after it replaces:
    - every `@VERSION@` with the release version (the first release is `1.0.0`);
    - `@SHA256@` with the SHA-256 emitted by the release build for the exact
      `scoursh-<version>.tar.gz` asset.
-3. Keep the tap formula bump automated. After GitHub Release publication, the
-   release job renders this template using its own build-job SHA-256, commits
-   `Formula/scoursh.rb` on a branch in `abhi-sama/homebrew-scoursh`, and opens
-   a pull request there. The bump job must never download the release again to
-   calculate its checksum.
+3. After GitHub Release publication, the job commits the rendered formula on a
+   deterministic branch in `abhi-sama/homebrew-scoursh` and opens (or reuses)
+   its pull request. It uses the build job's checksum and never downloads the
+   release again to calculate one.
 4. Have the tap PR run, on macOS and Linux, `brew audit --strict --new`,
    `brew install --build-from-source`, and `brew test`, then merge the tap PR.
 

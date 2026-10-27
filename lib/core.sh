@@ -333,8 +333,17 @@ run_json_refresh_incomplete() {
   # only the FIRST writer that needs it pays for the parse; a no-op if
   # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.  Harmless, and cheap,
   # for the writers below that never touch the registry at all.
+  #
+  # Named by $BASHPID, never $$: the owner guard above compares $$, which every
+  # subshell shares, so a subshell that dies while this process is dying runs
+  # this same loop at the same time.  With one shared name, this process could
+  # source the other's half-written dump; a sourced file that fails to parse
+  # ends the shell there, with exit 2 when this runs from a trap handler (as
+  # paranoid_on_violation does), so the run lost its real exit code.  Measured
+  # by tests/suites/report.sh; this is how tests/suites/paranoid.sh's real lsof
+  # abort case came to exit 2 instead of 3 on the GNU CI leg.
   if [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]]; then
-    _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$$
+    _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$BASHPID
   fi
   # `report_agent` is last: it is the one format a downstream fixing agent
   # reads by default (docs/AGENT-FORMAT.md), and every field in its `run`
@@ -379,8 +388,20 @@ run_json_refresh_incomplete() {
       # A scratch file path computed at runtime (report_registries_dump's own
       # `declare -p` snapshot, escaping the subshell above), never a static
       # path shellcheck could follow.
+      #
+      # Parsed in a throwaway subshell first, so a dump that does not parse is
+      # never sourced here.  Guarding the `source` itself with `||` is not
+      # enough: run from a trap handler, a parse error still ends the shell
+      # (measured: exit 1, `||` branch never reached).  The dump is only a
+      # memo, so a bad one is dropped along with any memo flags, and the next
+      # writer redoes its walk instead of trusting them.
       # shellcheck disable=SC1090
-      source "$_rjri_regdump"
+      if ( source "$_rjri_regdump" ) >/dev/null 2>&1; then
+        source "$_rjri_regdump"
+      else
+        unset _RPT_CHECKMETA_LOADED_ROOT _RPTOW_REGISTRY_LOADED_ROOT \
+          _RPTCIS_REGISTRY_LOADED_ROOT
+      fi
     fi
   done
   [[ -z $_rjri_regdump ]] || rm -f "$_rjri_regdump"

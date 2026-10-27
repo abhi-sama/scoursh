@@ -78,7 +78,7 @@
 <div class="wrap">
 <header>
   <h1>What scoursh detects</h1>
-  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks). Counts are calculated from the checked-in <code>id:</code> records under <code>modules/**</code>, not copied from a roadmap or release note.</p>
+  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. 321 checks ship in the box (55 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks). Counts are calculated from the checked-in <code>id:</code> records under <code>modules/**</code>, not copied from a roadmap or release note.</p>
 </header>
 
 <div class="headline">
@@ -92,7 +92,7 @@
 </div>
 
 <div class="counts">
-  <div class="count"><b>53</b><span>SAST checks</span></div>
+  <div class="count"><b>55</b><span>SAST checks</span></div>
   <div class="count"><b>36</b><span>IaC checks</span></div>
   <div class="count"><b>46</b><span>DAST passive</span></div>
   <div class="count"><b>34</b><span>DAST active</span></div>
@@ -122,8 +122,10 @@
 <tr><td class="id">SAST-SEC-GENERIC_API_KEY-01</td><td>Hardcoded API key literal</td><td class="cwe">CWE-798</td></tr>
 <tr><td class="id">SAST-SEC-GENERIC_PASSWORD-01</td><td>Hardcoded password literal</td><td class="cwe">CWE-798</td></tr>
 <tr><td class="id">SAST-SEC-GENERIC_SECRET-01</td><td>Hardcoded secret, token or credential literal</td><td class="cwe">CWE-798</td></tr>
-<tr><td class="id">SAST-SEC-ENV_ASSIGNMENT-01</td><td>Hardcoded credential in an unquoted assignment</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-ENV_ASSIGNMENT-01</td><td>Hardcoded credential in an unquoted configuration/shell assignment; excludes JavaScript/TypeScript source</td><td class="cwe">CWE-798</td></tr>
 <tr><td class="id">SAST-SEC-JWT-01</td><td>Hardcoded JSON Web Token</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-DEFAULT_PASSWORD-01</td><td>Well-known default password literal (<code>postgres</code>, <code>changeit</code>, ...), at medium</td><td class="cwe">CWE-1392</td></tr>
+<tr><td class="id">SAST-SEC-NONPROD_CREDENTIAL-01</td><td>Credential-shaped literal in a test, documentation, example or CI file, at low</td><td class="cwe">CWE-798</td></tr>
 </tbody></table></div>
 
 <h3>Crypto <small>weak cryptography</small></h3>

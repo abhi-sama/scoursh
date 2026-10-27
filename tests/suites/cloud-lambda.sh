@@ -240,6 +240,27 @@ assert_eq 'an AWS access key id' "$(lambda_secret_value_shape AKIAABCDEFGHIJKLMN
   'A13 value shape: a 20-char AKIA... value is recognised'
 assert_true "$(lambda_secret_value_shape 'just-a-normal-value' >/dev/null && echo 1 || echo 0)" \
   'A14 value shape: an ordinary string matches nothing'
+# A credential-shaped NAME is a finding only when the variable can hold a
+# credential: metadata about a secret (its ARN, name, SSM path, TTL, the
+# Secrets Extension's own settings) and reference values are not.  The
+# fixture's public function carries one of each, and B5 below still counts
+# exactly two findings for it - so each of these fails under "the name alone
+# is the finding", the reading this replaces.
+for _k in DB_PASSWORD_SECRET_ARN SECRET_NAME API_KEY_PARAMETER_NAME \
+  PARAMETERS_SECRETS_EXTENSION_HTTP_PORT AUTH_TOKEN_TTL_SECONDS SECRETS_MANAGER_TTL; do
+  assert_true "$(lambda_secret_name_is_metadata "$_k" && echo 0 || echo 1)" "A15 metadata name: $_k"
+done
+for _k in DB_PASSWORD API_KEY STRIPE_SECRET_KEY; do
+  assert_true "$(lambda_secret_name_is_metadata "$_k" && echo 1 || echo 0)" "A15 a credential name is not metadata: $_k"
+done
+for _v in 'arn:aws:secretsmanager:eu-west-2:123456789012:secret:x' /app/jwt 300 true '' \
+  '{{resolve:secretsmanager:db}}' 'https://auth.vendor.invalid/token'; do
+  assert_true "$(lambda_secret_value_is_reference "$_v" && echo 0 || echo 1)" "A16 reference value: '$_v'"
+done
+for _v in hunter2 'Tr0ub4dor3xK' 'postgres://app:pw@db.internal/app'; do
+  assert_true "$(lambda_secret_value_is_reference "$_v" && echo 1 || echo 0)" "A16 a literal is not a reference: '$_v'"
+done
+unset _k _v
 
 # The two policy-document shapes, both via lambda_policy_prefix_set, both
 # feeding lambda_policy_scan - the reading A17/A19 fail under is handling

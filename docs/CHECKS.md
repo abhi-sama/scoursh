@@ -3,7 +3,7 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
+needs to run. 321 checks ship in the box (55 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks).
 Those counts are calculated from the checked-in `id:` records under `modules/**` (not copied from a
 roadmap or release note); the per-surface split below is the same calculation.
@@ -18,7 +18,7 @@ roadmap or release note); the per-surface split below is the same calculation.
 
 | | |
 |---|---|
-| **53** | SAST checks |
+| **55** | SAST checks |
 | **36** | IaC checks |
 | **46** | DAST passive |
 | **34** | DAST active |
@@ -56,8 +56,17 @@ Static analysis of source code. Runs on `./scan.sh sast --path DIR` with nothing
 | `SAST-SEC-GENERIC_API_KEY-01` | Hardcoded API key literal | CWE-798 |
 | `SAST-SEC-GENERIC_PASSWORD-01` | Hardcoded password literal | CWE-798 |
 | `SAST-SEC-GENERIC_SECRET-01` | Hardcoded secret, token or credential literal | CWE-798 |
-| `SAST-SEC-ENV_ASSIGNMENT-01` | Hardcoded credential in an unquoted assignment | CWE-798 |
+| `SAST-SEC-ENV_ASSIGNMENT-01` | Hardcoded credential in an unquoted configuration/shell assignment; excludes JavaScript/TypeScript source | CWE-798 |
 | `SAST-SEC-JWT-01` | Hardcoded JSON Web Token | CWE-798 |
+| `SAST-SEC-DEFAULT_PASSWORD-01` | Well-known default password literal (`postgres`, `changeit`, ...), at medium | CWE-1392 |
+| `SAST-SEC-NONPROD_CREDENTIAL-01` | Credential-shaped literal in a test, documentation, example or CI file, at low | CWE-798 |
+
+The keyword checks (API key, password, secret, unquoted assignment, default password) skip test,
+documentation, example and CI paths (`tests/**`, `*.test.*`, `docs/**`, `*.md`, `examples/**`,
+`*.example`, `.github/workflows/**`, ...) and localisation catalogues; `SAST-SEC-NONPROD_CREDENTIAL-01`
+reports the same shapes on those paths instead, so a fixture password is visible without being
+presented as a critical vulnerability. A keyword match is capped at high; only a provider-shaped
+key (AWS key id, private key with a real key body) is critical.
 
 ### Crypto — weak cryptography
 

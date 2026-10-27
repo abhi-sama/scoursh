@@ -33,6 +33,7 @@ SCOURSH_IAC_PARSE_SOURCED=1
 
 # shellcheck source=modules/sast/engine.sh
 source "${BASH_SOURCE[0]%/*}/../sast/engine.sh"
+SCOURSH_IAC_PRECISION_AWK=${BASH_SOURCE[0]%/*}/precision.awk
 
 # ---------------------------------------------------------------------------
 # `max-matches-per-file` capture, module-local so a sequential sast-then-iac
@@ -81,20 +82,24 @@ iac_scan_file() {
     return 0
   fi
 
-  local total='' ln off text count=0 overflow=0
+  local precise=$hits.precise
+  awk -v check="$id" -v path="$relpath" -v limit="$SCOURSH_IAC_MAX_MATCHES_PER_FILE" -f "$SCOURSH_IAC_PRECISION_AWK" "$abspath" "$hits" >"$precise" || die 5 'IaC owning-object analysis failed'
+  mv "$precise" "$hits"
+  local total='' precision ln off text count=0 overflow=0
   # off is read to consume the byte-offset field so `text` lands in the right
   # position, the same shape sast_scan_file uses.
   # shellcheck disable=SC2034
-  while IFS=: read -r ln off text; do
+  while IFS=: read -r precision ln off text; do
     [[ -n $ln ]] || continue
     count=$(( count + 1 ))
     if (( count > SCOURSH_IAC_MAX_MATCHES_PER_FILE )); then
       overflow=1
       break
     fi
+    [[ $precision != drop ]] || continue
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$abspath")
-    if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total"; then
-      _iac_emit_finding "$set" "$idx" "$relpath" "$ln" "$text"
+    if sast_context_ok "$set" "$idx" "$abspath" "$ln" "$total" "$text"; then
+      _iac_emit_finding "$set" "$idx" "$relpath" "$ln" "$text" "$precision"
     fi
   done <"$hits"
   rm -f "$hits"
@@ -127,6 +132,11 @@ _iac_emit_finding() {
   id=$(records_id "$set" "$idx")
   finding_new
   finding_from_record "$set" "$idx"
+  if [[ ${6:-keep} == review ]]; then
+    finding_mark_review 'Configuration value requires workload or runtime-context review'
+    finding_set remediation 'This source declares a policy-relevant value, but its effective template/deployment value is not established. Inspect the owning object or rendered configuration before treating it as a vulnerability.'
+    run_record coverage_reduction "module=iac checks=[$id] reason=configuration_value_requires_review file=$relpath"
+  fi
   finding_set module iac
   finding_set loc_path "$relpath"
   finding_set loc_line "$ln"
@@ -171,4 +181,74 @@ iac_scan_tree() {
   # It returns non-zero when a worker failed; iac_scan_tree propagates that to
   # modules/iac/run.sh, which decides what the run may still claim.
   _sast_walk_parallel iac "$root" iac_scan_file "${ids[@]+"${ids[@]}"}"
+}
+
+# iac_dedup_sast_secrets RUNDIR - under `scan.sh all` the SAST secrets pack
+# reads every file, so a compose `- DB_PASSWORD=...` line or a Dockerfile
+# `ENV TOKEN=...` line is reported twice: once by SAST-SEC-* and once by the
+# IaC secret rule for that format, two findings (two different check ids, so
+# two fingerprints) for one credential.  `sast` always runs before `iac`, so
+# its findings are already in this run's shards when the IaC walk returns;
+# this drops every IaC secret-family finding whose file and line already
+# carry a SAST-SEC-* finding, and counts the drops in one coverage_reduction
+# rather than losing them silently - the same shape the gitleaks adapter's
+# dedup pass uses (modules/sast/adapters/gitleaks/adapter.sh).
+#
+# It runs in the PARENT, after every worker has exited, so nothing is still
+# appending to the shards it rewrites.  A shard is a `.fields`/`.jsonl` pair
+# written one line per finding in step (lib/findings.sh's finding_emit), so a
+# dropped finding is removed from both by line number.
+#
+# Sets `IAC_DEDUPED_IDS` to the IaC check ids that lost a finding here.  The
+# caller withholds coverage for those ids this run: a finding deduplicated
+# here is still present, so letting its check claim the cell would let the
+# next diff read an earlier `scan.sh iac` run's copy of it as `fixed`.
+# shellcheck disable=SC2034
+iac_dedup_sast_secrets() {
+  local rundir=$1 shard line n key cid
+  IAC_DEDUPED_IDS=()
+  local -A sast_at=() dropped=()
+  for shard in "$rundir"/shards/*.fields; do
+    [[ -f $shard ]] || continue
+    while IFS= read -r line; do
+      [[ $line == *check_id=SAST-SEC-* ]] || continue
+      finding_decode "$line"
+      [[ ${_DF[module]:-} == sast && ${_DF[check_id]:-} == SAST-SEC-* ]] || continue
+      sast_at["${_DF[loc_path]:-}:${_DF[loc_line]:-}"]=1
+    done <"$shard"
+  done
+  (( ${#sast_at[@]} > 0 )) || return 0
+
+  local total=0
+  for shard in "$rundir"/shards/*.fields; do
+    [[ -f $shard ]] || continue
+    local -a drop=()
+    n=0
+    while IFS= read -r line; do
+      n=$(( n + 1 ))
+      [[ $line == *module=iac* ]] || continue
+      finding_decode "$line"
+      [[ ${_DF[module]:-} == iac ]] || continue
+      cid=${_DF[check_id]:-}
+      finding_check_is_secret_family "$cid" || continue
+      key="${_DF[loc_path]:-}:${_DF[loc_line]:-}"
+      [[ -n ${sast_at[$key]:-} ]] || continue
+      drop+=("$n")
+      dropped[$cid]=$(( ${dropped[$cid]:-0} + 1 ))
+    done <"$shard"
+    (( ${#drop[@]} > 0 )) || continue
+    total=$(( total + ${#drop[@]} ))
+    local f keep=" ${drop[*]} "
+    for f in "$shard" "${shard%.fields}.jsonl"; do
+      [[ -f $f ]] || continue
+      awk -v drop="$keep" 'index(drop, " " NR " ") == 0' "$f" >"$f.dedup"
+      mv -f -- "$f.dedup" "$f"
+    done
+  done
+  (( total > 0 )) || return 0
+  local ids
+  ids=$(printf '%s\n' "${!dropped[@]}" | LC_ALL=C sort | paste -sd' ' -)
+  read -r -a IAC_DEDUPED_IDS <<<"$ids"
+  run_record coverage_reduction "module=iac reason=dedup_sast_secret count=$total checks=[$ids] - an IaC secret finding on a line SAST-SEC-* already reports was dropped as a duplicate; these checks claim no coverage this run, so an earlier finding of theirs reads unknown rather than fixed"
+  return 0
 }

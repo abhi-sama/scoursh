@@ -1,0 +1,6 @@
+plugins { id "java" }
+dependencies {
+/* Removed dependency:
+ implementation "org.yaml:snakeyaml:1.26"
+*/
+}

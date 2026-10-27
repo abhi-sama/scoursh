@@ -264,7 +264,7 @@
 <h2 id="baseline">What scoursh actually is</h2>
 
 <div class="stats">
-  <div class="stat"><div class="n">319</div><div class="l">security checks across seven surfaces</div></div>
+  <div class="stat"><div class="n">321</div><div class="l">security checks across seven surfaces</div></div>
   <div class="stat"><div class="n">7</div><div class="l">surfaces: SAST, SCA, IaC, DAST, Network/host, Container image, Cloud/CSPM</div></div>
   <div class="stat"><div class="n">0</div><div class="l">runtime deps beyond bash + coreutils</div></div>
   <div class="stat"><div class="n">1</div><div class="l">network chokepoint, lint-enforced</div></div>
@@ -275,7 +275,7 @@
 <table>
   <thead><tr><th>Surface</th><th>Status</th><th>What shipped</th><th>Checks</th></tr></thead>
   <tbody>
-    <tr><td class="tool">SAST</td><td><span class="pill p-ok">landed</span></td><td>9 rule packs across 6 languages, plus git-history secret replay</td><td>53</td></tr>
+    <tr><td class="tool">SAST</td><td><span class="pill p-ok">landed</span></td><td>9 rule packs across 6 languages, plus git-history secret replay</td><td>55</td></tr>
     <tr><td class="tool">SCA</td><td><span class="pill p-warn">needs setup</span></td><td>6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline</td><td>table lookup</td></tr>
     <tr><td class="tool">IaC</td><td><span class="pill p-ok">landed</span></td><td>Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose</td><td>36</td></tr>
     <tr><td class="tool">DAST</td><td><span class="pill p-ok">landed</span></td><td>Full engine: auth, crawl, passive, safe-active, injection, tier-5</td><td>92</td></tr>
@@ -329,7 +329,7 @@
   <tbody>
     <tr class="self">
       <td class="tool">scoursh</td>
-      <td>53 checks, 6 languages, + secrets &amp; git history</td>
+      <td>55 checks, 6 languages, + secrets &amp; git history</td>
       <td><span class="pill p-ok">Apache-2.0</span></td>
       <td>bash &ge; 4.2, grep/rg, awk</td>
       <td>None</td>
@@ -383,13 +383,13 @@
   <div class="lbl">Honest verdict</div>
   <p>
     <strong>Semgrep CE wins on depth and it is not close</strong> — roughly 3,000 rules against
-    scoursh&rsquo;s 53, across 30+ languages against 6. Use Semgrep as your primary SAST engine.
+    scoursh&rsquo;s 55, across 30+ languages against 6. Use Semgrep as your primary SAST engine.
   </p>
   <p>
     scoursh&rsquo;s SAST earns its place two ways: it is the only tool here that also replays its
     secrets rules across <strong>git history</strong> without a second tool, and it tells you which of
     its own checks never ran. Note the fair symmetry — Semgrep CE is <em>also</em> single-file-only,
-    so the taint-analysis gap scoursh declares is one CE shares; the difference is that 53 patterns
+    so the taint-analysis gap scoursh declares is one CE shares; the difference is that 55 patterns
     are a thinner net than 3,000. <strong>Position it as a baseline sweep and history scan, not your
     deep SAST engine.</strong>
   </p>
@@ -856,7 +856,7 @@
   checks-shipped gap predicts a recall gap; the recall gap should never be the first thing a reader sees.
 </p>
 <ul>
-  <li><strong>SAST:</strong> scoursh ships 53 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.</li>
+  <li><strong>SAST:</strong> scoursh ships 55 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.</li>
   <li><strong>IaC:</strong> scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.</li>
   <li><strong>Secrets:</strong> scoursh ships 7 dedicated secret checks against Gitleaks&rsquo; and TruffleHog&rsquo;s broad, purpose-built rulesets.</li>
   <li><strong>Container image:</strong> scoursh ships 11 checks across two package managers with working matching (apk/dpkg; rpm is detected but reported as a declared reduction) plus six language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface, refreshed continuously against a registry rather than an offline, hand-refreshed database.</li>

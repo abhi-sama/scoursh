@@ -1,0 +1,5 @@
+Resources:
+ R:
+  Type: AWS::ECS::TaskDefinition
+  Properties:
+   Privileged: true
