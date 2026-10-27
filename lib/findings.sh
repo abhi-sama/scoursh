@@ -1441,6 +1441,22 @@ _finding_default_logical() {
   esac
 }
 
+finding_mark_review() {
+  # An unestablished source/exposure is a review task, not a CVSS impact
+  # claim. Keep identity/evidence intact, and keep it out of CWE/OWASP totals.
+  _F[title]="Review required: ${1:-${_F[title]}}"
+  _F[base_severity]=info
+  _F[confidence]=low
+  _F[cwe]=none
+  _F[owasp]=none
+  _F[_severity_floor]=info
+  _F[_severity_ceiling]=info
+  _F[_review]=true
+  # A rule's edit scaffold assumes its vulnerability claim was established.
+  # Review entries must not offer an automatic change to an unverified value.
+  unset '_F[fix_kind]' '_F[fix_find]' '_F[fix_replace]' '_F[fix_snippet]' '_F[fix_fixed_versions]' '_F[fix_cli]'
+}
+
 finding_emit() {
   findings_ensure_loaded
   local k
@@ -1476,6 +1492,9 @@ finding_emit() {
     "${_F[sensitive_data]}" "${_F[confidence]}" "${_F[_severity_floor]:-}" "${_F[_severity_ceiling]:-}")
   local vector
   vector=$(cvss_vector_of "${_F[exposure]}" "${_F[auth]}" "${_F[sensitive_data]}" "${_F[confidence]}")
+  if [[ ${_F[_review]:-false} == true ]]; then
+    vector='CVSS:3.1/AV:N/AC:H/PR:H/UI:R/S:U/C:N/I:N/A:N'
+  fi
   _F[_cvss_vector]=$vector
   _F[_cvss_score]=$(cvss_score_of "$vector")
 
@@ -1682,6 +1701,12 @@ findings_merge() {
     _merge_shard "$shard" >>"$tmp"
   done
   _findings_sort_and_dedup "$tmp" "$rundir/findings.fields"
+  if [[ -s $rundir/findings.fields ]]; then
+    local related=$SCOURSH_SCRATCH/related.$BASHPID
+    awk -f "${BASH_SOURCE[0]%/*}/findings-related.awk" "$rundir/findings.fields" "$rundir/findings.fields" >"$related" \
+      || die "$SCOURSH_EXIT_INCOMPLETE" 'Cannot link related native findings'
+    mv "$related" "$rundir/findings.fields"
+  fi
   rm -f "$tmp"
 }
 

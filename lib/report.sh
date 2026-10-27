@@ -1677,6 +1677,13 @@ _md_findings() {
     printf -- '- %s / %s · `%s`\n' "${_DF[cwe]}" "${_DF[owasp]}" "${_DF[_cvss_vector]:-}"
     printf -- '- location: `%s`\n' "$(_location_summary)"
     printf -- '- fingerprint: `%s`\n' "${_DF[fingerprint]}"
+    if [[ -n ${_DF[related]:-} ]]; then
+      local related_fp
+      while IFS= read -r related_fp; do
+        [[ $related_fp =~ ^[0-9a-f]{64}$ ]] || continue
+        printf -- '- related finding: `%s`\n' "$related_fp"
+      done <<<"${_DF[related]}"
+    fi
     if [[ $is_sup == true ]]; then
       printf -- '- **accepted risk**: %s\n' "${_DF[suppressed_by]:-no reason recorded}"
     fi
@@ -2767,6 +2774,15 @@ _html_one_finding() {
   printf '<p class="meta">CVSS: %s (%s)</p>\n' \
     "$(html_escape "${_DF[_cvss_vector]:-}")" "$(html_escape "${_DF[_cvss_score]:-}")"
   printf '<p class="meta">fingerprint: %s</p>\n' "$(html_escape "${_DF[fingerprint]}")"
+  if [[ -n ${_DF[related]:-} ]]; then
+    local related_fp
+    printf '<p class="meta">Related findings: '
+    while IFS= read -r related_fp; do
+      [[ $related_fp =~ ^[0-9a-f]{64}$ ]] || continue
+      printf '<a href="#f-%s">%s</a> ' "$related_fp" "${related_fp:0:12}"
+    done <<<"${_DF[related]}"
+    printf '</p>\n'
+  fi
   if [[ -n ${_DF[suppressed_by]:-} ]]; then
     printf '<p class="meta">accepted risk: %s</p>\n' "$(html_escape "${_DF[suppressed_by]}")"
   fi

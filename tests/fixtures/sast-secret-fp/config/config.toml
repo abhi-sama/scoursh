@@ -1,0 +1,3 @@
+# Supabase-style environment references.
+auth_token = "env(SMS_TWILIO_AUTH_TOKEN)"  # [[N31]]
+s3_access_key = "env(S3_ACCESS_KEY)"  # [[N32]]

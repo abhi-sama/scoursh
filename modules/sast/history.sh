@@ -303,7 +303,7 @@ _sast_history_scan_check() {
       break
     fi
     [[ -n $total ]] || total=$(awk 'END{print NR}' "$blobfile")
-    if sast_context_ok "$set" "$idx" "$blobfile" "$ln" "$total"; then
+    if sast_context_ok "$set" "$idx" "$blobfile" "$ln" "$total" "$text"; then
       _sast_history_ensure_commit_info "$scan_root" "$blob_sha" "$relpath" "$since_epoch" "$max_commits"
       _sast_history_emit_finding "$set" "$idx" "$blob_sha" "$relpath" "$ln" "$text"
     fi
@@ -338,6 +338,7 @@ _sast_history_scan_blob() {
   n=$(records_count "$secretsset")
   for (( idx = 0; idx < n; idx++ )); do
     sast_rule_matches_file "$secretsset" "$idx" "$relpath" || continue
+    _SAST_HIST_CHECK_EVAL[$(records_id "$secretsset" "$idx")]=1
     _sast_history_scan_check "$scan_root" "$secretsset" "$idx" "$blob_sha" "$relpath" "$blobfile" "$since_epoch" "$max_commits"
   done
   rm -f "$blobfile"
@@ -420,6 +421,9 @@ _sast_history_scan() {
     "${exclude_args[@]+"${exclude_args[@]}"}" 2>/dev/null \
     | git -C "$scan_root" cat-file --batch-check='%(objectname) %(objecttype) %(rest)' >"$objfile" 2>/dev/null
 
+  # Separate from working-tree applicability; a completed history walk only
+  # covers a check if at least one blob passed its file-selection predicate.
+  local -A _SAST_HIST_CHECK_EVAL=()
   local -A seen_blob=()
   local objects_scanned=0 sha type rest
   while IFS=' ' read -r sha type rest; do
@@ -439,7 +443,7 @@ _sast_history_scan() {
 }
 
 # ---------------------------------------------------------------------------
-# 9. docs/STEP7-STATE-PLAN.md STATE-02: path-root coverage for every
+# 9. docs/STEP7-STATE-PLAN.md STATE-02: path-root coverage for applicable
 #    SAST-HIST-* check, plus its history_boundary block (tension 13) - AND
 #    (bug fix) run.json's own `checks_run`, which this function used to leave
 #    completely unwritten for the whole SAST-HIST-* family.
@@ -449,10 +453,10 @@ _sast_history_scan() {
 #    modules/sast/engine.sh's sast_record_coverage documents, applied here
 #    because every SAST-HIST-* check shares one walk over one materialised
 #    blob set rather than each having its own scan-tree call to return from.
-#    Every record in `secretsset` becomes a covered SAST-HIST-* id: the walk
-#    evaluates every one of them against every blob it visits (see
-#    _sast_history_scan_blob), so "the walk completed" is "every check in the
-#    pack completed", uniformly.
+#    Only records evaluated against at least one applicable blob become
+#    covered SAST-HIST-* ids. ENV_ASSIGNMENT excludes JS/TS source, so a
+#    source-only history must declare that check unevaluated, just as the
+#    working-tree engine does for a check with no applicable files.
 #
 #    BUG (found auditing a real operator run that passed --history and got
 #    zero SAST-HIST-* ids in checks_run no matter what history actually
@@ -467,8 +471,8 @@ _sast_history_scan() {
 #    a secret been present - left run.json's checks_run silently unable to
 #    ever show it ran, indistinguishable there from "this check never even
 #    loaded". `run_record checks_run "$hist_id"` below is the fix, in the
-#    same loop and on the SAME "the walk completed for every record in the
-#    pack" basis `state_add_covered` already uses - deliberately NOT gated on
+#    same loop and on the same applicability / completed-walk basis as
+#    `state_add_covered` - deliberately NOT gated on
 #    `state_add_covered`'s own `declare -F` guard, since checks_run is not a
 #    step-7 state-plan feature and must not go dark whenever lib/state.sh's
 #    functions happen to be absent (a standalone caller sourcing history.sh
@@ -476,11 +480,17 @@ _sast_history_scan() {
 # ---------------------------------------------------------------------------
 _sast_history_record_coverage() {
   local secretsset=$1 oldest_commit=$2 oldest_commit_time=$3 objects_scanned=$4 bound_by=$5
-  local n idx hist_id digest have_state=false
+  local n idx id hist_id digest have_state=false
+  local -a not_applicable=()
   declare -F state_add_covered >/dev/null 2>&1 && have_state=true
   n=$(records_count "$secretsset")
   for (( idx = 0; idx < n; idx++ )); do
-    hist_id=$(_sast_hist_check_id "$(records_id "$secretsset" "$idx")")
+    id=$(records_id "$secretsset" "$idx")
+    hist_id=$(_sast_hist_check_id "$id")
+    if [[ -z ${_SAST_HIST_CHECK_EVAL[$id]:-} ]]; then
+      not_applicable+=("$hist_id")
+      continue
+    fi
     run_record checks_run "$hist_id"
     $have_state || continue
     digest=$(records_digest "$secretsset" "$idx")
@@ -489,5 +499,8 @@ _sast_history_record_coverage() {
       state_add_history_boundary "$hist_id" "$oldest_commit" "$oldest_commit_time" "$objects_scanned" "$bound_by"
     fi
   done
+  if (( ${#not_applicable[@]} > 0 )); then
+    run_record coverage_reduction "module=sast reason=no_matching_files checks=[${not_applicable[*]}] - no history blob matched this check's file-selection globs; its pattern was never evaluated. It is NOT covered by this run."
+  fi
   return 0
 }

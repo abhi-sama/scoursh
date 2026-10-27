@@ -1,0 +1,6 @@
+Resources:
+ R:
+  Type: AWS::EC2::SecurityGroup
+  Metadata:
+   Documentation: |
+    CidrIp: 0.0.0.0/0

@@ -1,40 +1,8 @@
-# modules/iac/terraform.rules - docs/DESIGN.md §8.2 IaC seed catalog, scoped to
-# Terraform HCL only (docs/DESIGN.md §13 step 4, this ticket).
-#
-# Path note: rules/RULE-FORMAT.md §9's frozen path table grants the
-# pattern-rule schema to `modules/iac/*.rules` FLAT - unlike
-# `modules/sast/rules/*.rules`, there is no `rules/` subdirectory under
-# modules/iac/.  A file at modules/iac/rules/terraform.rules would match no
-# row of that table and fail E070.  The basename `checks.rules` is reserved
-# repository-wide for the §9.5 script-check schema (it is matched first in
-# records_schema_for_path, ahead of the `modules/iac/*.rules` row), so this
-# pack is deliberately named `terraform.rules`, never `checks.rules`.
-#
-# Scope discipline: Terraform (*.tf) only, per this ticket.  CloudFormation,
-# Docker, Kubernetes, and Helm checks - though §8.2 and this same `.rules`
-# engine could carry them - are explicitly out of scope here; see
-# docs/DESIGN.md §8.2's own "Optional adapter" note and §7 (containers) for
-# where those belong instead.
-#
-# Seed rules, each straight out of §8.2's list:
-#   cidr_blocks = ["0.0.0.0/0"], acl = "public-read", encrypted = false,
-#   missing enable_key_rotation, associate_public_ip_address = true,
-#   hardcoded secrets in .tf, publicly_accessible = true (RDS).
-#
-# IAC-TF-OPEN_CIDR-01 is rules/RULE-FORMAT.md §9.1.1's own worked example and
-# §12.5's own worked pattern-rule example; both are reproduced here verbatim
-# rather than paraphrased, so this pack matches the spec's own reference
-# byte-for-byte.
-#
-# IAC-TF-KEY_ROTATION_DISABLED-01 is the one ABSENCE check in this pack, the
-# same shape java.rules' SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 already
-# establishes: the finding fires on `resource "aws_kms_key" ...  {` unless a
-# `enable_key_rotation = true` line appears within the context-window.  Like
-# that precedent, an absence check can only be a `context-deny` with a
-# non-zero window (rules/RULE-FORMAT.md §10.2 - context-window:0 binds
-# same-line-intent guards only), so it carries the same reviewed W033
-# trade-off; the window (12 lines) is sized to the typical short
-# `aws_kms_key` resource block.
+# modules/iac/terraform.rules - Terraform HCL checks. Attribute candidates are bound to HCL blocks by
+# precision.awk; comments do not create configuration. Credential literals keep
+# their original scanning path. KMS rotation uses the owning resource, not a
+# numeric deny window. The preceding-line open-CIDR exception remains supported.
+# Owns: docs/DESIGN.md §6.6/§8.2; docs/FOUNDATION.md tension 3 precision amendment.
 
 id: IAC-TF-OPEN_CIDR-01
 title: Security group rule open to 0.0.0.0/0
@@ -104,8 +72,6 @@ owasp: A04:2025
 pattern: resource\s+"aws_kms_key"\s+"[A-Za-z0-9_-]+"\s*\{
 dialect: ere
 files: *.tf
-context-deny: enable_key_rotation\s*=\s*true
-context-window: 12
 tags: static
 remediation: Add enable_key_rotation = true to the aws_kms_key resource so AWS rotates
   the backing key material annually without any application-visible change (KMS

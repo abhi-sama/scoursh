@@ -37,7 +37,7 @@ folding it into "clean." The name blends **scour** (search thoroughly, corner to
 | **Container image** | Offline OS-package CVE matching for apk (Alpine) and dpkg (Debian/Ubuntu) images, plus language-dependency matching and config-blob checks (effective runtime user, exposed ports, mutable base tag), against a `docker save` tarball or OCI image layout you supply - never a registry pull. rpm-based images are detected but their native database is not yet decoded, so they report `IMAGE-COV-UNKNOWN_DISTRO-01` (`rpm_db_binary_format`) rather than package matches | ✅ built - `scan.sh image --image ID` |
 | **Cloud / CSPM** | Live AWS configuration | ✅ built - `scan.sh cloud`, 30 AWS services, read-only, credential-authorized, CIS/OWASP-mapped |
 
-319 checks ship across the seven built surfaces (53 SAST + 36 IaC + 92 DAST + 15 network + 11
+321 checks ship across the seven built surfaces (55 SAST + 36 IaC + 92 DAST + 15 network + 11
 container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems rather than a check count).
 The complete catalogue - every check id, what it catches, and what it needs to run - is
 [`docs/CHECKS.md`](docs/CHECKS.md) (also published as a standalone page,
@@ -141,7 +141,7 @@ cd scoursh
 `SHA256SUMS`. Verify it, extract it, and link `bin/scoursh` onto `PATH`:
 
 ```sh
-V=1.1.2
+V=1.2.0
 gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
 sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
 gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh
@@ -155,8 +155,8 @@ An installed copy is `scoursh` rather than `./scan.sh`, and keeps its own files 
 `scoursh paths` says. Offline verification, rebuilding a release to compare checksums, and cutting a
 release: [`docs/USAGE.md`](docs/USAGE.md#installing-from-a-release).
 
-**Homebrew.** The tap repository is not published yet, so this is not an install option today. Once
-`abhi-sama/homebrew-scoursh` is published, install the release formula with:
+**Homebrew.** The public tap is `abhi-sama/homebrew-scoursh`. Once its formula-bump PR for a release
+has merged, install that release with:
 
 ```sh
 brew install abhi-sama/scoursh/scoursh
@@ -610,7 +610,7 @@ shipped here before.
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 9 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -619,12 +619,12 @@ Landed 10 of 10.  Outstanding: none.
 
 | Manifests | Status | Parsers | Exercised by |
 | --- | --- | --- | --- |
-| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
-| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-four-ecosystems/requirements.txt` |
-| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
-| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
-| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
-| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/composer-no-manifest/composer.lock` |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca-precision/npm-alias/package-lock.json` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca-precision/python-false-marker/requirements.txt` |
+| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca-precision/go-positive/go.mod` |
+| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca-precision/maven-comment-safe/pom.xml` |
+| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca-precision/ruby-patched-negative/Gemfile.lock` |
+| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca-precision/php-canonical-positive/composer.lock` |
 
 Landed 6 of 6.  Outstanding: none.
 

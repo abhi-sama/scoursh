@@ -192,7 +192,7 @@ ROOT_NO_ADAPTER=$W/root-no-adapter
 rm -rf "$ROOT_NO_ADAPTER"
 mkdir -p "$ROOT_NO_ADAPTER/config" "$ROOT_NO_ADAPTER/modules/iac" "$ROOT_NO_ADAPTER/modules/sast"
 printf 'id: scanner\n' >"$ROOT_NO_ADAPTER/config/scanner.conf"
-cp "$ROOT/modules/iac/run.sh" "$ROOT/modules/iac/parse.sh" "$ROOT_NO_ADAPTER/modules/iac/"
+cp "$ROOT/modules/iac/run.sh" "$ROOT/modules/iac/parse.sh" "$ROOT/modules/iac/precision.awk" "$ROOT_NO_ADAPTER/modules/iac/"
 cp "$ROOT/modules/sast/engine.sh" "$ROOT_NO_ADAPTER/modules/sast/engine.sh"
 ROOT_NO_ADAPTER=$(cd -- "$ROOT_NO_ADAPTER" && pwd -P)
 FIXTURES=$ROOT/tests/fixtures/iac-scope
@@ -228,7 +228,7 @@ ROOT_VENDORED=$W/root-vendored
 rm -rf "$ROOT_VENDORED"
 mkdir -p "$ROOT_VENDORED/config" "$ROOT_VENDORED/modules/iac" "$ROOT_VENDORED/modules/sast"
 printf 'id: scanner\n' >"$ROOT_VENDORED/config/scanner.conf"
-cp "$ROOT/modules/iac/run.sh" "$ROOT/modules/iac/parse.sh" "$ROOT/modules/iac/terraform.rules" \
+cp "$ROOT/modules/iac/run.sh" "$ROOT/modules/iac/parse.sh" "$ROOT/modules/iac/precision.awk" "$ROOT/modules/iac/terraform.rules" \
   "$ROOT_VENDORED/modules/iac/"
 cp "$ROOT/modules/sast/engine.sh" "$ROOT_VENDORED/modules/sast/engine.sh"
 mkdir -p "$ROOT_VENDORED/modules/iac/adapters/trivy/bin"

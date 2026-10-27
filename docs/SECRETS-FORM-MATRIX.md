@@ -52,10 +52,15 @@ named:
   `client_secret`, `api_key`/`apiKey`, `token`, `access_key`, `credentials`.
   Covered.
 - **file types** - `.env`, shell, YAML, JSON, CI workflow YAML, and Dockerfile.
-  Covered. `secrets.rules` ships **no `files:` glob** by design, so it reads
-  every file in the tree it is pointed at; the file types above are therefore a
-  test of the *forms* those files conventionally use, not of per-extension
-  wiring.
+  Covered. The quoted-literal and provider-shaped rules read every file in
+  the tree. The unquoted `ENV_ASSIGNMENT` rule excludes JavaScript/TypeScript
+  source (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`): a
+  line-start object property or default argument can name a runtime reference,
+  so the anchor alone does not establish a literal there. Extensionless and
+  custom-named configuration files retain their existing coverage. Quoted
+  literals in source remain covered by the generic assignment rules.
+  `tests/suites/sast-secrets-source.sh` exercises these exclusions through
+  `scan.sh`, alongside every positive control below and a literal TS API key.
 
 **Deliberately not covered, and why:**
 
@@ -217,3 +222,34 @@ the pack's state prior to this widening; `after` is the pack as it ships today.
 | P70 | `DB_PASSWORD: "<VALUE>"` | `ci-workflow.yml` | MISS | found | SAST-SEC-GENERIC_PASSWORD-01 |
 | P71 | `API_KEY: <VALUE>` | `ci-workflow.yml` | MISS | found | SAST-SEC-ENV_ASSIGNMENT-01 |
 | P72 | `- run: DEPLOY_TOKEN=<VALUE> ./deploy` | `ci-workflow.yml` | MISS | found | SAST-SEC-ENV_ASSIGNMENT-01 |
+
+## False-positive controls
+
+The matrix above measures recall over assignment FORMS.  The precision half is
+measured over SHAPES that real code puts under a credential-named key, taken
+verbatim from public repositories the pack used to report as CRITICAL hardcoded
+credentials (Next.js, Django, Go, Helm and Supabase code): storage-key names,
+cookie names, enums, Django module paths, `fetch` options, validator tags,
+version ranges, `env(...)` references, i18n labels, PEM header constants, the
+jwt.io sample token, the Supabase local-development anon key, and calls,
+attributes and class names assigned to a credential-named variable.  They live
+in `tests/fixtures/sast-secret-fp/`; `tests/suites/sast-secrets-forms.sh`
+section H asserts each was reported by the pack at `703bd14` and is quiet now,
+and that every real credential beside them, including five the old line-wide
+guards dropped, is reported.
+
+Three policies shape what the pack reports:
+
+- **Value guards are match-scoped** (`match-deny`, `rules/RULE-FORMAT.md`
+  §10.1a): a guard about the value never fires on something else on the line.
+- **Test, documentation, example and CI paths** go to
+  `SAST-SEC-NONPROD_CREDENTIAL-01` at `low` (section G); the provider-shaped
+  checks keep full severity there.
+- **Severity**: keyword matches are capped at `high`, and a well-known default
+  password is `SAST-SEC-DEFAULT_PASSWORD-01` at `medium`.
+
+Accepted costs, stated so they are not rediscovered: a quoted secret or API key
+with no digit at all, an unquoted secret shaped like a dotted identifier,
+CamelCase word or UPPER_CASE constant, and an all-lowercase hyphenated quoted
+passphrase are not reported by the keyword checks.
+

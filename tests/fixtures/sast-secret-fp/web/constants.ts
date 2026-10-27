@@ -1,0 +1,10 @@
+// Names, keys and enums that read as credentials to a keyword rule.
+export const TOKEN_KEY = "auth_token"; // [[N01]]
+export const SESSION_TOKEN_COOKIE = "__Secure-next-auth.session-token"; // [[N02]]
+export const SET_TOKEN = 'auth/setToken'; // [[N03]]
+export const LOGIN_TOKEN_REFRESH = "LOGIN_TOKEN_REFRESH"; // [[N04]]
+export const PASSWORD_RESET_TOPIC = "password-reset-events"; // [[N05]]
+export const API_KEY_STORAGE = "vendor-api-key-storage"; // [[N06]]
+const errorCodes = { tokenExpired: "auth/token-expired", invalidToken: "auth/invalid-token" }; // [[N07]]
+let defaultView = allowPassword ? 'password_signin' : 'email_signin'; // [[N08]]
+const opts = { method: "POST", credentials: 'same-origin' }; // [[N09]]

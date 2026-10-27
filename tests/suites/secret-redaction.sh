@@ -47,7 +47,13 @@ redaction_load "$ROOT/rules/redaction.rules"
 rubric_load "$ROOT/data/severity-rubric.conf"
 attribution_load "$ROOT/tests/fixtures/config/scope.conf"
 
-FIX=$ROOT/tests/fixtures/secret-redaction
+# Scanned from a COPY outside tests/: the secrets pack reports a credential
+# under a tests/ path through SAST-SEC-NONPROD_CREDENTIAL-01 instead of the
+# production records, and section B asserts the production check ids and
+# titles survive redaction.  The redaction property itself holds either way.
+FIX=$W/app
+rm -rf "$FIX"
+cp -R "$ROOT/tests/fixtures/secret-redaction" "$FIX"
 # The planted positive controls.  Both are fake canaries committed under
 # tests/fixtures/secret-redaction/; see that directory's README.md.
 CANARY_PW=scourshFakeCanaryPw01
@@ -663,9 +669,12 @@ t_case 'J. no credential form the secrets pack detects survives in the clear'
 # form added to secrets.rules is covered here on the day it lands, and a future
 # check id that escapes the family predicate fails HERE rather than shipping.
 # It fails under the reading that this suite's own canaries are representative.
-FORMS=$ROOT/tests/fixtures/sast-secret-forms
-assert_eq 0 "$([[ -d $FORMS ]] && echo 0 || echo 1)" \
+FORMS=$W/forms-tree
+assert_eq 0 "$([[ -d $ROOT/tests/fixtures/sast-secret-forms ]] && echo 0 || echo 1)" \
   'the detection pack ships its own fixture tree'
+# Copied out of tests/ for the reason FIX is (see above).
+rm -rf "$FORMS"
+cp -R "$ROOT/tests/fixtures/sast-secret-forms" "$FORMS"
 FOUT=$W/forms
 rm -rf "$FOUT"
 f_rc=0
@@ -688,6 +697,25 @@ forms_jsonl=$(cat "$FOUT/findings.jsonl")
 assert_contains "$forms_jsonl" 'SAST-SEC-ENV_ASSIGNMENT-01' 'the env-assignment check still reports its findings'
 assert_contains "$forms_jsonl" 'dotenv.env' 'the file is still named'
 assert_contains "$forms_jsonl" 'redacted:SECRET' 'and the value is a digest placeholder, not a blank'
+
+t_case 'J1. a credential under a tests/ path is redacted too'
+# The same tree scanned IN PLACE, under tests/, where the keyword records hand
+# every match to SAST-SEC-NONPROD_CREDENTIAL-01.  Fails if that record were
+# outside the secret family, which would write every test-path credential in
+# the clear while the production paths above stay masked.
+NPOUT=$W/forms-nonprod
+rm -rf "$NPOUT"
+np_rc=0
+( cd "$ROOT" && bash scan.sh sast --path "$ROOT/tests/fixtures/sast-secret-forms" --format json,md --out "$NPOUT" ) \
+  >"$W/np.out" 2>"$W/np.err" || np_rc=$?
+assert_eq 0 "$np_rc" 'the in-place scan succeeds'
+np_n=$(grep -c 'SAST-SEC-NONPROD_CREDENTIAL-01' "$NPOUT/findings.jsonl" || true)
+assert_eq 0 "$(( np_n >= 40 ? 0 : 1 ))" \
+  "the non-production record really fired across the matrix (got $np_n findings)"
+np_bytes=$(run_dir_bytes "$NPOUT")
+for v in Tr0ub4dor3xK hunter2 s3cr3tT0kenV4lue0000; do
+  assert_not_contains "$np_bytes" "$v" "no file the in-place run wrote carries $v in the clear"
+done
 
 t_case 'J2. the secrets pack id NAMESPACE is in the family, not just the substrings'
 # Pins the arm directly, so a refactor that drops it fails here with a clear
