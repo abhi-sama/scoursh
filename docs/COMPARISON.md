@@ -50,7 +50,7 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 
 | | |
 |---|---|
-| **319** | security checks across seven surfaces |
+| **321** | security checks across seven surfaces |
 | **7** | surfaces: SAST, SCA, IaC, DAST, Network/host, Container image, Cloud/CSPM |
 | **0** | runtime deps beyond bash + coreutils |
 | **1** | network chokepoint, lint-enforced |
@@ -58,7 +58,7 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 
 | Surface | Status | What shipped | Checks |
 |---|---|---|---|
-| SAST | landed | 9 rule packs across 6 languages, plus git-history secret replay | 53 |
+| SAST | landed | 9 rule packs across 6 languages, plus git-history secret replay | 55 |
 | SCA | needs setup | 6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline | table lookup |
 | IaC | landed | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | 36 |
 | DAST | landed | Full engine: auth, crawl, passive, safe-active, injection, tier-5 | 92 |
@@ -116,7 +116,7 @@ blind spots*.
 
 | Tool | Coverage | Licence | Footprint | Egress | Coverage honesty | Unique strength |
 |---|---|---|---|---|---|---|
-| **scoursh** | 53 checks, 6 languages, + secrets & git history | Apache-2.0 | bash ≥ 4.2, grep/rg, awk | None | Four-state partition | Honest coverage; one tool across surfaces |
+| **scoursh** | 55 checks, 6 languages, + secrets & git history | Apache-2.0 | bash ≥ 4.2, grep/rg, awk | None | Four-state partition | Honest coverage; one tool across surfaces |
 | Semgrep CE | ~3,000 community rules, 30+ languages; single-file analysis only | LGPL-2.1 | Python + OCaml binary | Registry fetch unless offline | Findings only | Best free SAST depth; readable rule DSL |
 | Bandit | Python only | Apache-2.0 | Python | None | Findings only | Deep Python idiom coverage |
 | gosec | Go only | Apache-2.0 | Single Go binary | None | Findings only | Fast, zero-dep, Go-native AST |
@@ -130,12 +130,12 @@ blind spots*.
 > a free option.
 
 **Honest verdict:** **Semgrep CE wins on depth and it is not close** - roughly 3,000 rules against
-scoursh's 53, across 30+ languages against 6. Use Semgrep as your primary SAST engine.
+scoursh's 55, across 30+ languages against 6. Use Semgrep as your primary SAST engine.
 
 scoursh's SAST earns its place two ways: it is the only tool here that also replays its secrets rules
 across **git history** without a second tool, and it tells you which of its own checks never ran.
 Note the fair symmetry - Semgrep CE is *also* single-file-only, so the taint-analysis gap scoursh
-declares is one CE shares; the difference is that 53 patterns are a thinner net than 3,000. **Position
+declares is one CE shares; the difference is that 55 patterns are a thinner net than 3,000. **Position
 it as a baseline sweep and history scan, not your deep SAST engine.**
 
 ## SCA — dependencies
@@ -320,7 +320,7 @@ sweep everywhere; reach for Prowler when cloud posture is the job itself.
 Read the per-surface tables above before any recall number, on this page or a future one. A
 checks-shipped gap predicts a recall gap; the recall gap should never be the first thing a reader sees.
 
-- **SAST:** scoursh ships 53 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.
+- **SAST:** scoursh ships 55 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.
 - **IaC:** scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.
 - **Secrets:** scoursh ships 7 dedicated secret checks against Gitleaks' and TruffleHog's broad,
   purpose-built rulesets.

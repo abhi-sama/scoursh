@@ -3,7 +3,7 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
+needs to run. 321 checks ship in the box (55 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks).
 Those counts are calculated from the checked-in `id:` records under `modules/**` (not copied from a
 roadmap or release note); the per-surface split below is the same calculation.
@@ -18,7 +18,7 @@ roadmap or release note); the per-surface split below is the same calculation.
 
 | | |
 |---|---|
-| **53** | SAST checks |
+| **55** | SAST checks |
 | **36** | IaC checks |
 | **46** | DAST passive |
 | **34** | DAST active |

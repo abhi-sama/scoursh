@@ -37,7 +37,7 @@ folding it into "clean." The name blends **scour** (search thoroughly, corner to
 | **Container image** | Offline OS-package CVE matching for apk (Alpine) and dpkg (Debian/Ubuntu) images, plus language-dependency matching and config-blob checks (effective runtime user, exposed ports, mutable base tag), against a `docker save` tarball or OCI image layout you supply - never a registry pull. rpm-based images are detected but their native database is not yet decoded, so they report `IMAGE-COV-UNKNOWN_DISTRO-01` (`rpm_db_binary_format`) rather than package matches | ✅ built - `scan.sh image --image ID` |
 | **Cloud / CSPM** | Live AWS configuration | ✅ built - `scan.sh cloud`, 30 AWS services, read-only, credential-authorized, CIS/OWASP-mapped |
 
-319 checks ship across the seven built surfaces (53 SAST + 36 IaC + 92 DAST + 15 network + 11
+321 checks ship across the seven built surfaces (55 SAST + 36 IaC + 92 DAST + 15 network + 11
 container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems rather than a check count).
 The complete catalogue - every check id, what it catches, and what it needs to run - is
 [`docs/CHECKS.md`](docs/CHECKS.md) (also published as a standalone page,
@@ -141,7 +141,7 @@ cd scoursh
 `SHA256SUMS`. Verify it, extract it, and link `bin/scoursh` onto `PATH`:
 
 ```sh
-V=1.1.2
+V=1.2.0
 gh release download "v$V" --repo abhi-sama/scoursh --pattern "scoursh-$V.tar.gz" --pattern SHA256SUMS
 sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
 gh attestation verify "scoursh-$V.tar.gz" --repo abhi-sama/scoursh
